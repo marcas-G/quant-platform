@@ -254,43 +254,43 @@ def test_fillna_industry_mean(tmp_path):
     assert d_vals == c_vals
 
 
-def test_neutralize_size_demean(tmp_path):
-    # 按 daily_basic.total_mv 分组 demean：同日同市值 → 同组（非退化）；
-    # 同日不同市值 → 组内 1 行 → demean 恒 0（计划已知的简化，此处固化行为）。
+def test_neutralize_size_decile_demean(tmp_path):
+    # 按 date 内 total_mv 排名十分位分桶、组内 demean：
+    # 20 只市值各异的股票 → 每分位组恰好 2 只 → demean 后恰为 ±0.5（非退化、非全零）；
+    # 第二日市值顺序反转 → 分桶结果不变 → 验证分组按日期隔离（不跨日期泄漏）。
     db_path = build_basic_db(tmp_path)
-    db = duckdb.connect(str(db_path))  # 可写连接补数据（只读连接禁止 INSERT）
-    db.execute("INSERT INTO daily_basic VALUES ('20240102', '000002.SZ', 100.0)")
+    db = duckdb.connect(str(db_path))  # 可写连接重建 daily_basic（只读连接禁止写）
+    db.execute("DROP TABLE IF EXISTS daily_basic")
+    db.execute("CREATE TABLE daily_basic (trade_date VARCHAR, ts_code VARCHAR, total_mv DOUBLE)")
+    for i in range(20):
+        db.execute("INSERT INTO daily_basic VALUES ('20240102', ?, ?)", (f"{chr(ord('A') + i)}.SZ", float(i + 1) * 10.0))
+        db.execute("INSERT INTO daily_basic VALUES ('20240103', ?, ?)", (f"{chr(ord('A') + i)}.SZ", float(20 - i) * 10.0))
     db.close()
     con = duckdb.connect(str(db_path), read_only=True)
     try:
         df = pl.DataFrame({
-            "date": ["2024-01-02", "2024-01-02", "2024-01-03", "2024-01-03"],
-            "code": ["000001", "000002", "000001", "000002"],
-            "signal": [1.0, 3.0, 2.0, 4.0],
+            "date": ["2024-01-02"] * 20 + ["2024-01-03"] * 20,
+            "code": [chr(ord("A") + i) for i in range(20)] * 2,
+            "signal": [float(i) for i in range(20)] * 2,
         })
         out = run_process_chain(df, ["neutralize(by: size)"], ctx=con)
     finally:
         con.close()
-    day1 = out.filter(pl.col("date") == "2024-01-02").sort("code")["signal"].to_list()
-    assert abs(day1[0] - (-1.0)) < 1e-9 and abs(day1[1] - 1.0) < 1e-9  # 同组 [1,3] → [-1,1]
-    day2 = out.filter(pl.col("date") == "2024-01-03").sort("code")["signal"].to_list()
-    assert all(abs(v) < 1e-9 for v in day2)  # mv 120 vs 100 不同组 → 单行组 demean=0
+    assert out["signal"].abs().max() > 0.1  # 非退化：不是全 0
+    assert set(out["signal"].to_list()) == {-0.5, 0.5}  # 每分位组 2 只 → 恰好 ±0.5
+    per_date = out.group_by("date").agg(pl.col("signal").mean())
+    assert per_date["signal"].abs().max() < 1e-9  # 各分位组均值 0 → 每日截面和 0
 
 
-def test_neutralize_size_unmatched_code_demean_zero(tmp_path):
-    # daily_basic 无记录（total_mv 为 null）→ 单行组 → demean 恒 0；join 不报错
-    db_path = build_basic_db(tmp_path)
+def test_neutralize_size_missing_mv_raises(tmp_path):
+    # daily_basic 无匹配（total_mv 为 null）→ 报错而非静默 demean 0（M3a spec §5）
+    db_path = build_basic_db(tmp_path)  # daily_basic 只有 000001.SZ，_panel 的 A/B/C/D 全部缺失
     con = duckdb.connect(str(db_path), read_only=True)
     try:
-        df = pl.DataFrame({
-            "date": ["2024-01-02", "2024-01-02"],
-            "code": ["000001", "000099"],
-            "signal": [5.0, 7.0],
-        })
-        out = run_process_chain(df, ["neutralize(by: size)"], ctx=con)
+        with pytest.raises(ValueError, match="total_mv"):
+            run_process_chain(_panel(), ["neutralize(by: size)"], ctx=con)
     finally:
         con.close()
-    assert out["signal"].abs().max() < 1e-9
 
 
 def test_neutralize_industry_missing_info(tmp_path):

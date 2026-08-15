@@ -108,5 +108,17 @@ def neutralize(df: pl.DataFrame, ctx, by: str = "market") -> pl.DataFrame:
             pl.col("ts_code").str.split(".").list.first().alias("code"),
         ).select(["date", "code", "total_mv"])
         enriched = df.join(mv, on=["date", "code"], how="left")
-        return enriched.with_columns((x - x.mean().over(["date", "total_mv"])).alias(SIGNAL)).drop("total_mv")
+        missing = enriched["total_mv"].null_count()
+        if missing:
+            raise ValueError(f"{missing} 行缺少 daily_basic.total_mv，无法 neutralize(by=size)")
+        # 每日期内按 total_mv 排名十分位分桶（组键 date+_mv_decile），
+        # 避免按原始连续市值分组导致组内 1 行 → demean 恒 0 的退化
+        decile = (
+            pl.col("total_mv").rank("ordinal").over("date") * 10
+            // (pl.col("total_mv").count().over("date") + 1)
+        ).clip(0, 9)
+        enriched = enriched.with_columns(decile.alias("_mv_decile"))
+        return enriched.with_columns(
+            (x - x.mean().over(["date", "_mv_decile"])).alias(SIGNAL)
+        ).drop("total_mv", "_mv_decile")
     raise ValueError(f"neutralize 不支持的 by: {by}（market|industry|size）")
