@@ -1097,6 +1097,7 @@ git commit -m "feat: add neutralize and industry-mean fillna"
   polars 拒绝 String↔Date 混型 join key（SchemaError）。
 - 错误消息含小写 `ctx` 以匹配测试 `match="ctx"`（"ProcessCtx" 大写 C 不匹配）。
 - size 中性化修复：按 date 内 total_mv 排名十分位分桶后组内 demean（原"按原始 total_mv 分组"在连续市值下每组 1 行 → demean 恒 0，静默全零）；无 daily_basic 匹配 → 报错（M3a spec §5）。
+- 已知局限：截面 N<10 时每个十分位桶 1 只股票 → size 中性化 demean 恒 0（分组式中性化固有属性；真实 A 股截面约 5000 只无碍，小 universe 调试需注意）。
 - 行业缺失路径：股票不在 `stock_basic_tushare` → `ValueError`
   （`test_neutralize_industry_missing_info`）；fillna industry_mean 对缺失行业
   不做报错（null 组内填自身均值）。

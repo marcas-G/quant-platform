@@ -257,14 +257,15 @@ def test_fillna_industry_mean(tmp_path):
 def test_neutralize_size_decile_demean(tmp_path):
     # 按 date 内 total_mv 排名十分位分桶、组内 demean：
     # 20 只市值各异的股票 → 每分位组恰好 2 只 → demean 后恰为 ±0.5（非退化、非全零）；
-    # 第二日市值顺序反转 → 分桶结果不变 → 验证分组按日期隔离（不跨日期泄漏）。
+    # 第二日市值放大 ×1000（非反转：反转的市值多重集与首日相同，全局排名泄漏下分桶
+    # 结果不变、测不出泄漏）→ 全局排名泄漏时跨日期分桶改变 → 验证排名按日期隔离。
     db_path = build_basic_db(tmp_path)
     db = duckdb.connect(str(db_path))  # 可写连接重建 daily_basic（只读连接禁止写）
     db.execute("DROP TABLE IF EXISTS daily_basic")
     db.execute("CREATE TABLE daily_basic (trade_date VARCHAR, ts_code VARCHAR, total_mv DOUBLE)")
     for i in range(20):
         db.execute("INSERT INTO daily_basic VALUES ('20240102', ?, ?)", (f"{chr(ord('A') + i)}.SZ", float(i + 1) * 10.0))
-        db.execute("INSERT INTO daily_basic VALUES ('20240103', ?, ?)", (f"{chr(ord('A') + i)}.SZ", float(20 - i) * 10.0))
+        db.execute("INSERT INTO daily_basic VALUES ('20240103', ?, ?)", (f"{chr(ord('A') + i)}.SZ", float(i + 1) * 10000.0))
     db.close()
     con = duckdb.connect(str(db_path), read_only=True)
     try:
