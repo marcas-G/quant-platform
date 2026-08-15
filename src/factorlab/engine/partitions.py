@@ -19,11 +19,12 @@ def _call_names(tree: ast.AST):
 
 
 def validate_partition_calls(source: str) -> None:
-    """拒绝未知算子调用；已知 ts_/cs_/gp_/ta_ 算子与平台薄封装、元素级函数放行。"""
+    """拒绝未知算子调用；公式内 def 函数、已知 ts_/cs_/gp_/ta_ 算子与平台薄封装、元素级函数放行。"""
     tree = ast.parse(source)
+    defined = {node.name for node in ast.walk(tree) if isinstance(node, ast.FunctionDef)}
     for node in _call_names(tree):
         name = node.func.id
-        if name in _ELEMENTWISE:
+        if name in defined or name in _ELEMENTWISE:
             continue
         if not registry.has_op(name):
             raise FactorDSLError(f"未知算子: {name}", node.lineno, node.col_offset)

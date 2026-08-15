@@ -26,6 +26,13 @@ def test_allows_elementwise_functions():
     validate_partition_calls("signal = abs(close - open) + log(volume) / sqrt(abs(close))")
 
 
+def test_allows_inline_def_functions():
+    validate_partition_calls(
+        "def momentum(x, n):\n    return ts_delay(x, n) / ts_delay(x, 2 * n) - 1\n"
+        "signal = momentum(close, 5)"
+    )
+
+
 def test_rejects_unknown_operator():
     with pytest.raises(ValueError):
         validate_partition_calls("signal = not_real_operator(close)")

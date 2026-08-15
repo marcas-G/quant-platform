@@ -1,3 +1,4 @@
+import pytest
 import polars as pl
 
 from factorlab.engine.compute import compute_formula
@@ -39,3 +40,28 @@ signal = _m if _m > 0 else -_m
     result = compute_formula(df, formula)
     assert result.columns == ["date", "code", "signal"]
     assert result.height == 2
+
+
+def test_compute_rejects_unknown_operator():
+    with pytest.raises(ValueError):
+        compute_formula(pl.DataFrame({"date": [], "code": [], "close": []}), "signal = nope(close)")
+
+
+def test_compute_rejects_negative_lookback():
+    with pytest.raises(ValueError):
+        compute_formula(pl.DataFrame({"date": [], "code": [], "close": []}), "signal = ts_delay(close, -1)")
+
+
+def test_compute_accepts_platform_thin_ops():
+    df = pl.DataFrame({
+        "date": ["2020-01-01", "2020-01-02"],
+        "code": ["A", "A"],
+        "close": [10.0, 12.0],
+        "volume": [1000.0, 1100.0],
+    })
+    formula = '''
+from factorlab.ops.platform_ops import returns, adv20
+signal = returns(close) + adv20(volume)
+'''
+    result = compute_formula(df, formula)
+    assert result.columns == ["date", "code", "signal"]
