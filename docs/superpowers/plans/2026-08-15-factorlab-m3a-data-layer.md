@@ -945,6 +945,8 @@ git commit -m "feat: add base process processors"
 2. `parse_chain_item` 支持 `key: value` 冒号分隔（spec 2.4 的 `by: industry` 语法），并校验 key 格式、拒绝关键字后位置参数。
 3. `run_process_chain` 前置检查 signal 列存在。
 4. `test_robustzscore_bounds_extremes` 断言修正：计划断言 `abs().max() < 10.0` 与本面板数学冲突——01-02 截面 [1,2,3,100] 中位数 2.5、MAD 1.0，按标准 MAD 公式极端值 100.0 → 65.8，<10 在数学上不可能（实现为计划原文，语义无误）。改为断言极端值仍远小于原始幅度（<100）且非极端观测 z 值在 ±1 附近。
+5. `robustzscore`/`standardize` 对零方差截面输出 null（原实现 MAD=0/std=0 产生 inf/NaN，而 NaN 不是 null、fillna 无法修复，会静默污染下游）。
+6. 其余审查项：`csranknorm` docstring 修正为 `(0, 1)`（rank/(N+1) 最大 N/(N+1)<1）并收紧测试断言 `<= 1.0` → `< 1.0`；`fillna` 错误消息去掉 `industry_mean`（Task 7 才实现，当前列出会误导）；补 multi-asset forward-fill 无跨资产泄漏、`zscore` 别名注册、`winsorize(quantile=1.0)` 拒绝、MAD=0 截面 null 等回归测试。
 
 ---
 
