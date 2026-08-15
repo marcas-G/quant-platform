@@ -312,6 +312,12 @@ def resolve_codes(
     return codes
 ```
 
+**实现修正记录（2026-08-15，实现期发现计划代码缺陷）：**
+1. `resolve_codes` 的 `override` 先尝试 `normalize_code`：合法 6 位代码视为内联 codes（`--universe 600519` 调试便利）；否则按名称/路径解析。计划原代码对纯代码 override 会查 `universes/600519.yaml` 而失败。
+2. rules base 查询默认过滤 `exchange IN (SSE, SZSE)`：否则 BSE 股票混入 universe，违反 M3a spec「BSE 明确不在 v1 集合」。
+3. `min_list_days` SQL 改为 `CAST(list_date AS DATE) <= CAST(? AS DATE) - INTERVAL (?) DAY`：计划原代码对 VARCHAR list_date 直接比较报 DuckDB BinderError。
+4. BSE 错误消息改为「v1 仅支持 SSE、SZSE，不含 BSE」：计划原文自相矛盾。
+
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `pytest tests/test_universe.py -v`
