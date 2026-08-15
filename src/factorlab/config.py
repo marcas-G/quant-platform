@@ -17,6 +17,7 @@ class Settings(BaseSettings):
     default_max_memory: str = "4GB"
     default_chunk_size: int = 1000
     use_float32: bool = True
+    data_dir: Path = Path("data")
     universes_dir: Path = Path.home() / ".factorlab" / "universes"
     default_universe: str | None = None
 

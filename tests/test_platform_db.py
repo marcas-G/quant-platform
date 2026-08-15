@@ -52,6 +52,64 @@ def test_upsert_rollback_on_error(tmp_path):
     assert out["close"][0] == 10.0  # 先前已提交行保留（DELETE 已回滚）
 
 
+def test_connect_returns_usable_write_connection(tmp_path):
+    db = build_db(tmp_path)
+    with db.connect() as con:
+        con.execute("CREATE TABLE t (x INTEGER)")
+        con.execute("INSERT INTO t VALUES (1)")
+        assert con.execute("SELECT count(*) FROM t").fetchone()[0] == 1
+    # 连接随 with 关闭；独立连接可见写入
+    assert db.query("SELECT count(*) AS n FROM t")["n"][0] == 1
+
+
+def test_upsert_on_reuses_connection_and_deduplicates(tmp_path):
+    db = build_db(tmp_path)
+    with db.connect() as con:
+        db.upsert_on(con, "daily", pl.DataFrame({
+            "trade_date": ["20240102", "20240102"], "ts_code": ["A", "B"], "close": [10.0, 20.0],
+        }), keys=["trade_date", "ts_code"])
+        db.upsert_on(con, "daily", pl.DataFrame({
+            "trade_date": ["20240102"], "ts_code": ["A"], "close": [11.0],
+        }), keys=["trade_date", "ts_code"])
+    out = db.query("SELECT * FROM daily ORDER BY ts_code")
+    assert out.height == 2
+    assert out.filter(pl.col("ts_code") == "A")["close"][0] == 11.0  # 默认 dedup=True 去重更新
+
+
+def test_upsert_on_dedup_false_keeps_duplicates(tmp_path):
+    db = build_db(tmp_path)
+    df = pl.DataFrame({"trade_date": ["20240102"], "ts_code": ["A"], "close": [10.0]})
+    with db.connect() as con:
+        db.upsert_on(con, "daily", df, keys=["trade_date", "ts_code"], dedup=False)
+        db.upsert_on(con, "daily", df, keys=["trade_date", "ts_code"], dedup=False)
+    assert db.query("SELECT count(*) AS n FROM daily")["n"][0] == 2  # 纯 INSERT 不去重
+
+
+def test_upsert_on_empty_df_is_noop(tmp_path):
+    db = build_db(tmp_path)
+    with db.connect() as con:
+        db.upsert_on(con, "daily", pl.DataFrame({"trade_date": [], "ts_code": [], "close": []}),
+                     keys=["trade_date", "ts_code"])
+    assert db.list_tables() == []
+
+
+def test_upsert_on_rollback_and_connection_reusable(tmp_path):
+    db = build_db(tmp_path)
+    with db.connect() as con:
+        db.upsert_on(con, "daily", pl.DataFrame({
+            "trade_date": ["20240102"], "ts_code": ["A"], "close": [10.0],
+        }), keys=["trade_date", "ts_code"])
+        with pytest.raises(ValueError, match="daily"):
+            db.upsert_on(con, "daily", pl.DataFrame({
+                "trade_date": ["20240102"], "ts_code": ["A"], "close": ["bad"],
+            }), keys=["trade_date", "ts_code"])
+        # 事务已回滚，同一连接可继续使用
+        db.upsert_on(con, "daily", pl.DataFrame({
+            "trade_date": ["20240103"], "ts_code": ["A"], "close": [11.0],
+        }), keys=["trade_date", "ts_code"])
+    assert db.query("SELECT count(*) AS n FROM daily")["n"][0] == 2
+
+
 def test_query_with_params(tmp_path):
     db = build_db(tmp_path)
     db.upsert("daily", pl.DataFrame({

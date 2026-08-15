@@ -884,7 +884,7 @@ git commit -m "feat: add adjustment audit checks"
 **Interfaces:** `load_manifest(path) -> dict`；`save_manifest(path, manifest)`；
 `RebuildScope(start="20000104", end=None)`；`rebuild_all(db, client, scope, resume=True, manifest_path=None) -> dict`。
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `tests/test_rebuild.py`:
 
@@ -966,12 +966,12 @@ def test_rebuild_requires_token():
                     scope=RebuildScope(), manifest_path=None)
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `pytest tests/test_rebuild.py -v`
 Expected: FAIL — 模块不存在。
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 Add to `src/factorlab/config.py`:
 
@@ -1111,15 +1111,33 @@ def rebuild_all(
 
 （`index_weight` 按月的实现较繁琐，M3b 简化：拉最近一期成分 + 按季度补历史。**实现时若时间紧张可先只拉 `index_daily`**，`index_weight` 在 Task 9 集成阶段补——但计划以完整实现为准，循环每季度最后一个交易日拉 `index_weight`。）
 
-- [ ] **Step 4: Run test to verify it passes**
+**实现修订（Task 5 已落地，与上面示例代码有出入）**：
+- `index_weight` 按**每月**最后一个交易日拉当期成分（4 指数 × 每月 1 次，从交易日
+  骨架按 YYYYMM 分组取末位），manifest 按表记录 completed/failed 并每批落盘；
+  index_daily/index_weight 拉取失败记录进 report 的 failed，不阻塞其他表。
+- 强制要求 A/B（Task 2 审查遗留优化）：`PlatformDB` 新增 `connect()` 与
+  `upsert_on(con, ..., dedup=True)`；行情 7 表循环持单连接（省 ~24ms/批重连 × 47k），
+  `_rebuild_daily_table` 接收 con 参数，单日批 `dedup=False` 纯 INSERT（省 ~80ms/批
+  DELETE 全表扫描）；`upsert()` 公共 API 默认 dedup=True 语义不变。
+- stock_basic 用 `fetch_paged` 分页（list_status=L/D 各一轮）；trade_cal 空返回或
+  无 is_open 列时抛 `ValueError`；`resume=False` 忽略既有 manifest 全量重拉；
+  failed 日期重试成功即从 failed 移除。
+- 测试：fake responder 按 `(api_name, 日期参数)` 精确匹配（计划版按接口名返回首个
+  匹配，多日期数据会串表）；trade_cal 测试数据 exchange 列补足长度（polars 构造
+  DataFrame 不广播 1 元素列）；`db.list_tables() >= {...}` 修正为 `set(...) >= {...}`；
+  另补 PlatformDB connect/upsert_on/dedup 单测（tests/test_platform_db.py）。
+
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `pytest tests/test_rebuild.py -v`
 Expected: PASS（`test_rebuild_requires_token` 需确认 Settings(teajoin_token="") 行为——pydantic-settings 传空串 OK）。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
-git add src/factorlab/config.py src/factorlab/data/rebuild.py tests/test_rebuild.py
+git add src/factorlab/config.py src/factorlab/data/rebuild.py src/factorlab/data/platform_db.py \
+        tests/test_rebuild.py tests/test_platform_db.py docs/interface.md \
+        docs/superpowers/plans/2026-08-16-factorlab-m3b-data-platform.md
 git commit -m "feat: add rebuild orchestration with manifest resume"
 ```
 

@@ -12,6 +12,7 @@ class PlatformDB:
 
     列名沿用 tushare API 原始命名（trade_date/ts_code），与 API 零转换；
     M4 引擎接入时再映射到平台列名（date/code）。
+    批量写入（rebuild/refresh）用 connect() 复用连接 + upsert_on()，避免每批重开连接。
     """
 
     def __init__(self, path: Path) -> None:
@@ -19,6 +20,10 @@ class PlatformDB:
 
     def _connect(self, read_only: bool = False) -> duckdb.DuckDBPyConnection:
         return duckdb.connect(str(self.path), read_only=read_only)
+
+    def connect(self) -> duckdb.DuckDBPyConnection:
+        """打开写连接；rebuild/refresh 批量场景复用，调用方负责 close（或 with）。"""
+        return self._connect()
 
     def query(self, sql: str, params: list | None = None) -> pl.DataFrame:
         """执行 SQL 返回 polars DataFrame；params 为 ? 位置参数绑定。"""
@@ -33,9 +38,26 @@ class PlatformDB:
         """
         if df.height == 0:
             return
-        con: duckdb.DuckDBPyConnection | None = None
+        with self.connect() as con:
+            self.upsert_on(con, table, df, keys)
+
+    def upsert_on(
+        self,
+        con: duckdb.DuckDBPyConnection,
+        table: str,
+        df: pl.DataFrame,
+        keys: list[str],
+        dedup: bool = True,
+    ) -> None:
+        """在给定连接上 upsert（与 upsert() 同语义，复用连接；调用方负责 close）。
+
+        dedup=True 按 keys 先删后插（默认）；dedup=False 纯 INSERT——调用方保证批内
+        无重复（如 rebuild 单日批按 trade_date 唯一），省去全表扫描 DELETE。
+        空 df 为 no-op；失败回滚并抛出带 table/keys 上下文的错误，连接仍可继续使用。
+        """
+        if df.height == 0:
+            return
         try:
-            con = self._connect()
             con.execute("BEGIN TRANSACTION")
             exists = con.execute(
                 "SELECT 1 FROM information_schema.tables "
@@ -46,25 +68,19 @@ class PlatformDB:
             if not exists:
                 con.execute(f'CREATE TABLE "{table}" AS SELECT * FROM df LIMIT 0')
             cols = ", ".join(f'"{c}"' for c in df.columns)
-            if keys:
+            if keys and dedup:
                 key_cols = ", ".join(f'"{k}"' for k in keys)
                 con.execute(
                     f'DELETE FROM "{table}" WHERE ({key_cols}) IN (SELECT {key_cols} FROM df)'
                 )
-                con.execute(f'INSERT INTO "{table}" ({cols}) SELECT {cols} FROM df')
-            else:
-                con.execute(f'INSERT INTO "{table}" ({cols}) SELECT {cols} FROM df')
+            con.execute(f'INSERT INTO "{table}" ({cols}) SELECT {cols} FROM df')
             con.execute("COMMIT")
         except duckdb.Error as exc:
-            if con is not None:
-                try:
-                    con.execute("ROLLBACK")
-                except duckdb.Error:
-                    pass
+            try:
+                con.execute("ROLLBACK")
+            except duckdb.Error:
+                pass
             raise ValueError(f"upsert {table} 失败（keys={keys}）: {exc}") from exc
-        finally:
-            if con is not None:
-                con.close()
 
     def list_tables(self) -> list[str]:
         if not self.path.exists():

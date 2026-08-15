@@ -254,6 +254,36 @@ DuckDB 只读加载；SQL-first 过滤；`date` cast `pl.Date`；数值列 float
 - `adjustment_sensitivity_check(factor_fn, df, views=("raw","qfq","hfq")) -> AuditReport`
   复权口径切换敏感性：各视图因子值相对 raw 的最大绝对差（`max_abs_diff`）。
 
+### `factorlab.data.platform_db.PlatformDB`
+
+`PlatformDB(path)`：duckdb 写库，自动建表、按 keys upsert 去重、完整性自检。
+列名沿用 tushare API 原始命名（trade_date/ts_code），与 API 零转换。
+
+- `connect() -> duckdb.DuckDBPyConnection`：打开写连接；rebuild/refresh 批量场景
+  复用（每批重开连接 ~24ms，47k 批纯开销 ~19 分钟），调用方负责 close（或用 `with`）。
+- `upsert_on(con, table, df, keys, dedup=True)`：在给定连接上 upsert，与 `upsert()`
+  同语义。`dedup=False` 纯 INSERT——调用方保证批内无重复（如 rebuild 单日批按
+  trade_date 唯一），省去全表扫描 DELETE（~80ms/批）。
+- `upsert(table, df, keys)`：公共 API，每次自开连接，`dedup=True` 保持去重语义。
+- `query(sql, params=None) -> pl.DataFrame` / `list_tables()` / `describe(table)` /
+  `integrity_check() -> dict`。
+
+### `factorlab.data.rebuild` 全量重建编排
+
+- `load_manifest(path) -> dict` / `save_manifest(path, manifest)`：断点续传
+  manifest 读写（每批落盘）。结构：`{table: {completed: [dates], failed: [dates]}, last_updated: "YYYYMMDD"}`。
+- `RebuildScope(start="20000104", end=None)`：重建日期范围（end 缺省 20261231）。
+- `rebuild_all(db, client, scope=RebuildScope(), resume=True, manifest_path=None) -> dict`
+  编排时序：trade_cal（is_open=1 过滤，无交易日报错）→ stock_basic（L/D 分页）→
+  行情 7 表按日（DAILY_TABLES，单连接复用，completed 跳过、failed 记录）→ 财报 3 表
+  按报告期（每季末，空返回正常）→ index_daily（4 指数全历史）+ index_weight（每月
+  最后一个交易日当期成分）。manifest_path 缺省 `settings.data_dir / "manifest.json"`。
+  resume=True 跳过 completed、重试 failed（成功后移除）；resume=False 忽略既有
+  manifest 全量重拉。缺 token 抛 `ValueError`。返回
+  `{"tables": {table: {"dates_fetched"/"report_dates"/"month_dates", "rows", "failed"}}}`。
+
+常量：`DAILY_TABLES`（7 行情表）、`FINANCIAL_TABLES`（3 财报表）、`INDEX_CODES`（4 指数）。
+
 ## 5. 测试
 
 运行：
