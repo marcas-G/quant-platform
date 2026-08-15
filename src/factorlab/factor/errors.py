@@ -1,4 +1,4 @@
-class FactorDSLError(Exception):
+class FactorDSLError(ValueError):
     def __init__(self, message: str, line: int | None = None, col: int | None = None) -> None:
         super().__init__(message)
         self.message = message

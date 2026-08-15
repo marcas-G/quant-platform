@@ -62,5 +62,9 @@ def get_op(name: str) -> OperatorDef:
         raise KeyError(f"未知算子: {name}") from exc
 
 
+def has_op(name: str) -> bool:
+    return name in _REGISTRY or name in _ALIASES
+
+
 def list_ops() -> list[OperatorDef]:
     return sorted(_REGISTRY.values(), key=lambda op: op.name)
