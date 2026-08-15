@@ -940,6 +940,12 @@ git add src/factorlab/process/processors.py tests/test_process.py
 git commit -m "feat: add base process processors"
 ```
 
+**Task 6 修正记录（2026-08-15，代码审查）：**
+1. `process/__init__.py` 导入 `processors` 保证注册副作用（原计划空文件导致 Task 9 run_factor 跑 process 链 KeyError）。
+2. `parse_chain_item` 支持 `key: value` 冒号分隔（spec 2.4 的 `by: industry` 语法），并校验 key 格式、拒绝关键字后位置参数。
+3. `run_process_chain` 前置检查 signal 列存在。
+4. `test_robustzscore_bounds_extremes` 断言修正：计划断言 `abs().max() < 10.0` 与本面板数学冲突——01-02 截面 [1,2,3,100] 中位数 2.5、MAD 1.0，按标准 MAD 公式极端值 100.0 → 65.8，<10 在数学上不可能（实现为计划原文，语义无误）。改为断言极端值仍远小于原始幅度（<100）且非极端观测 z 值在 ±1 附近。
+
 ---
 
 ### Task 7: neutralize 处理器
