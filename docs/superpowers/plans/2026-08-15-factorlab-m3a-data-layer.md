@@ -740,6 +740,10 @@ def run_process_chain(df: pl.DataFrame, chain: list[str], ctx=None) -> pl.DataFr
     return result
 ```
 
+**实现修正记录（2026-08-15，实现期发现计划代码缺陷）：**
+1. `register_processor` 需支持裸装饰器 `@register_processor`：计划原代码 `name` 参数会接到被装饰函数本身（`callable`），注册键变成函数对象、注册表为空，`get_processor` 报「未知处理器」。已加 `callable(name)` 分支兼容裸装饰器（以函数名注册），`@register_processor(name=...)` 与 `register_processor(name="zscore")(standardize)` 用法不变。
+2. winsorize/standardize 按 Task 6 语义**立即实现**（非 no-op 占位）：占位处理器会使 `test_run_chain_applies_sequentially` 保持红（raw max abs=1000.0 ≥ 5），违反 CLAUDE.md「提交前全量测试套件通过」。按 Task 6 代码实现这两个处理器后套件全绿；csranknorm/robustzscore/clip/fillna 仍在 Task 6 补齐（整体替换 `processors.py`）。
+
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `pytest tests/test_process.py -v`
