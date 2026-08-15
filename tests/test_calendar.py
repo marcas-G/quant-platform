@@ -20,6 +20,15 @@ def test_trading_calendar_deduplicates(tmp_path):
     assert cal.to_list() == [datetime.date(2024, 1, 2), datetime.date(2024, 1, 3)]
 
 
+def test_trading_calendar_ordered_even_with_reverse_insertion(tmp_path):
+    db = duckdb.connect(tmp_path / "t.duckdb")
+    db.execute("CREATE TABLE daily (date VARCHAR, code VARCHAR)")
+    db.execute("INSERT INTO daily VALUES ('2024-01-03','A'), ('2024-01-02','A')")
+    db.close()
+    cal = trading_calendar(tmp_path / "t.duckdb")
+    assert cal.to_list() == [datetime.date(2024, 1, 2), datetime.date(2024, 1, 3)]
+
+
 def test_trading_calendar_date_range_inclusive(tmp_path):
     db = duckdb.connect(tmp_path / "t.duckdb")
     db.execute("CREATE TABLE daily (date VARCHAR, code VARCHAR)")

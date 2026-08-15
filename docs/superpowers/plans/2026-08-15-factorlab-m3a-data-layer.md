@@ -564,6 +564,9 @@ def fill_suspensions(df: pl.DataFrame, calendar: pl.Series) -> pl.DataFrame:
 2. 连接改用 `with duckdb.connect(..., read_only=True) as con` 上下文管理器（沿用 Task 3 审查修复的 source.py 模式，连接错误路径不残留）。
 3. 测试改用 `datetime.date` 构造日期（polars 1.38 的 `pl.Date` 是 datatype 类，`pl.Date(2024,1,3)` 抛 TypeError）。
 
+**追加修正记录（2026-08-15，代码审查）：**
+4. `fill_suspensions` 全市场规模（5000 代码 × 5000 交易日 ≈ 2500 万行）峰值约 4-5GB（grid + 加载 df + join 哈希 + 输出），Polars 侧不受 DuckDB `memory_limit` 覆盖，且审查实测更大变体触发过段错误。M3a 的 e2e 规模（≤50 代码 ≈ 25 万行）安全；M3b 缓解：grid 的 code 列 cast Categorical（内存约 4-5x）或按代码流式 full join。
+
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `pytest tests/test_calendar.py -v`
