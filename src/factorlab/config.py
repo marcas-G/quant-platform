@@ -1,0 +1,23 @@
+from pathlib import Path
+
+from pydantic_settings import BaseSettings, SettingsConfigDict
+
+
+class Settings(BaseSettings):
+    model_config = SettingsConfigDict(
+        env_prefix="FACTORLAB_",
+        env_file=".env",
+        extra="ignore",
+    )
+
+    quant_db: Path = Path("C:/Users/ThinkPad/quant-data/quant.duckdb")
+    plugin_dir: Path = Path.home() / ".factorlab" / "plugins"
+    teajoin_base_url: str = "https://teajoin.com/g"
+    teajoin_token: str = ""
+    default_max_memory: str = "4GB"
+    default_chunk_size: int = 1000
+    use_float32: bool = True
+
+
+settings = Settings()
+settings.plugin_dir.mkdir(parents=True, exist_ok=True)
