@@ -50,6 +50,7 @@
 - 评估：RankIC / PearsonIC / 十分位收益 / 覆盖度 / 换手率（复用 Rust `quant_core`），
   叠加分层回测累计净值、因子对比、组合合成。
 - 因子与结果本地存储（parquet + JSON 摘要 + 算子版本快照）。
+- 运行时内存护栏：SQL-first、float32、分块执行、RSS 熔断、独立评估进程。
 - CLI：`run / list / show / compare / serve / data refresh / op list / op doc /
   op add / op remove`。
 - Web 可视化：FastAPI + Jinja2 + Plotly。
@@ -75,6 +76,7 @@
 | 数据范围 | 自选股票池；全 A 是可选范围而非默认加载量 |
 | 历史深度 | DSL 内 `date.start/end` 可调 |
 | 过滤位置 | universe 是 DSL 一等公民（显式列表或规则），数据层按需拉取 |
+| 内存策略 | SQL-first + float32 + 分块执行 + 独立评估进程；CLI 可设内存/分块预算，超限拒绝启动 |
 | DSL 文件 | YAML 元数据 + `expr_codegen` 受限 Python 因子块（赋值/def/条件，无循环） |
 | 算子集 | 复用 `polars_ta` wq/ta/tdx/talib 算子族 + 平台别名/薄封装；Alpha101/191 兼容 |
 | 新算子 | 公式内 `def`/白名单 `import` + Python 插件注册表，带版本钉住 |
@@ -126,6 +128,7 @@ Python 3.13 / Windows 可用性与当前环境兼容性。
 - 算子注册表、用户插件目录 `~/.factorlab/plugins` 的加载/启停、别名映射、
   平台特有算子（returns/vwap/adv20 等薄封装）与版本快照。
 - 评估编排：调 `quant_core`，外加分层回测、因子对比、组合合成。
+- 运行时资源治理：SQL-first 取数、float32 列裁剪、分块执行、RSS 熔断、独立评估进程。
 - CLI、Web、结果持久化与版本追溯。
 
 ## 5. 架构
@@ -162,6 +165,7 @@ quant-platform/
 │   ├── engine/
 │   │   ├── compute.py       # 组装数据 -> expr_codegen -> 因子面板
 │   │   ├── partitions.py    # 记录/校验 TS/CS/GP 分区，防未来函数断言
+│   │   ├── memory.py        # 内存预算、RSS 监控、分块计划、超限熔断
 │   │   └── forward.py       # 前向收益计算与周频对齐
 │   ├── eval/
 │   │   ├── base.py          # Metric 抽象接口
@@ -194,7 +198,7 @@ quant-platform/
 
 依赖（Python 3.13）：`polars`、`pandas`、`numpy`、`duckdb`、`pyarrow`、`pyyaml`、
 `expr_codegen`、`polars_ta`、`sympy`、`typer`、`fastapi`、`uvicorn`、`jinja2`、
-`plotly`、`requests`、`pydantic-settings`，以及已安装的 `quant_core`。
+`plotly`、`requests`、`pydantic-settings`、`psutil`，以及已安装的 `quant_core`。
 `TA-Lib` 作为可选依赖，缺省时 `polars_ta.ta/tdx` 仍可用；需要 talib 精确对拍的
 `talib` 族算子会给出明确提示。
 
@@ -204,19 +208,46 @@ quant-platform/
 factorlab run spec.yaml
   → 解析 YAML Spec 与 formula Python 代码块
   → AST 白名单校验（无循环/副作用/外部 IO；算子名与列名预检）
+  → 内存预算预估（行数×列数×dtype×分组系数），超限则拒绝
   → 解析 universe（显式列表 / 规则过滤，查 stock_basic_tushare）
   → 加载数据：本地 quant.duckdb 只读，DuckDB SQL 过滤后转为 Polars LazyFrame；
     缺日期段时 teajoin 增量补到平台缓存库
-  → expr_codegen 对 TS/CS/GP 表达式分层，生成 Polars 计算图并执行；
+  → expr_codegen 对 TS/CS/GP 表达式分层，生成 Polars 计算图并按 chunk 执行；
     嵌套分区自动中间物化，时序窗口只回溯
   → 处理管线：winsorize → zscore/neutralize 等 process 链
   → 计算前向收益（daily close），按周频对齐（匹配 Rust 评估语义）
-  → 评估：quant_core（IC/十分位/换手）+ 分层回测 + 本地轻量指标
+  → 先落 parquet，再由独立进程调 quant_core 评估 + 分层回测 + 本地轻量指标
   → 结果落盘：parquet（因子值）+ JSON（摘要/指标/回测曲线/算子与依赖版本快照）
   → factorlab serve 起 Web 展示
 ```
 
 平台不修改 `quant-data` 下任何文件；本地 DuckDB 一律只读打开。
+
+### 6.1 运行时内存预算与低内存执行
+
+当前目标机器约 16 GB 物理内存且无页面文件（`SizeStoredInPagingFiles=0`），
+因此平台把“避免默认爆内存”作为运行时硬约束，而不是依赖用户自觉。
+
+执行策略：
+
+- **SQL-first 取数**：先用 DuckDB 按 `date / universe / 需要的列` 过滤和聚合，
+  再转 Polars LazyFrame；禁止无过滤地把 `quant.duckdb.daily` 整体 `fetchdf()` 或 `.pl()`。
+- **列裁剪与 dtype**：因子面板默认 `float32`；只读取因子表达式实际引用的 OHLCV 字段，
+  用完的原始列和中间列立即释放。
+- **DuckDB 内存上限**：每次只读连接设置 `memory_limit`（默认 4GB）和 `threads`（默认 2），
+  避免 DuckDB 抢占系统 commit headroom。
+- **Arrow 内存池**：进程启动时设置 `pyarrow.set_memory_pool(pyarrow.system_memory_pool())`。
+- **分块计划**：TS/EL 类因子按股票代码分批；含 CS/GP 的因子在 TS/EL 中间结果落盘后，
+  再按日期分批做横截面。长窗口不直接在全市场宽表上连续滚动。
+- **独立评估进程**：因子计算与 `quant_core` 评估分两个进程。先写 parquet 结果，
+  再由评估进程读 parquet 计算 IC/分层/换手，避免两个阶段峰值叠加。
+- **运行前预算**：`engine/memory.py` 根据 `行数 × 列数 × dtype × 分组系数` 预估峰值；
+  超过 `--max-memory` 时拒绝启动，提示缩小 universe、日期范围或换 chunk size。
+- **运行中熔断**：用 `psutil` 监控 RSS，达到预算阈值后中止并给出明确错误，
+  不等待系统级 `MemoryError` 或进程被 Windows 杀死。
+
+CLI 默认值：`--max-memory 4GB`、`--chunk-size 1000`、`--float32` 开启；
+用户可显式调高，但超出机器实际可用内存时给出警告并要求 `--force`。
 
 ## 7. DSL 规范
 
@@ -408,7 +439,7 @@ v1 指标：
 
 | 命令 | 说明 |
 |------|------|
-| `factorlab run <spec>` | 解析、计算、处理、评估、落盘 |
+| `factorlab run <spec> [--max-memory 4GB] [--chunk-size 1000] [--float32/--float64] [--force]` | 解析、计算、处理、评估、落盘；超预算默认拒绝 |
 | `factorlab lint <spec>` | 预检 YAML/AST/算子，报告源码位置与相似名称建议 |
 | `factorlab list` | 列出已保存因子与最近运行 |
 | `factorlab show <name>` | 查看某因子摘要与指标 |
@@ -436,6 +467,8 @@ v1 指标：
 - 算子类别错误：如把横截面算子当元素级使用，报错并给出正确前缀用法。
 - 空 universe / 无有效股票：报错并提示检查 `codes` 或 `rules`。
 - 数据缺失：提示该日期段本地缺失，可运行 `factorlab data refresh`。
+- 内存预算不足：在启动前给出预估峰值、当前 `--max-memory` 和建议的缩小方案；
+  运行中 RSS 接近阈值时中止并提示，而不是等待系统内存错误。
 - teajoin 限流/网络错误：指数退避重试（上限 3 次），保留进度可断点续传。
 - 评估数据不足（有效行过少）：返回指标为 null 并在摘要中标注，不中断流程。
 
@@ -451,6 +484,8 @@ v1 指标：
   在相同输入下对拍，误差阈值内一致。
 - 防未来函数测试：构造停牌/缺失数据，验证滚动窗口与前瞻收益不串期，
   并断言执行计划不含未来行引用。
+- 内存护栏测试：用预算预估器验证超限拒绝、chunk 计划正确、RSS 熔断触发；
+  小样本下确认 TS/EL 分块结果与全量结果一致。
 - 处理管线单测：每个 process 步骤的截面统计性质。
 - 评估集成测试：小样本调 `quant_core.evaluate_factor`，核对返回结构。
 - 插件生命周期测试：`op add/remove/list/doc`，含冲突、AST 拒绝、版本快照保留。
