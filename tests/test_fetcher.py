@@ -241,3 +241,28 @@ def test_fetch_paged_empty_first_page(monkeypatch):
     df = client.fetch_paged("daily", {"trade_date": "20200101"}, page_size=5000)
     assert pages == [0]
     assert df.height == 0
+
+
+def test_fetch_normalizes_empty_strings_to_null(monkeypatch):
+    """tushare 缺失数值返回 \"\"：空串转 null，全数值列推断为 Float64。"""
+    client = _client(monkeypatch, lambda url, json=None, timeout=30: _ok_response(
+        items=[["000001.SZ", "20240102", "10.0", "1.0"], ["000002.SZ", "20240102", "", ""]],
+        fields=["ts_code", "trade_date", "close", "turnover"],
+    ))
+    df = client.fetch("daily", {"trade_date": "20240102"})
+    assert df.schema["close"] == pl.Float64
+    assert df["close"].to_list() == [10.0, None]
+    assert df["turnover"].to_list() == [1.0, None]
+    assert df["trade_date"].to_list() == ["20240102", "20240102"]  # 无空串的标识列保持字符串
+
+
+def test_fetch_keeps_real_string_columns(monkeypatch):
+    """含非数值文本的列保持 String（空串仍转 null），不误伤真实字符串字段。"""
+    client = _client(monkeypatch, lambda url, json=None, timeout=30: _ok_response(
+        items=[["000001.SZ", "平安银行", "银行", ""], ["000002.SZ", "万科A", "", ""]],
+        fields=["ts_code", "name", "industry", "list_date"],
+    ))
+    df = client.fetch("stock_basic", {"list_status": "L"})
+    assert df.schema["name"] == pl.String
+    assert df["name"].to_list() == ["平安银行", "万科A"]
+    assert df["industry"].to_list() == ["银行", None]

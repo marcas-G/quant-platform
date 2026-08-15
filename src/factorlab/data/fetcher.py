@@ -72,9 +72,22 @@ class TeaJoinClient:
             if not data:
                 return pl.DataFrame()
             try:
-                return pl.DataFrame(data.get("items") or [], schema=data["fields"], orient="row")
+                frame = pl.DataFrame(data.get("items") or [], schema=data["fields"], orient="row")
             except Exception as exc:
                 raise TeaJoinError(api_name, f"返回数据与字段不匹配: {exc}") from exc
+            if frame.height:
+                for c in frame.columns:
+                    if frame.schema[c] != pl.String:
+                        continue
+                    replaced = frame[c].replace("", None)
+                    if replaced.null_count() == frame[c].null_count():
+                        continue  # 无空串，原样保留（避免把 trade_date/symbol 等标识列转成数值）
+                    casted = replaced.cast(pl.Float64, strict=False)
+                    if casted.null_count() == replaced.null_count():
+                        frame = frame.with_columns(casted.alias(c))  # 全数值列 → Float64
+                    else:
+                        frame = frame.with_columns(replaced.alias(c))  # 真字符串 → 空串转 null
+            return frame
         raise TeaJoinError(api_name, f"重试 {self.max_retries} 次仍失败: {last_exc}")
 
     def fetch(self, api_name: str, params: dict, fields: list[str] | None = None) -> pl.DataFrame:

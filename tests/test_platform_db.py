@@ -37,6 +37,21 @@ def test_upsert_empty_df_is_noop(tmp_path):
     assert db.list_tables() == []
 
 
+def test_upsert_rollback_on_error(tmp_path):
+    db = build_db(tmp_path)
+    db.upsert("daily", pl.DataFrame({
+        "trade_date": ["20240102"], "ts_code": ["A"], "close": [10.0],
+    }), keys=["trade_date", "ts_code"])
+    # 同 key 批次插入中途失败：DELETE 与 INSERT 同事务，整体回滚
+    with pytest.raises(ValueError, match="daily"):
+        db.upsert("daily", pl.DataFrame({
+            "trade_date": ["20240102"], "ts_code": ["A"], "close": ["bad"],
+        }), keys=["trade_date", "ts_code"])
+    out = db.query("SELECT * FROM daily")
+    assert out.height == 1
+    assert out["close"][0] == 10.0  # 先前已提交行保留（DELETE 已回滚）
+
+
 def test_query_with_params(tmp_path):
     db = build_db(tmp_path)
     db.upsert("daily", pl.DataFrame({
@@ -156,5 +171,45 @@ def test_integrity_skips_missing_dependency(tmp_path):
     db = build_db(tmp_path)
     report = db.integrity_check()
     assert report["daily"]["calendar_gaps"]["passed"] is True
+    assert report["daily"]["calendar_gaps"]["skipped"] is True
     assert "跳过" in report["daily"]["calendar_gaps"]["details"][0]
     assert report["adj_factor"]["adj_factor_valid"]["passed"] is True
+    assert report["adj_factor"]["adj_factor_valid"]["skipped"] is True
+
+
+def test_integrity_skipped_when_dep_missing(tmp_path):
+    db = build_db(tmp_path)
+    db.upsert("daily", pl.DataFrame({
+        "trade_date": ["20240102"], "ts_code": ["A"], "close": [10.0],
+    }), keys=["trade_date", "ts_code"])
+    report = db.integrity_check()
+    assert report["daily"]["calendar_gaps"]["skipped"] is True      # 无 trade_cal
+    assert report["daily"]["duplicate_rows"]["skipped"] is False
+    assert report["daily"]["pct_chg_consistency"]["skipped"] is True  # daily 无 pct_chg 列，结构不匹配
+
+
+def test_integrity_all_green(tmp_path):
+    db = build_db(tmp_path)
+    db.upsert("trade_cal", pl.DataFrame({"cal_date": ["20240102", "20240103"], "is_open": [1, 1]}), keys=[])
+    db.upsert("daily", pl.DataFrame({
+        "trade_date": ["20240102", "20240103"],
+        "ts_code": ["A", "A"],
+        "close": [10.0, 11.0],
+        "pct_chg": [0.0, 10.0],  # (11/10-1)*100 = 10.0
+    }), keys=["trade_date", "ts_code"])
+    db.upsert("adj_factor", pl.DataFrame({
+        "trade_date": ["20240102", "20240103"], "ts_code": ["A", "A"], "adj_factor": [1.0, 1.0],
+    }), keys=["trade_date", "ts_code"])
+    db.upsert("stk_limit", pl.DataFrame({
+        "trade_date": ["20240102", "20240103"], "ts_code": ["A", "A"],
+        "up_limit": [11.0, 11.0], "down_limit": [5.0, 5.0],
+    }), keys=["trade_date", "ts_code"])
+    db.upsert("daily_basic", pl.DataFrame({
+        "trade_date": ["20240102", "20240103"], "ts_code": ["A", "A"], "total_mv": [100.0, 110.0],
+    }), keys=["trade_date", "ts_code"])
+    report = db.integrity_check()
+    assert set(report) == {"daily", "adj_factor", "daily_basic"}
+    for rules in report.values():
+        for entry in rules.values():
+            assert entry["passed"] is True
+            assert entry["skipped"] is False

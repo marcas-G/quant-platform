@@ -29,10 +29,14 @@ class PlatformDB:
         """插入或替换：按 keys 去重（先删后插）；表不存在时按 df schema 自动建表。
 
         keys 为空时普通 INSERT（保留重复行，供 duplicate 检测）；空 df 为 no-op。
+        建表与插入在同一事务内，失败整体回滚并抛出带 table/keys 上下文的错误。
         """
         if df.height == 0:
             return
-        with self._connect() as con:
+        con: duckdb.DuckDBPyConnection | None = None
+        try:
+            con = self._connect()
+            con.execute("BEGIN TRANSACTION")
             exists = con.execute(
                 "SELECT 1 FROM information_schema.tables "
                 "WHERE table_schema = 'main' AND table_name = ?",
@@ -44,14 +48,23 @@ class PlatformDB:
             cols = ", ".join(f'"{c}"' for c in df.columns)
             if keys:
                 key_cols = ", ".join(f'"{k}"' for k in keys)
-                con.execute("BEGIN TRANSACTION")
                 con.execute(
                     f'DELETE FROM "{table}" WHERE ({key_cols}) IN (SELECT {key_cols} FROM df)'
                 )
                 con.execute(f'INSERT INTO "{table}" ({cols}) SELECT {cols} FROM df')
-                con.execute("COMMIT")
             else:
                 con.execute(f'INSERT INTO "{table}" ({cols}) SELECT {cols} FROM df')
+            con.execute("COMMIT")
+        except duckdb.Error as exc:
+            if con is not None:
+                try:
+                    con.execute("ROLLBACK")
+                except duckdb.Error:
+                    pass
+            raise ValueError(f"upsert {table} 失败（keys={keys}）: {exc}") from exc
+        finally:
+            if con is not None:
+                con.close()
 
     def list_tables(self) -> list[str]:
         if not self.path.exists():
@@ -80,22 +93,24 @@ class PlatformDB:
         ]
 
     def integrity_check(self) -> dict[str, dict]:
-        """完整性自检：每规则 {passed, failed, details}；缺依赖表或结构不匹配时跳过。
+        """完整性自检：每规则 {passed, failed, details, skipped}；缺依赖表或结构不匹配时 skipped=True。
 
         规则：日历缺日/重复行/pct_chg 自洽/adj_factor 有效/stk_limit 边界/市值有效。
         """
         tables = set(self.list_tables())
         report: dict[str, dict] = {}
         for rule_name, report_key, deps, fn in self._rules():
-            entry = {"passed": True, "failed": 0, "details": []}
+            entry = {"passed": True, "failed": 0, "details": [], "skipped": False}
             missing = [d for d in deps if d not in tables]
             if missing:
+                entry["skipped"] = True
                 entry["details"] = [f"依赖表 {'、'.join(missing)} 不存在，跳过"]
                 report.setdefault(report_key, {})[rule_name] = entry
                 continue
             try:
                 fn(entry)
             except duckdb.Error:
+                entry["skipped"] = True
                 entry["details"] = [f"{rule_name} 检查失败（表结构或数据不兼容），跳过"]
             report.setdefault(report_key, {})[rule_name] = entry
         return report
@@ -149,15 +164,11 @@ class PlatformDB:
     def _check_stk_limit(self, entry: dict) -> None:
         """stk_limit 边界：close 不超当日涨跌停价（±0.01% 容差）。"""
         with self._connect(read_only=True) as con:
-            try:
-                n = con.execute("""
-                    SELECT count(*) FROM daily d
-                    JOIN stk_limit s ON d.trade_date = s.trade_date AND d.ts_code = s.ts_code
-                    WHERE d.close > s.up_limit * 1.0001 OR d.close < s.down_limit * 0.9999
-                """).fetchone()[0]
-            except duckdb.Error:
-                entry["details"] = ["stk_limit 表结构不匹配，跳过"]
-                return
+            n = con.execute("""
+                SELECT count(*) FROM daily d
+                JOIN stk_limit s ON d.trade_date = s.trade_date AND d.ts_code = s.ts_code
+                WHERE d.close > s.up_limit * 1.0001 OR d.close < s.down_limit * 0.9999
+            """).fetchone()[0]
         entry["failed"] = n
         entry["passed"] = n == 0
         entry["details"] = [f"{n} 行 close 超涨跌停边界"] if n else []
