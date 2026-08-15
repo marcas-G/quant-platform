@@ -1231,10 +1231,9 @@ git commit -m "feat: add forward returns and weekly alignment"
 
 **实现备注（Task 8 落地后修订，与原规格差异）：**
 - 测试改用 `datetime.date` 而非 `pl.Date(...)`（polars 1.38 的 `pl.Date` 不能构造实例）。
-- `align_weekly` 分组键由 `iso_year()` 改为日历年 `dt.year()`：2020-12-31 与 2021-01-01
-  同属 ISO 2020-W53，`iso_year` 分组会把两者合并为一行，与测试断言 height==2（跨年不合并）
-  矛盾；改为 (日历年, ISO 周) 分组，跨年 ISO 周在年边界拆分。因子面板与 forward 面板
-  用同一函数对齐，语义自洽；与 Rust `factor_weekly` 的边界周对拍留待交叉验证里程碑复核。
+- 周频对齐最终采用 ISO 周（`dt.iso_year()` + `dt.week()`）：(年, ISO 周号) 组合键会让周号 1
+  一年出现两次，2024 等年份首个周频 bar 被静默丢弃（spec 审查发现）；ISO 语义与 factor_weekly
+  （tushare weekly，年边界不拆周）一致。跨年日期同属 ISO 周时合并为该周最后交易日。
 - `compute_forward_returns` 保持 `shift(-h)`（spec 2.5：h 为补全后序列索引差）；
   原 value 测试在 5 行面板断言 row0 = close[1/8]/close[1/2]-1 存在 off-by-one
   （t+5 需第 6 行），测试已补 1/9 行改为 close[1/9]/close[1/2]-1。
