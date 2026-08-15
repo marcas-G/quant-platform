@@ -102,7 +102,20 @@ def neutralize(df: pl.DataFrame, ctx, by: str = "market") -> pl.DataFrame:
             raise ValueError(f"{missing} 只股票缺少行业信息，无法 neutralize(by=industry)")
         return enriched.with_columns((x - x.mean().over(["date", "industry"])).alias(SIGNAL)).drop("industry")
     if by == "size":
-        mv = ctx.db.execute("SELECT trade_date, ts_code, total_mv FROM daily_basic").pl().with_columns(
+        # SQL-first 纪律：daily_basic 全表 1714 万行（16GB 机器全量拉取段错误），
+        # 必须按面板自身日期范围+代码过滤；ts_code 与面板 code 统一为去后缀形式
+        # （真实库 ts_code 为纯数字 '000001'，单测为 'A.SZ'，split_part 两者兼容）
+        date_min, date_max = df["date"].min(), df["date"].max()
+        codes = df["code"].unique().to_list()
+        # trade_date 是 'YYYYMMDD' 字符串：与面板 pl.Date 范围比较需统一格式
+        # （面板 date 为 pl.Date 时 min() 返回 datetime.date；为 str 时去掉 '-'）
+        d_min = date_min.strftime("%Y%m%d") if hasattr(date_min, "strftime") else str(date_min).replace("-", "")
+        d_max = date_max.strftime("%Y%m%d") if hasattr(date_max, "strftime") else str(date_max).replace("-", "")
+        mv = ctx.db.execute(
+            "SELECT trade_date, ts_code, total_mv FROM daily_basic"
+            " WHERE trade_date BETWEEN ? AND ? AND split_part(ts_code, '.', 1) IN (SELECT unnest(?))",
+            [d_min, d_max, codes],
+        ).pl().with_columns(
             # trade_date 'YYYYMMDD' → 面板 date 同 dtype（run_factor 面板为 pl.Date；单测面板为 str），
             # join key 必须与面板一致，否则 SchemaError
             pl.col("trade_date").str.strptime(pl.Date, "%Y%m%d").cast(df.schema["date"]).alias("date"),

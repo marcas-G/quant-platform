@@ -323,6 +323,12 @@ def resolve_codes(
 6. `codes` 分支与 `stock_basic_tushare.symbol` 取交集：库中不存在的内联代码被过滤，空结果报「universe 无有效股票」——符合 M3a spec §5「空 universe 报错 + 检查 codes 拼写」。
 7. `min_list_days` 拒绝负值；`_resolve_source` 兼容尾部 `.yaml`；`normalize_code` 拒绝多段代码（`000001.SZ.X`）；内联 codes 去重排序。
 
+**追加修正记录（2026-08-16，M3a 最终集成审查）：**
+8. `min_list_days` 的 `list_date` 按真实库格式 `strptime('%Y%m%d')`：真实库
+   `stock_basic_tushare.list_date` 为 `'19910403'`（YYYYMMDD 字符串），原
+   `CAST(list_date AS DATE)` 抛 ConversionException；测试假表曾用 ISO 格式
+   （`'1991-04-03'`）未暴露，已同步为真实格式（含 test_run_factor 假表）。
+
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `pytest tests/test_universe.py -v`
@@ -1101,6 +1107,11 @@ git commit -m "feat: add neutralize and industry-mean fillna"
 - 行业缺失路径：股票不在 `stock_basic_tushare` → `ValueError`
   （`test_neutralize_industry_missing_info`）；fillna industry_mean 对缺失行业
   不做报错（null 组内填自身均值）。
+- 最终集成审查修正：`neutralize(by=size)` 的 daily_basic 查询改为按面板日期范围+代码过滤
+  （原全表拉取 1714 万行在 16GB 机器段错误，SQL-first 纪律）。过滤键 `ts_code` 用
+  `split_part(ts_code,'.',1)` 统一去后缀（真实库 ts_code 为纯数字、单测为 `A.SZ` 两种
+  格式兼容）；日期范围由面板 `date` 列推导并统一为 `'YYYYMMDD'` 字符串（pl.Date→strftime、
+  str→replace 去 `-` 两态兼容）。
 
 ---
 
@@ -1482,6 +1493,11 @@ git commit -m "feat: add run_factor pipeline assembly"
    `duckdb.IOException` → `FileNotFoundError` 友好报错（`test_run_factor_missing_db`）；
    `RunContext.universe_override` docstring、`resolve_codes` docstring（去掉未接线的
    「全局默认」层表述）。
+10. `_formula_columns` 将赋值中间变量（非下划线）纳入 defined（Assign `targets[0]` /
+    AnnAssign `target`，注解名另排除），避免 `ret = ts_delay(close, 1); signal = ret`
+    把 ret 误判为数据列报「未知列名: ['ret']」（误导——ret 是中间变量不是数据列）。
+    实现注意：Python 3.13 内联 comprehension 的 if 条件里用三元表达式会误报
+    NameError，故拆成两个集合写；回归测试 `test_formula_columns_assign_intermediate_variable`。
 
 ---
 

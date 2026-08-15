@@ -63,3 +63,28 @@ formula: |
     spec = load_spec(spec_path)
     result = run_factor(spec, RunContext(db_path=real_db_path, output_dir=tmp_path / "out2"))
     assert result.panel.height > 0
+
+
+@pytest.mark.integration
+def test_e2e_neutralize_size(real_db_path, tmp_path):
+    # 回归：neutralize(by=size) 在真实库跑通不崩（原实现全表拉取 daily_basic 1714 万行，
+    # 16GB 机器段错误 exit 139）；回归目标是崩溃/段错误，不是统计性质——5 只股票
+    # N=5 时每十分位桶 1 只，demean 恒 0 是已知固有属性（计划文档 Task 7 实现备注）。
+    spec_path = tmp_path / "e2e_size.yaml"
+    spec_path.write_text("""
+name: e2e_size
+category: custom
+direction: 1
+universe:
+  codes: ["000001.SZ", "600519.SH", "000002.SZ", "600036.SH", "601318.SH"]
+date:
+  start: "2024-01-01"
+  end: "2024-03-31"
+process:
+  - neutralize(by=size)
+formula: |
+  signal = close / open - 1
+""", encoding="utf-8")
+    result = run_factor(load_spec(spec_path), RunContext(db_path=real_db_path, output_dir=tmp_path / "out_size"))
+    assert "signal" in result.panel.columns
+    assert result.panel.height > 0
