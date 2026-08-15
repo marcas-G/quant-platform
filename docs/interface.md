@@ -43,7 +43,7 @@ formula: |
 - `date.start` / `date.end`：可选，`YYYY-MM-DD`。
 - `target`：`forward_return_5d | forward_return_20d`，默认 `forward_return_5d`。
 - `process`：可选字符串列表。
-- `operators`：可选 DSL 宏映射。
+- `operators`：可选 DSL 宏映射。**注意：当前未实现消费（M4 接入），spec 中声明会被静默忽略；公式引用宏名会报未知算子。**
 - `formula` 或 `factors`：二选一。
 - 使用 `factors` 时必须提供 `combine`。
 - `combine.method`：`ic_weight | equal_weight | weight_sum`；`weight_sum` 时

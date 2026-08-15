@@ -60,10 +60,19 @@ def _formula_columns(formula: str) -> list[str]:
     # ast.arg 在 Python 3.13 的属性是 .arg（.name 为 3.14+ 别名）
     defined = {n.name if isinstance(n, ast.FunctionDef) else n.arg
                for n in ast.walk(tree) if isinstance(n, (ast.FunctionDef, ast.arg))}
+    # 赋值中间变量（非下划线）也是 defined：Assign 的 targets 是列表、AnnAssign 的 target 是单个。
+    # 注意：Python 3.13 内联 comprehension 的 if 条件里用三元表达式会误报 NameError，故拆成两个集合
+    defined |= {n.targets[0].id for n in ast.walk(tree)
+                if isinstance(n, ast.Assign) and n.targets and isinstance(n.targets[0], ast.Name)}
+    defined |= {n.target.id for n in ast.walk(tree)
+                if isinstance(n, ast.AnnAssign) and isinstance(n.target, ast.Name)}
+    # AnnAssign 注解名（如 ret: float = ... 的 float）也不是数据列
+    annotated = {sub.id for n in ast.walk(tree) if isinstance(n, ast.AnnAssign)
+                 for sub in ast.walk(n.annotation) if isinstance(sub, ast.Name)}
     imported = {a.asname or a.name for n in ast.walk(tree) if isinstance(n, (ast.Import, ast.ImportFrom)) for a in n.names}
     called = {n.func.id for n in ast.walk(tree) if isinstance(n, ast.Call) and isinstance(n.func, ast.Name)}
     names = {n.id for n in ast.walk(tree) if isinstance(n, ast.Name)}
-    cols = names - defined - imported - called - _ELEMENTWISE_COLS - {"signal"}
+    cols = names - defined - imported - called - annotated - _ELEMENTWISE_COLS - {"signal"}
     return sorted(c for c in cols if not c.startswith("_") and c not in {"date", "code"})
 
 

@@ -66,7 +66,8 @@ def _codes_from_rules(rules: dict[str, Any], db: duckdb.DuckDBPyConnection, date
             raise ValueError(f"min_list_days 不能为负: {min_days}")
         if date_start is None:
             date_start = db.execute("SELECT min(date) FROM daily").fetchone()[0]
-        sql += " AND CAST(list_date AS DATE) <= CAST(? AS DATE) - INTERVAL (?) DAY"
+        # 真实库 list_date 为 'YYYYMMDD' 字符串（如 '19910403'），strptime 解析；ISO 直接 CAST 会抛 ConversionException
+        sql += " AND strptime(list_date, '%Y%m%d') <= CAST(? AS DATE) - INTERVAL (?) DAY"
         params.extend([date_start, min_days])
     rows = db.execute(sql, params).fetchall()
     return sorted(r[0] for r in rows)

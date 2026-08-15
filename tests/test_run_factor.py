@@ -17,7 +17,7 @@ def build_db(tmp_path):
             db.execute("INSERT INTO daily VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                        (d, base + i, base + i + 0.5, base + i - 0.5, base + i + 1, 1000.0, 1e6, 0.01, 0.1, code))
     db.execute("CREATE TABLE stock_basic_tushare (symbol VARCHAR, ts_code VARCHAR, exchange VARCHAR, list_date VARCHAR, industry VARCHAR)")
-    db.execute("INSERT INTO stock_basic_tushare VALUES ('A', 'A.SZ', 'SZSE', '1991-01-01', '银行'), ('B', 'B.SH', 'SSE', '2001-01-01', '白酒')")
+    db.execute("INSERT INTO stock_basic_tushare VALUES ('A', 'A.SZ', 'SZSE', '19910101', '银行'), ('B', 'B.SH', 'SSE', '20010101', '白酒')")
     db.execute("CREATE TABLE st_status (code VARCHAR, date DATE, is_st BOOLEAN)")
     db.close()
 
@@ -225,3 +225,11 @@ signal = abs(_vol) + _mom * open - if_else(close > open, 1, 0)
 def test_formula_columns_excludes_date_code():
     assert _formula_columns("signal = close / open - 1") == ["close", "open"]
     assert _formula_columns("signal = close / date") == ["close"]
+
+
+def test_formula_columns_assign_intermediate_variable():
+    # 回归：赋值中间变量（非下划线，如 ret）不能误判为数据列（否则 load_daily 报「未知列名: ['ret']」）
+    assert _formula_columns("ret = ts_delay(close, 1)\nsignal = ret") == ["close"]
+    assert _formula_columns("ret = close * 2\nsignal = ret + open") == ["close", "open"]
+    # AnnAssign 目标名同样纳入 defined（target 为单个，非 targets 列表）
+    assert _formula_columns("ret: float = close * 2\nsignal = ret") == ["close"]

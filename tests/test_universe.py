@@ -10,9 +10,9 @@ def db(tmp_path):
     conn = duckdb.connect(tmp_path / "t.duckdb")
     conn.execute("CREATE TABLE stock_basic_tushare (symbol VARCHAR, ts_code VARCHAR, exchange VARCHAR, list_date VARCHAR, industry VARCHAR)")
     conn.execute("""INSERT INTO stock_basic_tushare VALUES
-        ('000001', '000001.SZ', 'SZSE', '1991-04-03', '银行'),
-        ('600519', '600519.SH', 'SSE', '2001-08-27', '白酒'),
-        ('830001', '830001.BJ', 'BSE', '2020-01-01', '其他')""")
+        ('000001', '000001.SZ', 'SZSE', '19910403', '银行'),
+        ('600519', '600519.SH', 'SSE', '20010827', '白酒'),
+        ('830001', '830001.BJ', 'BSE', '20200101', '其他')""")
     conn.execute("CREATE TABLE st_status (code VARCHAR, snap_date DATE, is_st BOOLEAN, st_type VARCHAR, name VARCHAR)")
     conn.execute("""INSERT INTO st_status VALUES
         ('000001', DATE '2026-01-05', FALSE, '', ''),
