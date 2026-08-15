@@ -25,22 +25,17 @@ def compute_forward_returns(
 
 
 def align_weekly(df: pl.DataFrame) -> pl.DataFrame:
-    """按 code 对齐到周频：保留每（code, 日历年, ISO 周）组内最后一个交易日的行。
-
-    跨年 ISO 周在年边界拆分：如 ISO 2020-W53 覆盖 2020-12-28 至 2021-01-03，
-    其中 2020-12-31 与 2021-01-01 分属不同日历年，各自保留为独立周组，
-    避免不同年份的观测被合并到同一周。
-    """
+    """对齐到 ISO 周最后一个交易日（周内 date 最大值；ISO 周跨年日期同周合并）。"""
     result = df.sort(["code", "date"]).with_columns(
-        pl.col("date").dt.year().alias("_year"),
+        pl.col("date").dt.iso_year().alias("_iso_year"),
         pl.col("date").dt.week().alias("_week"),
     )
     # 分两步 with_columns：同一批内新建的别名对 .over 的 by 列不可见（polars 1.38）
     result = result.with_columns(
-        pl.col("date").max().over(["code", "_year", "_week"]).alias("_week_end"),
+        pl.col("date").max().over(["code", "_iso_year", "_week"]).alias("_week_end"),
     )
     return (
         result.filter(pl.col("date") == pl.col("_week_end"))
-        .drop(["_year", "_week", "_week_end"])
+        .drop(["_iso_year", "_week", "_week_end"])
         .sort(["code", "date"])
     )

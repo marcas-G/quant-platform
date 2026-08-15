@@ -95,14 +95,31 @@ def test_align_weekly_last_trading_day():
 
 
 def test_align_weekly_cross_year_iso_week():
-    # 2021-01-01 属于 ISO 2020 年第 53 周：不应与 2020 年第 53 周的 2020-12-31 合并
+    # 2021-01-01 与 2020-12-31 同属 ISO 2020-W53 → 合并为该周最后交易日 2021-01-01
     df = pl.DataFrame({
         "date": [datetime.date(2020, 12, 31), datetime.date(2021, 1, 1)],
         "code": ["A", "A"],
         "signal": [1.0, 2.0],
     })
     out = align_weekly(df)
-    assert out.height == 2  # 年边界切分后的两个周组各保留最后交易日
+    assert out.height == 1
+    assert out["date"].to_list() == [datetime.date(2021, 1, 1)]
+
+
+def test_align_weekly_full_year_keeps_first_bar():
+    # 回归：组合键 (日历年, ISO 周号) 会让周号 1 在一年内出现两次——2024-12-30/31
+    # 属于 ISO 2025-W1 但日历年为 2024，与 2024-01-02..05 同组后首个周频 bar
+    # （2024-01-05）被 12-31 顶掉；ISO 分组下两者不同组，且 12-30/31 与 2025-01-02/03
+    # 同属 ISO 2025-W1，合并为该周最后交易日 2025-01-03
+    dates = [datetime.date(2024, 1, d) for d in (2, 3, 4, 5)]
+    dates += [datetime.date(2024, 12, 30), datetime.date(2024, 12, 31)]
+    dates += [datetime.date(2025, 1, 2), datetime.date(2025, 1, 3)]
+    df = pl.DataFrame({"date": dates, "code": ["A"] * len(dates), "signal": [1.0] * len(dates)})
+    out = align_weekly(df)
+    bars = out["date"].to_list()
+    assert datetime.date(2024, 1, 5) in bars          # 2024 首个周频 bar 保留
+    assert datetime.date(2025, 1, 3) in bars          # ISO 2025-W1（含 2024-12-30/31）最后交易日
+    assert datetime.date(2024, 12, 31) not in bars    # 与 2025-01-02/03 同周，不单独成 bar
 
 
 def test_align_weekly_per_code_no_leak():
