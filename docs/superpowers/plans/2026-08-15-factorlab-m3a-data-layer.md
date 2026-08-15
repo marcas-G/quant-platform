@@ -559,6 +559,11 @@ def fill_suspensions(df: pl.DataFrame, calendar: pl.Series) -> pl.DataFrame:
     return grid.join(df, on=["date", "code"], how="left")
 ```
 
+**实现修正记录（2026-08-15，Task 4 实现期）：**
+1. SQL 增加 `ORDER BY date`：DuckDB 不保证 `SELECT DISTINCT` 输出顺序，而本任务测试断言日历升序、且下游对齐语义需要确定性顺序。计划原代码无 ORDER BY。
+2. 连接改用 `with duckdb.connect(..., read_only=True) as con` 上下文管理器（沿用 Task 3 审查修复的 source.py 模式，连接错误路径不残留）。
+3. 测试改用 `datetime.date` 构造日期（polars 1.38 的 `pl.Date` 是 datatype 类，`pl.Date(2024,1,3)` 抛 TypeError）。
+
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `pytest tests/test_calendar.py -v`
