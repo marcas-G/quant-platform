@@ -1,0 +1,26 @@
+# 框架与工具目录（保留在工作区，但不纳入版本控制）
+superpowers/
+.agents/
+
+# Python
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.venv/
+venv/
+*.egg-info/
+dist/
+build/
+
+# 平台运行时数据
+data/
+results/
+*.duckdb
+*.duckdb.wal
+*.parquet
+
+# 编辑器/系统
+.vscode/
+.idea/
+.DS_Store
+Thumbs.db
