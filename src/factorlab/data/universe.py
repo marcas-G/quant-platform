@@ -95,10 +95,22 @@ def resolve_codes(
         raise ValueError("universe 解析失败：spec 缺少 ref/codes/rules")
 
     if "codes" in data:
-        codes = sorted({normalize_code(c) for c in data["codes"]})
-        known = {r[0] for r in db.execute(
-            "SELECT symbol FROM stock_basic_tushare WHERE symbol IN (SELECT unnest(?))", [codes]).fetchall()}
-        codes = [c for c in codes if c in known]
+        # 先按 6 位数字/ts_code 标准化；非标准格式（如 1 字符 symbol 测试数据）原样保留，
+        # 统一与 stock_basic_tushare 的 symbol 或 ts_code 列匹配，返回 symbol（daily.code 格式）
+        candidates: list[str] = []
+        for c in data["codes"]:
+            try:
+                candidates.append(normalize_code(c))
+            except ValueError:
+                candidates.append(c)
+        rows = db.execute(
+            "SELECT symbol, ts_code FROM stock_basic_tushare"
+            " WHERE symbol IN (SELECT unnest(?)) OR ts_code IN (SELECT unnest(?))",
+            [candidates, candidates],
+        ).fetchall()
+        known_symbols = {r[0] for r in rows}
+        ts_to_symbol = {r[1]: r[0] for r in rows if r[1] is not None}
+        codes = sorted({ts_to_symbol.get(c, c) for c in candidates} & known_symbols)
     elif "rules" in data:
         codes = _codes_from_rules(data["rules"], db, spec.date.start)
     else:

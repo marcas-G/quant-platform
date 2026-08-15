@@ -1438,6 +1438,35 @@ git add src/factorlab/engine/compute.py tests/test_run_factor.py
 git commit -m "feat: add run_factor pipeline assembly"
 ```
 
+**实现修正记录（2026-08-16，Task 9 实现期）：**
+1. **`resolve_codes` codes 分支 ts_code/symbol 兜底（修改 Task 2 模块）**：任务说明声称 codes
+   `["A.SZ","B.SH"]` 与 `stock_basic_tushare.symbol` 取交集即可（symbol A/B），但
+   `normalize_code` 要求 6 位数字，`"A.SZ"` 直接抛「非法股票代码」。codes 分支已改为：
+   先尝试 `normalize_code`，失败的非标准格式原样保留，统一匹配 `symbol IN (...) OR
+   ts_code IN (...)` 并映射回 symbol（ts_code → symbol 桥）。真实 6 位数据行为不变，
+   现有 test_universe 全部用例不受影响。
+2. **`compute_formula` 列裁剪与 `close` 缺失**：`compute_formula`（M2）输出仅
+   date/code/signal，计划代码直接接 `compute_forward_returns(panel)` 会因缺 `close`
+   列崩溃（计划文 Step 4 备注误判为 float32 精度问题）。run_factor 改为把 signal
+   join 回完整面板（保留 close 等基础列）再走 process/forward；最终面板按 spec 2.5
+   对齐输出 `[date, code, signal, forward_return_5d, forward_return_20d, close]`。
+   公式未引用 close 时列裁剪会剔除 close → 显式报错（前向收益依赖 close[t+h]）。
+3. **空面板检查提前**：`panel.height == 0` 检查移至 fill_suspensions 之后、
+   compute_formula 之前（空输入不进 codegen，错误消息不变）。
+4. **factors/combine 显式拒绝**：spec 校验允许 `factors+combine` 规格，但 M3a
+   run_factor 仅支持单公式因子；显式 `NotImplementedError`（否则 run_process_chain
+   报误导性「process 链需要 signal 列」）。
+5. **`_formula_columns` 的 `ast.arg`**：Python 3.13 的 `ast.arg` 无 `.name` 属性
+   （3.14+ 才引入别名），需用 `.arg`。
+6. **默认 universe 层决策（本任务不接线）**：M3a spec 2.2 三层优先级第 3 层
+   （`config.default_universe` / `FACTORLAB_DEFAULT_UNIVERSE`）在 run_factor 阶段
+   不接线——spec 校验要求 universe 必填，默认层若实现为「override 与 spec 为空时
+   回退默认」会与三选一校验冲突、并可能覆盖 spec 内联语义。`resolve_codes` 保持
+   `override > spec 三选一`；`default_universe` 字段保留给 M4 CLI（`--universe`
+   默认值）。「同批次固定 universe」挖掘约定已按 spec 2.2 文档化。
+7. **任务说明的测试声明核对**：任务说明「测试 codes ["A.SZ","B.SH"] 有 symbol A/B ✓」
+   在当前代码下不成立（normalize 拦截），经修正 1 后成立；测试其余断言与实现一致。
+
 ---
 
 ### Task 10: 集成 e2e 与文档
