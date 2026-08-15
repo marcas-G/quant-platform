@@ -1477,12 +1477,22 @@ def compare_sample(
 Run: `pytest tests/test_verify.py -v`
 Expected: PASS。注意 `compare_sample` 中 `pct_chg` 不一致的 daily 会影响 integrity 但测试数据已构造 pct_chg 与 close 自洽（10→11 是 10%，20→21 是 5% ✓）。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/factorlab/data/verify.py tests/test_verify.py
 git commit -m "feat: add data verification and sample comparison"
 ```
+
+> 实现记录（与计划差异，2026-08-16）：
+> 1. 测试把 PlatformDB 对象作为 ref 传入 compare_sample，而计划实现片段
+>    `duckdb.connect(str(ref_path))` 只接受路径——实现改为 `ref_path: PlatformDB | Path`，
+>    内部 `_resolve_path` 统一取 .path；verify_all 的 ref_db 同理。
+> 2. 计划实现片段对边界不做处理，实现补齐：primary 无 daily 表返回零报告 + note；
+>    参考库缺 daily 表按段捕获 duckdb 错误跳过；单侧 null 记 mismatch、双侧 null 不算
+>    差异（停牌/无数据豁免）；参考库文件不存在抛 `ValueError`。
+> 3. 测试按 CLAUDE.md 要求补边界/错误路径（空库、ref 缺失、n_stocks 超股票数、
+>    容差边界、种子确定性、null 处理），共 14 个用例。
 
 ---
 

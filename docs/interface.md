@@ -293,6 +293,25 @@ DuckDB 只读加载；SQL-first 过滤；`date` cast `pl.Date`；数值列 float
 
 常量：`DAILY_TABLES`（7 行情表）、`FINANCIAL_TABLES`（3 财报表）、`INDEX_CODES`（4 指数）。
 
+### `factorlab.data.verify` 数据验证与抽样对拍
+
+- `verify_all(db, ref_db=None, n_stocks=30, seed=42) -> dict`
+  完整性自检 + 稀疏摘要 + 可选抽样对拍。返回
+  `{"integrity": {table: {rule: ...}}, "sparse_summary": {table: {col: ...}}, "compare": dict | None}`。
+  ref_db（PlatformDB 或路径）给定且文件存在时执行对拍（参考库仅作参考，差异不
+  阻塞，quant-data 清理流程以 verify 报告 + 用户显式确认为准）；参考库缺失时
+  `compare` 为 None。空库不抛错：完整性规则逐条 skipped，稀疏摘要为空。
+- `compare_sample(primary, ref_path, n_stocks=30, segments=None, tol=1e-4, seed=42) -> dict`
+  随机抽样 n_stocks 只股票 × 日期段，对比 primary 与参考库 daily.close（相对误差
+  ≤ tol 视为一致）。segments 缺省三段：2020/2023/2026 各 1 月（`SEGMENTS`）。
+  种子确定性：同 seed 抽样结果一致；n_stocks 超过库内股票数时抽样全部。
+  单侧 close 为 null 记 mismatch，双侧 null（停牌/无数据）不算差异。差异逐条进
+  `details`（最多 50 条）。返回
+  `{"compared_rows", "mismatches", "details", "sampled_stocks"}`。
+  错误语义：参考库文件不存在抛 `ValueError("参考库不存在...")`；primary 无 daily
+  表返回零报告（含 `note`）；参考库无 daily 表时对应段跳过（duckdb 错误捕获，
+  不阻塞）。primary 为 `PlatformDB`，ref_path 接受 `PlatformDB | Path`。
+
 ## 5. 测试
 
 运行：
