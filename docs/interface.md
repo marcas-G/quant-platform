@@ -99,10 +99,16 @@ combine:
 - `ts_*` 按 asset 排序并只使用历史窗口。
 - `cs_*` 按 date 分组。
 - `gp_*` 按 date + group key 分组。
-- `ts_delay(x, n)` 和 `ts_delta(x, n)` 的 `n` 不能为负数（字面量负值在执行前被拒绝）。
-- 未知算子会在执行前被拒绝；公式内 `def` 自定义函数、元素级纯函数
-  （`abs/log/sqrt/where` 等）与平台薄封装算子（`returns/vwap/adv20/group_rank/group_mean`）
-  放行。
+- `ts_delay(x, d)` 和 `ts_delta(x, d)` 的位移不能为负：字面量（含可折叠表达式如
+  `1 - 2`、`d=-1`、`-1.0`）在执行前被拒绝；非常量变量位移无法静态判断，放行。
+- 未知算子会在执行前被拒绝。
+- **`def` 内禁止窗口/截面算子**：expr_codegen 把用户 def 当黑盒整体在元素级分区
+  执行，def 内的 `ts_/cs_/gp_` 调用会在全表上跑窗口、跨资产泄漏，因此直接拒绝
+  （带源码位置）。`def` 内只允许元素级纯函数；窗口语义请直接写在公式顶层。
+- 平台薄封装算子（`returns/vwap/adv20`）在解析期**展开为 `ts_` 表达式**再交给
+  `expr_codegen`，保证按 asset 分区；`group_rank/group_mean` 自带 `.over(key)`
+  分组语义，不展开。import 别名（`returns as ret`）同样生效。
+- 元素级纯函数白名单（与 codegen 作用域核对）：`abs/log/log1p/sqrt/exp/sign/floor/if_else`。
 
 平台薄封装算子从 `factorlab.ops.platform_ops` 导入；注册到注册表的算子可通过
 `factorlab op list` 查看。
