@@ -1467,6 +1467,22 @@ git commit -m "feat: add run_factor pipeline assembly"
 7. **任务说明的测试声明核对**：任务说明「测试 codes ["A.SZ","B.SH"] 有 symbol A/B ✓」
    在当前代码下不成立（normalize 拦截），经修正 1 后成立；测试其余断言与实现一致。
 
+**质量审查修正记录（2026-08-16）：**
+8. `neutralize(by=size)` 的日期 join key 改为与面板 date 同 dtype：原 `cast(pl.String)`
+   假设面板为字符串日期（Task 7 单测），run_factor 真实面板为 `pl.Date`（load_daily
+   解析）→ 装配链路 SchemaError。修复为 `cast(df.schema["date"])` 动态对齐——同时兼容
+   run_factor（pl.Date）与既有单测面板（str），`test_neutralize_size_decile_demean`
+   不受影响。回归测试 `test_run_factor_neutralize_size`（daily_basic + size 中性化端到端）
+   与 `test_run_factor_neutralize_industry`（process 链 ctx 经 run_factor 的管线回归）。
+   另注意：YAML 内 process 项含 `: ` 会被 YAML 解析为映射，spec 文件必须用
+   `neutralize(by=industry)`（`=` 分隔，parse_chain_item 兼容）。
+9. `run_factor` 提前 `validate_formula`（语法/禁止属性调用错误在打开数据库前抛出，
+   属性调用不再被 `_formula_columns` 误读为列名）；摘要补充 `codes` 列表（M4 评估用）、
+   删除 height==0 死代码兜底（空面板已在链路中 raise）；db 文件不存在时
+   `duckdb.IOException` → `FileNotFoundError` 友好报错（`test_run_factor_missing_db`）；
+   `RunContext.universe_override` docstring、`resolve_codes` docstring（去掉未接线的
+   「全局默认」层表述）。
+
 ---
 
 ### Task 10: 集成 e2e 与文档
