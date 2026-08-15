@@ -124,6 +124,59 @@ def test_fetch_empty_items_keeps_columns(monkeypatch):
     assert df.columns == ["ts_code", "trade_date", "close"]
 
 
+def test_fetch_business_error_no_retry(monkeypatch):
+    """4xx 业务错误立即抛出，不重试。"""
+    attempts = []
+
+    def responder(url, json=None, timeout=30):
+        attempts.append(1)
+        return _err_response(400)
+
+    client = _client(monkeypatch, responder, interval=0.0)
+    with pytest.raises(TeaJoinError, match="daily"):
+        client.fetch("daily", {"trade_date": "20240102"})
+    assert len(attempts) == 1
+
+
+def test_fetch_retries_on_429(monkeypatch):
+    """429 是瞬态错误：重试后成功。"""
+    import time
+    sleeps = []
+    monkeypatch.setattr(time, "sleep", lambda s: sleeps.append(s))
+    attempts = []
+
+    def flaky(url, json=None, timeout=30):
+        attempts.append(1)
+        if len(attempts) < 3:
+            return _err_response(429)
+        return _ok_response()
+
+    client = _client(monkeypatch, flaky, interval=0.0)
+    df = client.fetch("daily", {"trade_date": "20240102"})
+    assert len(attempts) == 3
+    assert df.height == 2
+
+
+def test_fetch_paged_exceeds_max_pages_raises(monkeypatch):
+    """所有页都满时静默截断是丢数据：超过 max_pages 抛 TeaJoinError。"""
+    pages = []
+
+    def responder(url, json=None, timeout=30):
+        offset = json["params"]["offset"]
+        pages.append(offset)
+        return _ok_response(items=[["a", "20240102", 1.0], ["b", "20240102", 2.0]])
+
+    client = _client(monkeypatch, responder, interval=0.0)
+    with pytest.raises(TeaJoinError, match="max_pages"):
+        client.fetch_paged("daily", {"trade_date": "20240102"}, page_size=2, max_pages=2)
+    assert pages == [0, 2]
+
+
+def test_max_retries_must_be_positive():
+    with pytest.raises(ValueError, match="max_retries"):
+        TeaJoinClient(token="t", max_retries=0)
+
+
 def test_fetch_retries_on_5xx(monkeypatch):
     import time
     sleeps = []

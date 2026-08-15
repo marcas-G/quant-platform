@@ -24,6 +24,8 @@ class TeaJoinClient:
         interval: float = 0.2,
         max_retries: int = 3,
     ) -> None:
+        if max_retries < 1:
+            raise ValueError("max_retries 至少为 1")
         self.token = token
         self.base_url = base_url
         self.interval = interval
@@ -52,7 +54,7 @@ class TeaJoinClient:
                 last_exc = exc
                 time.sleep(2 ** attempt)
                 continue
-            if resp.status_code >= 500:
+            if resp.status_code >= 500 or resp.status_code == 429:
                 last_exc = TeaJoinError(api_name, f"HTTP {resp.status_code}: {resp.text[:200]}")
                 time.sleep(2 ** attempt)
                 continue
@@ -89,10 +91,13 @@ class TeaJoinClient:
     ) -> pl.DataFrame:
         """通用分页：params 注入 limit/offset 循环直到空页。"""
         frames: list[pl.DataFrame] = []
+        page = pl.DataFrame()
         for offset in range(0, page_size * max_pages, page_size):
             page_params = {**params, "limit": page_size, "offset": offset}
             page = self._call(api_name, page_params, fields)
             if page.height == 0:
                 break
             frames.append(page)
+        if page.height == page_size:
+            raise TeaJoinError(api_name, "数据超过 max_pages*page_size 行，请增大 max_pages")
         return pl.concat(frames) if frames else pl.DataFrame()
