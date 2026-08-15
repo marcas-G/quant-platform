@@ -227,6 +227,33 @@ DuckDB 只读加载；SQL-first 过滤；`date` cast `pl.Date`；数值列 float
 `align_weekly` 对齐到 **ISO 周**最后一个交易日（跨年日期同属 ISO 周时合并为该周
 最后交易日，与 tushare weekly 语义一致）。
 
+### `factorlab.data.adjust.view_prices / total_return`
+
+价格视图（输入 raw 价格面板，含 `adj_factor` 列；输出含 scaled 价格列）：
+`view_prices(df, view="qfq", asof=None)`，`view ∈ raw|qfq|hfq|pit_qfq`：
+- RAW 原样；QFQ `×adj/adj[latest]`（最新因子基准）；HFQ `×adj`（连续价格）；
+  PIT_QFQ `×adj/adj[asof]`（研究日视角防未来，必须给 `asof`）。
+- QFQ/PIT_QFQ 按 code+date 排序后计算，latest 语义基于日期而非行序；跨 code 独立。
+
+`total_return(close, adj)`：HFQ 收益 `close[t]×adj[t]/(close[t-1]×adj[t-1])-1`
+（含分红再投资的真实收益；除权日上 RAW 收益率 ≠ QFQ/HFQ 收益率，用 total_return）。
+
+### `factorlab.data.adjust` 审计三查（AdjustmentAudit）
+
+`FactorFn = Callable[[pl.DataFrame], pl.DataFrame]`——输入价格面板
+（date/code/价格列），输出 (date, code, signal)；输出缺列时抛 `ValueError`。
+`AuditReport(check, passed, details)` dataclass，`details` 含审计指标。
+
+- `lookahead_check(factor_fn, df, asof) -> AuditReport`
+  未来信息泄漏：asof 截断重算 vs 全量重算，仅对比 `date <= asof` 的行；
+  截断后值变化（含一侧为 null）的行即潜在泄漏（`affected_rows`）。
+- `scale_invariance_check(factor_fn, df) -> AuditReport`
+  价格尺度不变：RAW vs QFQ 因子值最大绝对差 `< 1e-6` 通过。收益率类因子天然
+  不变；**跨除权日**时朴素 RAW 收益率与 QFQ 不同（RAW 除权跳变）——审计对比应
+  使用无除权事件的面板或声明口径的因子。
+- `adjustment_sensitivity_check(factor_fn, df, views=("raw","qfq","hfq")) -> AuditReport`
+  复权口径切换敏感性：各视图因子值相对 raw 的最大绝对差（`max_abs_diff`）。
+
 ## 5. 测试
 
 运行：

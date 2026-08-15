@@ -694,7 +694,7 @@ git commit -m "feat: add price views and total return"
 `adjustment_sensitivity_check(factor_fn, df) -> AuditReport`。
 `factor_fn: Callable[[pl.DataFrame], pl.DataFrame]`——输入价格面板（date/code/价格列），输出 (date, code, signal)。
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `tests/test_audit.py`:
 
@@ -771,12 +771,12 @@ def test_sensitivity_reports_variation():
     assert "max_abs_diff" in report.details
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `pytest tests/test_audit.py -v`
 Expected: FAIL — 审计函数不存在。
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 Append to `src/factorlab/data/adjust.py`:
 
@@ -848,17 +848,29 @@ def adjustment_sensitivity_check(
     )
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `pytest tests/test_audit.py -v`
 Expected: PASS。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/factorlab/data/adjust.py tests/test_audit.py
 git commit -m "feat: add adjustment audit checks"
 ```
+
+**实现偏差记录（2026-08-16 实现时发现，已修正并同步 docs/interface.md）：**
+- 计划 Step 3 的实现有两处 bug，已修正：① `adjustment_sensitivity_check` 用内置
+  `max()` 聚合 polars Expr 抛 `TypeError`，改用 `pl.max_horizontal`；② `lookahead_check`
+  的 diff 对 null 行求和时被跳过（泄漏因子在截断边界值变 null 未计为受影响），
+  改为 null-aware 布尔掩码（一侧 null 计受影响，两侧 null 不计）。
+- 计划 Step 1 的 `test_scale_invariance_returns_factor_passes` 与 `_panel` 不自洽：
+  面板含除权事件（1/4 除权），朴素收益率因子在除权日 RAW(-27.3%) 与 QFQ(+9.1%)
+  天然不同（RAW 除权跳变，QFQ 含分红）——该测试无法通过。修正为用
+  无除权事件面板（`adj_factor` 全 1）验证"收益率因子尺度不变"，语义不变。
+- 超出计划的补充：`_require_columns` 列契约校验（缺 date/code/signal 列抛中文
+  `ValueError`）；新增边界/错误路径测试（asof 早于全部数据、空面板、缺 signal 列）。
 
 ---
 
