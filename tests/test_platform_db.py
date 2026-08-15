@@ -292,3 +292,17 @@ def test_integrity_all_green(tmp_path):
         for entry in rules.values():
             assert entry["passed"] is True
             assert entry["skipped"] is False
+
+
+def test_integrity_pct_chg_uses_pre_close_on_ex_rights_day(tmp_path):
+    # 真实除权（10 送 5）：参考价 7.33 ≠ 前收 11 → lag(close) 环比误报，pre_close 口径正确
+    db = build_db(tmp_path)
+    db.upsert("daily", pl.DataFrame({
+        "trade_date": ["20240102", "20240103", "20240104"],
+        "ts_code": ["A", "A", "A"],
+        "close": [10.0, 11.0, 8.0],
+        "pre_close": [None, 10.0, 7.333],    # 官方除权参考价
+        "pct_chg": [None, 10.0, 9.09],       # 官方口径（8/7.333-1）
+    }), keys=["trade_date", "ts_code"])
+    report = db.integrity_check()
+    assert report["daily"]["pct_chg_consistency"]["passed"] is True  # 须用 pre_close 才通过

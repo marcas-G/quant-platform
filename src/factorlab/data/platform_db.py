@@ -159,16 +159,29 @@ class PlatformDB:
         entry["details"] = [f"{n} 个 (trade_date, ts_code) 重复"] if n else []
 
     def _check_pct_chg(self, entry: dict) -> None:
-        """pct_chg 自洽：close 环比（前收口径）与 pct_chg 误差 ≤ 0.01%。"""
+        """pct_chg 自洽：优先用官方 pre_close（除权参考价）口径，缺失时回退 lag(close)。
+
+        官方 pct_chg 基于除权参考价（送转/分红日参考价 ≠ 前收），lag(close) 环比会误报。"""
         with self._connect(read_only=True) as con:
-            n = con.execute("""
-                SELECT count(*) FROM (
-                    SELECT trade_date, ts_code, close, pct_chg,
-                           lag(close) OVER (PARTITION BY ts_code ORDER BY trade_date) prev_close
-                    FROM daily
-                ) WHERE prev_close IS NOT NULL
-                  AND abs((close / prev_close - 1) * 100 - pct_chg) > 0.01
-            """).fetchone()[0]
+            has_pre_close = con.execute(
+                "SELECT 1 FROM information_schema.columns WHERE table_name='daily' AND column_name='pre_close'"
+            ).fetchone()
+            if has_pre_close:
+                sql = """
+                    SELECT count(*) FROM daily
+                    WHERE pre_close IS NOT NULL
+                      AND abs((close / pre_close - 1) * 100 - pct_chg) > 0.01
+                """
+            else:
+                sql = """
+                    SELECT count(*) FROM (
+                        SELECT trade_date, ts_code, close, pct_chg,
+                               lag(close) OVER (PARTITION BY ts_code ORDER BY trade_date) prev_close
+                        FROM daily
+                    ) WHERE prev_close IS NOT NULL
+                      AND abs((close / prev_close - 1) * 100 - pct_chg) > 0.01
+                """
+            n = con.execute(sql).fetchone()[0]
         entry["failed"] = n
         entry["passed"] = n == 0
         entry["details"] = [f"{n} 行 pct_chg 与 close 变化不一致"] if n else []
