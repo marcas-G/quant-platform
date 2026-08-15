@@ -73,3 +73,10 @@ def test_op_add_and_remove(tmp_path):
         assert remove.exit_code == 0
     finally:
         settings.plugin_dir = original
+
+
+def test_m1_cli_help_lists_commands():
+    result = runner.invoke(app, ["--help"])
+    assert result.exit_code == 0
+    for command in ("version", "lint", "op"):
+        assert command in result.stdout
