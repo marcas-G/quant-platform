@@ -1640,6 +1640,14 @@ DuckDB 只读加载；SQL-first 过滤；`date` cast `pl.Date`；数值列 float
 最后交易日。
 ```
 
+**实现修正记录（2026-08-16，Task 10 e2e 实测发现）：**
+
+1. `st_status` 真实库快照日期列名为 `snap_date`（非计划假设的 `date`；列集
+   `code, snap_date, is_st, st_type, name`），原 SQL 在真实库抛 DuckDB
+   BinderException（`date` 无法在 outer scope 解析）。修正 `universe.py` 的
+   `exclude_st` SQL 使用 `snap_date`；`tests/test_universe.py` 假表同步为真实
+   schema（假库列名与真实库不一致会掩盖此类 bug）。
+
 - [ ] **Step 4: 运行全量测试并验证**
 
 Run:

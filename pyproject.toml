@@ -39,3 +39,6 @@ where = ["src"]
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]
+markers = [
+    "integration: 依赖真实 quant.duckdb 的集成测试（库缺失时跳过）",
+]

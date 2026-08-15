@@ -13,11 +13,11 @@ def db(tmp_path):
         ('000001', '000001.SZ', 'SZSE', '1991-04-03', '银行'),
         ('600519', '600519.SH', 'SSE', '2001-08-27', '白酒'),
         ('830001', '830001.BJ', 'BSE', '2020-01-01', '其他')""")
-    conn.execute("CREATE TABLE st_status (code VARCHAR, date DATE, is_st BOOLEAN)")
+    conn.execute("CREATE TABLE st_status (code VARCHAR, snap_date DATE, is_st BOOLEAN, st_type VARCHAR, name VARCHAR)")
     conn.execute("""INSERT INTO st_status VALUES
-        ('000001', DATE '2026-01-05', FALSE),
-        ('000001', DATE '2026-03-10', TRUE),
-        ('600519', DATE '2026-03-10', FALSE)""")
+        ('000001', DATE '2026-01-05', FALSE, '', ''),
+        ('000001', DATE '2026-03-10', TRUE, '', ''),
+        ('600519', DATE '2026-03-10', FALSE, '', '')""")
     conn.execute("CREATE TABLE daily (date VARCHAR, code VARCHAR, close DOUBLE)")
     yield conn
     conn.close()

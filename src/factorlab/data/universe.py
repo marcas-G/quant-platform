@@ -50,7 +50,8 @@ def _codes_from_rules(rules: dict[str, Any], db: duckdb.DuckDBPyConnection, date
     sql = "SELECT symbol FROM stock_basic_tushare WHERE exchange IN (SELECT unnest(?))"
     params: list[Any] = [list(VALID_EXCHANGES)]
     if rules.get("exclude_st"):
-        sql += " AND symbol NOT IN (SELECT code FROM st_status WHERE is_st AND date = (SELECT max(date) FROM st_status))"
+        # st_status 快照日期列名为 snap_date（真实库 schema；假库须一致）
+        sql += " AND symbol NOT IN (SELECT code FROM st_status WHERE is_st AND snap_date = (SELECT max(snap_date) FROM st_status))"
     exchanges = rules.get("exchanges")
     if exchanges:
         bad = [e for e in exchanges if e not in VALID_EXCHANGES]

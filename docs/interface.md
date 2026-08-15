@@ -171,6 +171,61 @@ def tail_ratio(x: pl.Expr, n: int) -> pl.Expr:
 用户插件放在 `~/.factorlab/plugins/`。插件文件必须只定义纯函数，并通过
 `factor_op` 注册算子。`op add` 会做 AST 安全扫描。
 
+### `factorlab.engine.compute.run_factor(spec, ctx) -> FactorResult`
+
+装配完整链路：universe 解析 → `load_daily` → 停牌补全 → `compute_formula` →
+process 链 → 前向收益 → 周频对齐 → 落盘 `panel.parquet` + `summary.json`。
+
+`RunContext` 字段：`db_path`（默认 `settings.quant_db`）、`output_dir`、
+`universe_override`（6 位代码或引用名称/路径，优先级最高）、`float32`。
+
+`FactorResult`：`spec`、`panel`（列：`date, code, signal, forward_return_5d, forward_return_20d, close`）、
+`summary`（含 spec 原文、codes、universe_count、panel_rows、signal_null_ratio、process、float32）。
+
+`factors`/`combine` 多因子组合暂不支持（NotImplementedError，M4 实现）。
+
+### `factorlab.data.universe.resolve_codes(spec, db, override=None, settings=settings) -> list[str]`
+
+universe 解析优先级：`override` > spec 内联（`ref` 命名引用 / `codes` / `rules`）。
+返回纯数字代码列表（`daily.code` 格式）。命名引用查 `~/.factorlab/universes/<name>.yaml`
+（或直接给文件路径）。`default_universe`（`FACTORLAB_DEFAULT_UNIVERSE`）为 M4 CLI 预留，尚未接线。
+
+**挖掘约定**：同批次因子固定同一 universe（`--universe` 或共享 spec 引用），同池计算、同池比较。
+
+`rules` 支持：`exclude_st`（st_status 最新快照）、`min_list_days`（list_date 距 date.start
+或数据最早日期满 N 自然日）、`exchanges`（SSE/SZSE，BSE 不在 v1 集合）。
+
+### `factorlab.data.source.load_daily(db_path, codes, date_start=None, date_end=None, cols=None, float32=True) -> pl.LazyFrame`
+
+DuckDB 只读加载；SQL-first 过滤；`date` cast `pl.Date`；数值列 float32。
+**注意**：内部实际立即执行查询（`execute().pl()` 后包 `lazy()`），SQL 错误在调用时抛出。
+
+### `factorlab.data.calendar.trading_calendar / fill_suspensions`
+
+交易日历（distinct date，升序）与停牌补全（日历×代码全连接，缺失数值 null，
+不默认填充）。补全后输出按日期升序、组内代码顺序未承诺（调用方自行排序）。
+
+### process 链
+
+处理器：`winsorize(quantile=0.99)`、`standardize()`（别名 `zscore`）、`csranknorm()`、
+`robustzscore()`、`neutralize(by=market|industry|size)`、`clip(lower, upper)`、
+`fillna(method=value|forward|industry_mean)`。全部截面语义（`.over("date")`）。
+
+**spec 文件内的链项必须用 `=` 分隔**（`neutralize(by=industry)`），`key: value` 冒号
+写法会被 YAML 解析为映射而报错。
+
+`neutralize` 的行业依赖 `stock_basic_tushare` 静态行业（v1 近似）；`size` 按
+`daily_basic.total_mv` 每日期内排名十分位分桶后组内 demean（无 daily_basic 匹配时报错）；
+截面 N<10 时 size 中性化每桶 1 只股票，demean 恒 0（分组式中性化固有属性）。
+
+零方差截面（standardize/robustzscore）输出 null（NaN 不是 null，fillna 无法处理）。
+
+### `factorlab.engine.forward.compute_forward_returns / align_weekly`
+
+前向收益 `close[t+h]/close[t]-1`（h 交易日索引差，输入须停牌补全）；
+`align_weekly` 对齐到 **ISO 周**最后一个交易日（跨年日期同属 ISO 周时合并为该周
+最后交易日，与 tushare weekly 语义一致）。
+
 ## 5. 测试
 
 运行：
