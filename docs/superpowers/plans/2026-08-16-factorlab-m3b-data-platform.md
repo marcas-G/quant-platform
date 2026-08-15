@@ -1127,6 +1127,23 @@ def rebuild_all(
   DataFrame 不广播 1 元素列）；`db.list_tables() >= {...}` 修正为 `set(...) >= {...}`；
   另补 PlatformDB connect/upsert_on/dedup 单测（tests/test_platform_db.py）。
 
+**M3b 终审修订（2026-08-16，全部对照真实 teajoin API 验证后修复）：**
+- **财报移除决策（用户确认 2026-08-16）**：真实 API 财报接口强制 `ts_code` 参数
+  （按报告期拉全市场返回业务错误被拒），全市场按股约 170 万请求不可行——M3b v1
+  砍财报。rebuild 删除财报循环与 `_quarter_ends`；`FINANCIAL_TABLES` 常量保留并
+  注释「M3b+ 按 ts_code 分批拉取」；spec §2/§3.3/§7/§8 同步修订。
+- **index_weight 参数**：真实 API 必填参数是 `index_code` 而非 `ts_code`，拉取参数
+  改为 `{"index_code": code, "trade_date": d}`；upsert 键 `["index_code", "trade_date"]`
+  不变；测试断言同步改 index_code。index_daily 用 ts_code 实测通过，不动。
+- **trade_cal 未来公告日截断**：真实 API 的 trade_cal 返回未来公告日（实测 6543 个
+  开盘日中 93 个未来日，最大 20261231）——rebuild 的 `dates` 过滤 `<= today`
+  （YYYYMMDD），避免为未来日白拉 ~650 请求；`last_updated = dates[-1]` 为截断后的
+  最近交易日（否则 refresh 从未来日拉到 today 无新日、永远死锁）。
+- **upsert_on 列过滤**：`build_final_db` 物理剔除稀疏字段后，refresh 用全字段 df
+  upsert 最终库抛 `Binder Error: Table "daily" does not have a column...`（被 except
+  吞掉 → 数据永远不更新）。`upsert_on` INSERT 前过滤 df 中表不存在的列（表存在时），
+  首次建表路径不变；测试 `test_upsert_filters_missing_columns` 覆盖。
+
 - [x] **Step 4: Run test to verify it passes**
 
 Run: `pytest tests/test_rebuild.py -v`
@@ -1493,6 +1510,19 @@ git commit -m "feat: add data verification and sample comparison"
 >    差异（停牌/无数据豁免）；参考库文件不存在抛 `ValueError`。
 > 3. 测试按 CLAUDE.md 要求补边界/错误路径（空库、ref 缺失、n_stocks 超股票数、
 >    容差边界、种子确定性、null 处理），共 14 个用例。
+>
+> **M3b 终审修订（2026-08-16，对照真实 quant.duckdb 验证后修复）：**
+> 4. **对拍列映射**：quant-data 的 daily 是 `date/code`（日期 `2024-01-02`、代码纯数字），
+>    平台库是 `trade_date/ts_code`（`YYYYMMDD`、带后缀）——旧实现对拍 SELECT 直接用
+>    trade_date/ts_code 查参考库，BinderException 被 per-segment except 吞掉，静默比
+>    0 行。修复：`compare_sample` 连接参考库后 `DESCRIBE daily` 自动检测列结构，新增
+>    `_ref_query_sql(ref_cols)` 按映射选查询：平台风格原列直用；quant-data 风格
+>    `strftime(CAST(date AS DATE), '%Y%m%d') AS trade_date`（对齐 primary）、
+>    `code = substr(?, 1, 6)`、日期 `CAST(date AS DATE) BETWEEN CAST(strptime(...) AS DATE) ...`
+>    （DuckDB 禁止 VARCHAR 与 TIMESTAMP 混用 BETWEEN，且 strftime 对 VARCHAR 无候选
+>    函数——显式 CAST 后对 VARCHAR/DATE 列与真实 quant.duckdb 均实测通过）。join 只取
+>    trade_date/close（映射后列名）。测试：date/code 风格（VARCHAR 与 DATE 两种 date
+>    存储）对拍匹配行数 > 0、mismatch 检测仍生效。
 
 ---
 
@@ -1630,6 +1660,14 @@ git commit -m "feat: add incremental refresh"
 1. 测试 `_client` 的 trade_cal mock 列高不等（exchange 1 行 vs cal_date/is_open 2 行，
    polars 建 df 报 ShapeError），修正为 `["SSE", "SSE"]`。
 2. refresh 记录 failed 日期并从最早 failed 日之后重试（原计划失败日静默跳过造成永久数据缺口）。
+
+**M3b 终审修订（2026-08-16）：**
+3. **refresh 死锁修复确认**：旧 rebuild 的 `last_updated` 可能为 trade_cal 返回的未来
+   公告日（最大 20261231）→ refresh 从未来日拉到 today 无新日、last_updated 永不
+   推进（死锁）。rebuild 已截断 `dates <= today`，`last_updated`=最近交易日（< today），
+   refresh 的 `start_date=last / end_date=today` 与 `new_dates` 过滤 `d > last` 语义
+   成立，不再死锁。新增测试：rebuild（trade_cal 含未来日）→ refresh 正常拉新日
+   （tests/test_refresh.py 的 `test_refresh_after_rebuild_no_deadlock`）。
 
 ---
 

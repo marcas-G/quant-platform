@@ -12,6 +12,7 @@ from factorlab.data.fetcher import TeaJoinClient
 from factorlab.data.platform_db import PlatformDB
 
 DAILY_TABLES = ("daily", "daily_basic", "adj_factor", "stock_st", "stk_limit", "suspend_d", "moneyflow")
+# M3b+ 按 ts_code 分批拉取（真实 API 强制 ts_code，全市场按报告期不可行）
 FINANCIAL_TABLES = ("income", "balancesheet", "cashflow")
 INDEX_CODES = ("000300.SH", "000905.SH", "000852.SH", "000016.SH")
 DEFAULT_END = "20261231"
@@ -34,10 +35,6 @@ def save_manifest(path: Path, manifest: dict) -> None:
 class RebuildScope:
     start: str = "20000104"
     end: str | None = None
-
-
-def _quarter_ends(year: int) -> list[str]:
-    return [f"{year}0331", f"{year}0630", f"{year}0930", f"{year}1231"]
 
 
 def _month_last_trading_days(dates: list[str]) -> list[str]:
@@ -100,7 +97,7 @@ def rebuild_all(
     resume: bool = True,
     manifest_path: Path | None = None,
 ) -> dict:
-    """全量重建编排：交易日历 → 静态表 → 行情 7 表按日 → 财报按报告期 → 指数。
+    """全量重建编排：交易日历 → 静态表 → 行情 7 表按日 → 指数。
 
     断点续传：manifest 记录每表 completed/failed 并每批落盘；resume=True 跳过
     completed、重试 failed（成功后移除）；resume=False 忽略既有 manifest 全量重拉。
@@ -139,25 +136,8 @@ def rebuild_all(
                 db, con, client, table, dates, manifest, manifest_path
             )
 
-    # 4. 财报按报告期（每季末拉全市场；无数据期空返回正常，单期失败不阻塞）
-    years = range(int(scope.start[:4]), int((scope.end or DEFAULT_END)[:4]) + 1)
-    report_dates = [d for y in years for d in _quarter_ends(y)]
-    for table in FINANCIAL_TABLES:
-        fetched: list[str] = []
-        failed: list[str] = []
-        for rd in report_dates:
-            try:
-                df = client.fetch(table, {"report_date": rd})
-                if df.height:
-                    db.upsert(table, df, keys=["ts_code", "report_date"])
-                    fetched.append(rd)
-            except Exception:
-                failed.append(rd)
-        report["tables"][table] = {
-            "report_dates": fetched, "failed": failed, "rows": _table_rows(db, table),
-        }
-
-    # 5. 指数：index_daily 全历史 + index_weight 每月最后一个交易日
+    # 4. 指数：index_daily 全历史 + index_weight 每月最后一个交易日
+    #    （M3b v1 不含财报三表：真实 API 强制 ts_code，全市场按报告期拉取不可行）
     index_failed: list[str] = []
     for code in INDEX_CODES:
         try:

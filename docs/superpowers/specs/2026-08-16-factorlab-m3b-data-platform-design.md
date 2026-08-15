@@ -8,7 +8,7 @@
 
 `quant-data` 的原始数据与因子混杂、难以维护，用户决定废弃。M3b 在 `quant-platform` 建立**干净的平台自有数据层**：
 
-1. **teajoin 全量重建**（零继承 quant-data）：从 teajoin Tushare 兼容代理按交易日/报告期全量拉取，历史深度 2000-01-04 至今（约 6400 交易日）。
+1. **teajoin 全量重建**（零继承 quant-data）：从 teajoin Tushare 兼容代理按交易日全量拉取，历史深度 2000-01-04 至今（约 6400 交易日）。
 2. **复权能力层**：多复权视图（RAW/QFQ/HFQ/PIT_QFQ）+ AdjustmentService + AdjustmentAudit，支撑因子挖掘平台。
 3. **字段稀疏度治理**：稀疏字段（null_ratio > 20% 或 stock_coverage < 80%）物理剔除，保证因子可挖性。
 4. **验证**：拉取自检 + 完整性自检 + 抽样对拍；平台库验证通过、用户确认后清理 quant-data。
@@ -29,13 +29,16 @@
 | `stk_limit` | 涨跌停价格（Raw Execution/审计支撑） | 按 trade_date | ~6400 |
 | `suspend_d` | 停牌记录 | 按 trade_date | ~6400 |
 | `moneyflow` | 个股资金流向 | 按 trade_date | ~6400 |
-| `income` / `balancesheet` / `cashflow` | 财报三表 | 按 report_date × 全市场 | ~600 |
 | `index_daily` | 指数日线（回测基准） | 按 index_code 全历史 | ~8 |
 | `index_weight` | 指数成分（按历史期） | 按 index_code × 期 | ~800 |
 
 默认指数集：`000300.SH`（沪深300）、`000905.SH`（中证500）、`000852.SH`（中证1000）、`000016.SH`（上证50）。
 
-总估算 **~47,000 请求**，0.2s 间隔 + 重试 → **约 2.5-3 小时**。
+**财报三表（income/balancesheet/cashflow）不在 M3b v1 范围**：真实 API 强制 `ts_code`
+参数（按报告期拉全市场被拒），全市场按股 170 万请求不可行；M3b+ 按 ts_code 分批拉取
+（见 §7）。
+
+总估算 **~46,000 请求（行情系 + 指数）**，0.2s 间隔 + 重试 → **约 2.5-3 小时**。
 
 ### 2.1 字段稀疏度治理
 
@@ -111,14 +114,14 @@ class PlatformDB:
 
 ```
 rebuild_all(db, client, start="20000104", resume=True) -> RebuildReport
-  1. 拉 trade_cal（SSE）→ 交易日列表（骨架）
+  1. 拉 trade_cal（SSE）→ 交易日列表（骨架；未来公告日截断到 today）
   2. 拉 stock_basic（list_status=L/D 分页）
   3. 按交易日循环拉行情系 7 表（daily/daily_basic/adj_factor/stock_st/stk_limit/suspend_d/moneyflow）
      → 每日 7 次请求，实时 upsert + 实时自检（行数>0、列完整）
-  4. 按报告期循环拉财报 3 表（income/balancesheet/cashflow）
-  5. 按指数拉 index_daily（全历史）与 index_weight（按期）
-  6. manifest 更新：completed/failed 日期列表
-  7. 评估字段稀疏度 → 剔除清单 → 重建最终库 schema（物理剔除）
+  4. 按指数拉 index_daily（全历史，ts_code）与 index_weight（每月最后交易日，
+     index_code 参数）
+  5. manifest 更新：completed/failed 日期列表（last_updated=截断后的最近交易日）
+  6. 评估字段稀疏度 → 剔除清单 → 重建最终库 schema（物理剔除）
 ```
 
 **断点续传**：manifest `{table: {completed: [dates], failed: [dates], last_updated}}`；
@@ -128,9 +131,9 @@ rebuild_all(db, client, start="20000104", resume=True) -> RebuildReport
 
 ```
 refresh(db, client) -> RefreshReport
-  从 manifest.last_updated 次日到最新交易日：
+  从 manifest.last_updated（rebuild 已截断为最近交易日，< today）到最新交易日：
   按交易日拉 daily/daily_basic/adj_factor/stock_st/stk_limit/suspend_d/moneyflow；
-  财报/指数成分按新报告期/新期增量。
+  指数/财报增量不在本版本范围（rebuild 全量 + 手动重跑；M3b+ 按 ts_code 分批）。
 ```
 
 ### 3.5 复权能力层（adjust.py）
@@ -200,7 +203,7 @@ def adjustment_sensitivity_check(factor_df, prices, adj, views=("raw","qfq","hfq
 
 ### 4.4 抽样对拍（verify）
 
-随机 30 只股票 × 2020/2023/2026 三段各 20 交易日，与参考库（quant-data）对比 close（容差 0.01%）；除权/停牌日豁免；差异逐条审查输出报告。参考库仅作参考（API 为准），差异不阻塞。
+随机 30 只股票 × 2020/2023/2026 三段各 20 交易日，与参考库（quant-data）对比 close（容差 0.01%）；除权/停牌日豁免；差异逐条审查输出报告。参考库仅作参考（API 为准），差异不阻塞。**参考库列结构自动检测映射**：quant-data 的 daily 为 `date/code`（日期 `2024-01-02`、代码纯数字），平台库为 `trade_date/ts_code`（`YYYYMMDD`、带后缀）——对拍时 ref 侧 date 转 `YYYYMMDD`、code 取 ts_code 前 6 位，join 只取 trade_date/close。
 
 ### 4.5 quant-data 清理流程
 
@@ -224,12 +227,14 @@ def adjustment_sensitivity_check(factor_df, prices, adj, views=("raw","qfq","hfq
   - verify：自检规则、稀疏评估阈值边界
 - **集成**（`@pytest.mark.integration`，token 存在才跑）：
   - 真实 API 小量拉取（3 个交易日 × daily/daily_basic/adj_factor）
-  - 小范围 rebuild 端到端（3 天 × 2 股票 + 1 报告期）
+  - 小范围 rebuild 端到端（3 天 × 2 股票）
 - **防回归**：M1/M2/M3a 全部测试保持通过
 
 ## 7. 明确不做（M3b 边界）
 
 - corporate_action 从 dividend 精确派生（存 dividend 原始表，派生留后续）
+- **财报三表（income/balancesheet/cashflow）**：真实 API 强制 `ts_code` 参数（按报告期
+  拉全市场被拒），全市场按股约 170 万请求不可行——M3b+ 按 ts_code 分批拉取
 - 指数成分的历史精确回溯（index_weight 按月已够）
 - quant-data 清理自动化（人工确认）
 - PIT 复权全历史重建（PIT_QFQ 按需计算）
@@ -239,6 +244,6 @@ def adjustment_sensitivity_check(factor_df, prices, adj, views=("raw","qfq","hfq
 
 ## 8. 时间与资源
 
-- 全量重建估算 2.5-3 小时（47,000 请求 × 0.2s + 重试）
+- 全量重建估算 2.5-3 小时（~46,000 请求（行情系 + 指数）× 0.2s + 重试）
 - token 到期 2026-08-22：重建须在到期前完成或分批（manifest 续传支持跨会话）
-- 平台库体积估算：daily（6400×5400×10 列 float）≈ 1.4GB + daily_basic ≈ 1.4GB + 财报 ≈ 1GB，总量约 4-5GB（16GB 机器可承受；查询 SQL-first + 列裁剪沿用 M3a 纪律）
+- 平台库体积估算：daily（6400×5400×10 列 float）≈ 1.4GB + daily_basic ≈ 1.4GB，总量约 3-4GB（16GB 机器可承受；查询 SQL-first + 列裁剪沿用 M3a 纪律）
