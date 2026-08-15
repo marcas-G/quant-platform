@@ -61,12 +61,52 @@ def clip(df: pl.DataFrame, ctx, lower: float, upper: float) -> pl.DataFrame:
 
 @register_processor
 def fillna(df: pl.DataFrame, ctx, method: str = "value", value: float = 0.0) -> pl.DataFrame:
-    """缺失处理：value（常数）或 forward（组内前向，按 code+date 排序）。"""
+    """缺失处理：value（常数）、forward（组内前向，按 code+date 排序）或
+    industry_mean（静态行业组内均值，组键 date+industry）。"""
     x = _x(df)
     if method == "value":
         expr = x.fill_null(value)
     elif method == "forward":
         expr = x.fill_null(strategy="forward").over("code", order_by="date")
+    elif method == "industry_mean":
+        if ctx is None or ctx.db is None:
+            raise ValueError("fillna(method=industry_mean) 需要 ProcessCtx(db) 上下文")
+        industry = ctx.db.execute(
+            "SELECT symbol, industry FROM stock_basic_tushare WHERE industry IS NOT NULL AND industry != ''"
+        ).pl()
+        enriched = df.join(industry.rename({"symbol": "code"}), on="code", how="left")
+        return enriched.with_columns(
+            x.fill_null(x.mean().over(["date", "industry"])).alias(SIGNAL)
+        ).drop("industry")
     else:
-        raise ValueError(f"fillna 不支持的 method: {method}（value|forward）")
+        raise ValueError(f"fillna 不支持的 method: {method}（value|forward|industry_mean）")
     return df.with_columns(expr.alias(SIGNAL))
+
+
+@register_processor
+def neutralize(df: pl.DataFrame, ctx, by: str = "market") -> pl.DataFrame:
+    """截面中心化：market 全截面 demean；industry 按静态行业组内 demean；
+    size 按 daily_basic.total_mv 分组 demean。industry/size 需要 ProcessCtx(db)。"""
+    x = _x(df)
+    if by == "market":
+        return df.with_columns((x - x.mean().over("date")).alias(SIGNAL))
+    if ctx is None or ctx.db is None:
+        raise ValueError("neutralize(by=industry/size) 需要 ctx（ProcessCtx 的 db 连接）")
+    if by == "industry":
+        industry = ctx.db.execute(
+            "SELECT symbol, industry FROM stock_basic_tushare WHERE industry IS NOT NULL AND industry != ''"
+        ).pl()
+        enriched = df.join(industry.rename({"symbol": "code"}), on="code", how="left")
+        missing = enriched["industry"].null_count()
+        if missing:
+            raise ValueError(f"{missing} 只股票缺少行业信息，无法 neutralize(by=industry)")
+        return enriched.with_columns((x - x.mean().over(["date", "industry"])).alias(SIGNAL)).drop("industry")
+    if by == "size":
+        mv = ctx.db.execute("SELECT trade_date, ts_code, total_mv FROM daily_basic").pl().with_columns(
+            # trade_date 'YYYYMMDD' → 面板 date 同格式（ISO 字符串），ts_code → symbol（去后缀）
+            pl.col("trade_date").str.strptime(pl.Date, "%Y%m%d").cast(pl.String).alias("date"),
+            pl.col("ts_code").str.split(".").list.first().alias("code"),
+        ).select(["date", "code", "total_mv"])
+        enriched = df.join(mv, on=["date", "code"], how="left")
+        return enriched.with_columns((x - x.mean().over(["date", "total_mv"])).alias(SIGNAL)).drop("total_mv")
+    raise ValueError(f"neutralize 不支持的 by: {by}（market|industry|size）")

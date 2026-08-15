@@ -180,3 +180,128 @@ def test_robustzscore_null_for_mad_zero_section():
     sec1 = out.filter(pl.col("date") == "2024-01-02")["signal"]
     assert sec1.to_list() == [None, None, None]  # MAD=0 截面 → null（不产生 inf）
     assert out["signal"].drop_nulls().len() == 2  # 01-03 截面 [1,2] MAD>0 → 有值
+
+
+from dataclasses import dataclass
+import duckdb
+
+@dataclass
+class FakeCtx:
+    db: duckdb.DuckDBPyConnection | None = None
+
+
+def build_basic_db(tmp_path):
+    db = duckdb.connect(tmp_path / "t.duckdb")
+    db.execute("CREATE TABLE stock_basic_tushare (symbol VARCHAR, industry VARCHAR)")
+    db.execute("INSERT INTO stock_basic_tushare VALUES ('A', '银行'), ('B', '银行'), ('C', '白酒'), ('D', '白酒')")
+    db.execute("CREATE TABLE daily_basic (trade_date VARCHAR, ts_code VARCHAR, total_mv DOUBLE)")
+    db.execute("INSERT INTO daily_basic VALUES ('20240102', '000001.SZ', 100.0), ('20240103', '000001.SZ', 120.0)")
+    db.close()
+    return tmp_path / "t.duckdb"
+
+
+def test_neutralize_market_demean():
+    df = _panel()
+    out = run_process_chain(df, ["neutralize(by=market)"], ctx=None)
+    per_date = out.group_by("date").agg(pl.col("signal").mean())
+    assert per_date["signal"].abs().max() < 1e-9
+
+
+def test_neutralize_industry_group_mean_zero(tmp_path):
+    db_path = build_basic_db(tmp_path)
+    import duckdb
+    con = duckdb.connect(str(db_path), read_only=True)
+    try:
+        df = _panel()
+        out = run_process_chain(df, ["neutralize(by: industry)"], ctx=con)
+    finally:
+        con.close()
+    # A/B 同行业（银行）组内均值应为 0；C/D 同行业（白酒）同理
+    means = out.join(
+        pl.DataFrame({"code": ["A", "B"], "industry": ["银行", "银行"]}),
+        on="code",
+    ).group_by("date").agg(pl.col("signal").mean())
+    assert means["signal"].abs().max() < 1e-9
+
+
+def test_neutralize_unknown_by():
+    with pytest.raises(ValueError, match="neutralize"):
+        run_process_chain(_panel(), ["neutralize(by=bogus)"], ctx=None)
+
+
+def test_neutralize_requires_db_context():
+    with pytest.raises(ValueError, match="ctx"):
+        run_process_chain(_panel(), ["neutralize(by: industry)"], ctx=None)
+
+
+def test_fillna_industry_mean(tmp_path):
+    db_path = build_basic_db(tmp_path)
+    import duckdb
+    con = duckdb.connect(str(db_path), read_only=True)
+    try:
+        df = _panel().with_columns(
+            pl.when(pl.col("code") == "D").then(None).otherwise(pl.col("signal")).alias("signal")
+        )
+        out = run_process_chain(df, ["fillna(method: industry_mean)"], ctx=con)
+    finally:
+        con.close()
+    assert out["signal"].null_count() == 0
+    # D 属于白酒组（C/D），组内均值 (3+100)/2=51.5 填 D 的 null——但 100 是极端值？
+    # 注意：组内均值包含 D 自身的 null（不计入），用 C 的 3.0 与 A/B 无关
+    # 更稳的断言：D 的填充值 = C 在对应日期的值（同组唯一非 null）
+    d_vals = out.filter(pl.col("code") == "D")["signal"].to_list()
+    c_vals = out.filter(pl.col("code") == "C")["signal"].to_list()
+    assert d_vals == c_vals
+
+
+def test_neutralize_size_demean(tmp_path):
+    # 按 daily_basic.total_mv 分组 demean：同日同市值 → 同组（非退化）；
+    # 同日不同市值 → 组内 1 行 → demean 恒 0（计划已知的简化，此处固化行为）。
+    db_path = build_basic_db(tmp_path)
+    db = duckdb.connect(str(db_path))  # 可写连接补数据（只读连接禁止 INSERT）
+    db.execute("INSERT INTO daily_basic VALUES ('20240102', '000002.SZ', 100.0)")
+    db.close()
+    con = duckdb.connect(str(db_path), read_only=True)
+    try:
+        df = pl.DataFrame({
+            "date": ["2024-01-02", "2024-01-02", "2024-01-03", "2024-01-03"],
+            "code": ["000001", "000002", "000001", "000002"],
+            "signal": [1.0, 3.0, 2.0, 4.0],
+        })
+        out = run_process_chain(df, ["neutralize(by: size)"], ctx=con)
+    finally:
+        con.close()
+    day1 = out.filter(pl.col("date") == "2024-01-02").sort("code")["signal"].to_list()
+    assert abs(day1[0] - (-1.0)) < 1e-9 and abs(day1[1] - 1.0) < 1e-9  # 同组 [1,3] → [-1,1]
+    day2 = out.filter(pl.col("date") == "2024-01-03").sort("code")["signal"].to_list()
+    assert all(abs(v) < 1e-9 for v in day2)  # mv 120 vs 100 不同组 → 单行组 demean=0
+
+
+def test_neutralize_size_unmatched_code_demean_zero(tmp_path):
+    # daily_basic 无记录（total_mv 为 null）→ 单行组 → demean 恒 0；join 不报错
+    db_path = build_basic_db(tmp_path)
+    con = duckdb.connect(str(db_path), read_only=True)
+    try:
+        df = pl.DataFrame({
+            "date": ["2024-01-02", "2024-01-02"],
+            "code": ["000001", "000099"],
+            "signal": [5.0, 7.0],
+        })
+        out = run_process_chain(df, ["neutralize(by: size)"], ctx=con)
+    finally:
+        con.close()
+    assert out["signal"].abs().max() < 1e-9
+
+
+def test_neutralize_industry_missing_info(tmp_path):
+    # 股票不在 stock_basic_tushare → 行业缺失 → 报错（不做静默按全截面 demean）
+    db_path = build_basic_db(tmp_path)
+    con = duckdb.connect(str(db_path), read_only=True)
+    try:
+        df = _panel().with_columns(
+            pl.when(pl.col("code") == "D").then(pl.lit("E")).otherwise(pl.col("code")).alias("code")
+        )
+        with pytest.raises(ValueError, match="缺少行业信息"):
+            run_process_chain(df, ["neutralize(by: industry)"], ctx=con)
+    finally:
+        con.close()

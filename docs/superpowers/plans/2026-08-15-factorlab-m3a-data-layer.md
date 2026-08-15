@@ -1020,40 +1020,37 @@ Append to `src/factorlab/process/processors.py`（并在文件头加 `import duc
 @register_processor
 def neutralize(df: pl.DataFrame, ctx, by: str = "market") -> pl.DataFrame:
     """截面中心化：market 全截面 demean；industry 按静态行业组内 demean；
-    size 按 daily_basic.total_mv 分组 demean。"""
-    if ctx.db is None:
-        raise ValueError("neutralize 需要 ProcessCtx(db) 上下文")
+    size 按 daily_basic.total_mv 分组 demean。industry/size 需要 ProcessCtx(db)。"""
     x = _x(df)
     if by == "market":
-        expr = x - x.mean().over("date")
-    elif by == "industry":
+        return df.with_columns((x - x.mean().over("date")).alias(SIGNAL))
+    if ctx is None or ctx.db is None:
+        raise ValueError("neutralize(by=industry/size) 需要 ctx（ProcessCtx 的 db 连接）")
+    if by == "industry":
         industry = ctx.db.execute(
             "SELECT symbol, industry FROM stock_basic_tushare WHERE industry IS NOT NULL AND industry != ''"
         ).pl()
         enriched = df.join(industry.rename({"symbol": "code"}), on="code", how="left")
-        if enriched["industry"].null_count() > 0:
-            raise ValueError(f"{enriched['industry'].null_count()} 只股票缺少行业信息，无法 neutralize(by=industry)")
-        expr = x - x.mean().over(["date", "industry"])
-        return enriched.with_columns(expr.alias(SIGNAL)).drop("industry")
-    elif by == "size":
-        mv = ctx.db.execute(
-            "SELECT trade_date, ts_code, total_mv FROM daily_basic"
-        ).pl().with_columns(
-            pl.col("trade_date").str.strptime(pl.Date, "%Y%m%d"),
-            pl.col("ts_code").str.split(".").first().alias("code"),
+        missing = enriched["industry"].null_count()
+        if missing:
+            raise ValueError(f"{missing} 只股票缺少行业信息，无法 neutralize(by=industry)")
+        return enriched.with_columns((x - x.mean().over(["date", "industry"])).alias(SIGNAL)).drop("industry")
+    if by == "size":
+        mv = ctx.db.execute("SELECT trade_date, ts_code, total_mv FROM daily_basic").pl().with_columns(
+            # trade_date 'YYYYMMDD' → 面板 date 同格式（ISO 字符串），ts_code → symbol（去后缀）
+            pl.col("trade_date").str.strptime(pl.Date, "%Y%m%d").cast(pl.String).alias("date"),
+            pl.col("ts_code").str.split(".").list.first().alias("code"),
         ).select(["date", "code", "total_mv"])
         enriched = df.join(mv, on=["date", "code"], how="left")
-        expr = x - x.mean().over(["date", "total_mv"])
-        return enriched.with_columns(expr.alias(SIGNAL)).drop("total_mv")
-    else:
-        raise ValueError(f"neutralize 不支持的 by: {by}（market|industry|size）")
+        return enriched.with_columns((x - x.mean().over(["date", "total_mv"])).alias(SIGNAL)).drop("total_mv")
+    raise ValueError(f"neutralize 不支持的 by: {by}（market|industry|size）")
 ```
 
 `fillna(method=industry_mean)` 追加：
 
 ```python
     elif method == "industry_mean":
-        if ctx is None or not hasattr(ctx, "db"):
+        if ctx is None or ctx.db is None:
             raise ValueError("fillna(method=industry_mean) 需要 ProcessCtx(db) 上下文")
         industry = ctx.db.execute(
             "SELECT symbol, industry FROM stock_basic_tushare WHERE industry IS NOT NULL AND industry != ''"
@@ -1074,6 +1071,27 @@ Expected: PASS。
 git add src/factorlab/process/processors.py tests/test_process.py
 git commit -m "feat: add neutralize and industry-mean fillna"
 ```
+
+
+
+**实现备注（Task 7 落地后修订，与原规格差异）：**
+- ctx 检查移入 industry/size 分支内部：`neutralize(by=market)` 不依赖 db，
+  `test_neutralize_market_demean` 传 `ctx=None` 必须成功（原规格的 `if ctx.db is None`
+  前置检查与测试矛盾）。
+- size 分支两处修正使代码可运行：`str.split(".").first()` 在 polars 中对 List 列
+  返回整列首个元素（非每元素首个），改用 `.list.first()`；`with_columns` 不改变
+  `trade_date` 列名且 `select(["date", ...])` 会失败，故 strptime 结果
+  `.cast(pl.String).alias("date")`——面板 `date` 为 String（"2024-01-02"），
+  polars 拒绝 String↔Date 混型 join key（SchemaError）。
+- 错误消息含小写 `ctx` 以匹配测试 `match="ctx"`（"ProcessCtx" 大写 C 不匹配）。
+- 已知 concern：size 按 `total_mv` 原始值分组，连续市值下组内通常 1 行 →
+  demean 恒 0（退化）；未匹配 daily_basic 的股票 `total_mv` 为 null → 单行组
+  demean 恒 0。已用单元测试固化该行为（`test_neutralize_size_demean` /
+  `test_neutralize_size_unmatched_code_demean_zero`），分桶修正在后续任务
+  （Task 9/集成）评估。
+- 行业缺失路径：股票不在 `stock_basic_tushare` → `ValueError`
+  （`test_neutralize_industry_missing_info`）；fillna industry_mean 对缺失行业
+  不做报错（null 组内填自身均值）。
 
 ---
 
