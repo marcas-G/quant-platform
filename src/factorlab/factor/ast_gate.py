@@ -103,3 +103,10 @@ def validate_formula(source: str) -> None:
                     node.lineno,
                     node.col_offset,
                 )
+
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
+            raise FactorDSLError(
+                "禁止属性调用；请使用已导入的算子函数",
+                node.lineno,
+                node.col_offset,
+            )

@@ -30,3 +30,8 @@ def test_rejects_os_import():
 def test_rejects_eval_call():
     with pytest.raises(FactorDSLError):
         validate_formula("signal = eval('close')\n")
+
+
+def test_rejects_attribute_call_io():
+    with pytest.raises(FactorDSLError):
+        validate_formula("import polars as pl\nsignal = pl.read_csv('x.csv')\n")
