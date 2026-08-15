@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import datetime
 import json
 from dataclasses import dataclass
 from pathlib import Path
@@ -119,6 +120,11 @@ def rebuild_all(
     dates = sorted(cal["cal_date"].to_list())
     if not dates:
         raise ValueError("trade_cal 无交易日，检查 token/日期范围")
+    # trade_cal 会返回未来公告日（实测最大 20261231）：截断到 today，避免为未来日白拉请求
+    today = datetime.date.today().strftime("%Y%m%d")
+    dates = [d for d in dates if d <= today]
+    if not dates:
+        raise ValueError("trade_cal 无交易日（全部为未来公告日），检查 token/日期范围")
     db.upsert("trade_cal", cal, keys=["exchange", "cal_date"])
 
     # 2. 静态表（上市 L + 退市 D，分页）
@@ -158,7 +164,7 @@ def rebuild_all(
             continue
         try:
             for code in INDEX_CODES:
-                w = client.fetch("index_weight", {"ts_code": code, "trade_date": d})
+                w = client.fetch("index_weight", {"index_code": code, "trade_date": d})
                 if w.height:
                     db.upsert("index_weight", w, keys=["index_code", "trade_date"])
             iw_completed.add(d)

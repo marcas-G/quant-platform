@@ -164,7 +164,26 @@ def test_index_weight_fetches_month_last_trading_day(tmp_path, monkeypatch):
     iw = [params for name, params in calls if name == "index_weight"]
     assert len(iw) == 8  # 2 个月 × 4 指数，每月 1 次
     assert sorted({p["trade_date"] for p in iw}) == ["20240103", "20240202"]  # 每月最后一个交易日
-    assert {p["ts_code"] for p in iw} == set(INDEX_CODES)
+    assert {p["index_code"] for p in iw} == set(INDEX_CODES)  # 真实 API 必填参数是 index_code
+
+
+def test_rebuild_filters_future_cal_dates(tmp_path, monkeypatch):
+    """trade_cal 返回未来公告日（真实 API 实测含未来日）时 dates 截断到 today：
+    不为未来日白拉请求，last_updated 取截断后的最近交易日。"""
+    tables = _tables()
+    tables[("trade_cal", "")] = pl.DataFrame({
+        "exchange": ["SSE", "SSE", "SSE"],
+        "cal_date": ["20240102", "20240103", "20991231"],
+        "is_open": [1, 1, 1],
+    })
+    calls = []
+    db = PlatformDB(tmp_path / "staging.duckdb")
+    client = _fake_client(monkeypatch, tables, calls=calls)
+    rebuild_all(db, client, scope=RebuildScope(start="20240102", end="20240103"),
+                manifest_path=tmp_path / "manifest.json")
+    daily_dates = {p["trade_date"] for name, p in calls if name == "daily"}
+    assert "20991231" not in daily_dates          # 未来日不拉
+    assert load_manifest(tmp_path / "manifest.json")["last_updated"] == "20240103"  # 截断后最近交易日
 
 
 def test_rebuild_default_manifest_path_uses_data_dir(tmp_path, monkeypatch):

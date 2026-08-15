@@ -3,7 +3,7 @@ import pytest
 
 from factorlab.data.fetcher import TeaJoinClient
 from factorlab.data.platform_db import PlatformDB
-from factorlab.data.rebuild import load_manifest, save_manifest
+from factorlab.data.rebuild import RebuildScope, load_manifest, rebuild_all, save_manifest
 from factorlab.data.refresh import refresh
 
 
@@ -37,6 +37,45 @@ def test_refresh_pulls_from_last_updated(tmp_path, monkeypatch):
     manifest = load_manifest(manifest_path)
     assert manifest["last_updated"] == "20240104"
     assert "20240104" in manifest["daily"]["completed"]
+
+
+def test_refresh_after_rebuild_no_deadlock(tmp_path, monkeypatch):
+    """rebuild 截断未来公告日后 last_updated=最近交易日（< today），refresh 正常续拉新日。
+    回归：旧版 last_updated 可能是未来日（trade_cal 返回未来公告日），refresh 从此
+    日拉到 today 无新日、永远不推进——死锁。"""
+    db = PlatformDB(tmp_path / "p.duckdb")
+    manifest_path = tmp_path / "manifest.json"
+    # 先 rebuild：trade_cal 含未来公告日 20991231
+    tables = {
+        ("trade_cal", ""): pl.DataFrame({
+            "exchange": ["SSE", "SSE", "SSE"],
+            "cal_date": ["20240102", "20240103", "20991231"],
+            "is_open": [1, 1, 1],
+        }),
+        ("stock_basic", ""): pl.DataFrame({"ts_code": ["A.SZ"]}),
+        ("daily", "20240102"): pl.DataFrame({"trade_date": ["20240102"], "ts_code": ["A.SZ"], "close": [10.0]}),
+        ("daily", "20240103"): pl.DataFrame({"trade_date": ["20240103"], "ts_code": ["A.SZ"], "close": [11.0]}),
+    }
+    rebuild_client = TeaJoinClient(token="t", interval=0.0)
+
+    def responder(api_name, params, fields=None):
+        key = params.get("trade_date") or params.get("cal_date") or ""
+        df = tables.get((api_name, key))
+        return df if df is not None else pl.DataFrame()
+
+    monkeypatch.setattr(rebuild_client, "fetch", responder)
+    monkeypatch.setattr(rebuild_client, "fetch_paged", responder)
+    rebuild_all(db, rebuild_client, scope=RebuildScope(start="20240102", end="20240103"),
+                manifest_path=manifest_path)
+    assert load_manifest(manifest_path)["last_updated"] == "20240103"  # 未来日被截断
+
+    # 再 refresh：下一个交易日正常拉取（last_updated < today，无死锁）
+    client = _client(monkeypatch, pl.DataFrame({
+        "trade_date": ["20240104"], "ts_code": ["A.SZ"], "close": [12.0],
+    }))
+    report = refresh(db, client, manifest_path=manifest_path)
+    assert report["new_dates"] == ["20240104"]
+    assert load_manifest(manifest_path)["last_updated"] == "20240104"
 
 
 def test_refresh_no_new_dates(tmp_path, monkeypatch):
