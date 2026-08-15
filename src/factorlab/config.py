@@ -12,7 +12,7 @@ class Settings(BaseSettings):
 
     quant_db: Path = Path("C:/Users/ThinkPad/quant-data/quant.duckdb")
     plugin_dir: Path = Path.home() / ".factorlab" / "plugins"
-    teajoin_base_url: str = "https://teajoin.com/g"
+    teajoin_base_url: str = "https://teajoin.com"  # 根路径；/g 为文档页
     teajoin_token: str = ""
     default_max_memory: str = "4GB"
     default_chunk_size: int = 1000
