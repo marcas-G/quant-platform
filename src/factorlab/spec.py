@@ -14,13 +14,22 @@ DATE_PATTERN = r"^\d{4}-\d{2}-\d{2}$"
 
 
 class UniverseSpec(BaseModel):
+    ref: str | None = None          # 命名引用或文件路径（查 universes_dir）
     codes: list[str] | None = None
     rules: dict[str, Any] | None = None
 
+    @model_validator(mode="before")
+    @classmethod
+    def _from_string(cls, value: Any) -> Any:
+        if isinstance(value, str):
+            return {"ref": value}
+        return value
+
     @model_validator(mode="after")
     def _exactly_one_universe(self) -> "UniverseSpec":
-        if (self.codes is None) == (self.rules is None):
-            raise ValueError("universe.codes 与 universe.rules 必须二选一")
+        chosen = sum(x is not None for x in (self.ref, self.codes, self.rules))
+        if chosen != 1:
+            raise ValueError("universe 必须且只能提供 ref / codes / rules 之一")
         return self
 
 

@@ -85,3 +85,20 @@ def test_rejects_weight_sum_length_mismatch(tmp_path):
             ],
             combine={"method": "weight_sum", "weights": [0.5]},
         ))
+
+
+def test_universe_accepts_string_reference(tmp_path):
+    path = make_spec(tmp_path, universe="research_50")
+    spec = load_spec(path)
+    assert spec.universe.ref == "research_50"
+    assert spec.universe.codes is None
+
+
+def test_universe_rejects_multiple_sources(tmp_path):
+    with pytest.raises(ValueError):
+        load_spec(make_spec(tmp_path, universe={"ref": "a", "codes": ["000001.SZ"]}))
+
+
+def test_universe_rejects_empty(tmp_path):
+    with pytest.raises(ValueError):
+        load_spec(make_spec(tmp_path, universe={}))
