@@ -293,6 +293,21 @@ DuckDB 只读加载；SQL-first 过滤；`date` cast `pl.Date`；数值列 float
 
 常量：`DAILY_TABLES`（7 行情表）、`FINANCIAL_TABLES`（3 财报表）、`INDEX_CODES`（4 指数）。
 
+### `factorlab.data.refresh` 增量续拉
+
+- `refresh(db, client, manifest_path=None) -> dict`
+  从 manifest.last_updated 次日到最新交易日（`datetime.date.today()`）增量续拉
+  行情 7 表（DAILY_TABLES）。manifest_path 缺省 `settings.data_dir / "manifest.json"`。
+  返回 `{"new_dates": [新交易日], "tables": {table: {"rows": 新拉行数}}}`。
+  行为：trade_cal 按 is_open=1 过滤取 `> last_updated` 的日期；无新日期直接返回空
+  报告（不改写 manifest）；逐表逐日拉取，`upsert` 默认 `dedup=True`——崩溃窗口
+  重拉已存在日期按 (trade_date, ts_code) 去重替换（与 rebuild 的 dedup=False 不同），
+  单日失败跳过不阻塞其他日期/表。每表 completed 合并回 manifest，成功后
+  `last_updated` 推进到 `new_dates[-1]` 并落盘。
+  错误语义：manifest 缺失或 `last_updated` 不存在抛
+  `ValueError("manifest 无 last_updated，请先 rebuild")`；trade_cal 缺 `is_open`
+  列或返回异常时异常向上传播（fail-loud，不静默）。
+
 ### `factorlab.data.verify` 数据验证与抽样对拍
 
 - `verify_all(db, ref_db=None, n_stocks=30, seed=42) -> dict`
