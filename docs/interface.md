@@ -209,7 +209,8 @@ DuckDB 只读加载；SQL-first 过滤；`date` cast `pl.Date`；数值列 float
 
 处理器：`winsorize(quantile=0.99)`、`standardize()`（别名 `zscore`）、`csranknorm()`、
 `robustzscore()`、`neutralize(by=market|industry|size)`、`clip(lower, upper)`、
-`fillna(method=value|forward|industry_mean)`。全部截面语义（`.over("date")`）。
+`fillna(method=value|forward|industry_mean)`。截面类处理器按 `.over("date")` 分组；
+`fillna(method=forward)` 按代码内日期前向；`clip`/`fillna(value)` 为元素级。
 
 **spec 文件内的链项必须用 `=` 分隔**（`neutralize(by=industry)`），`key: value` 冒号
 写法会被 YAML 解析为映射而报错。
