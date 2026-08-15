@@ -5,6 +5,11 @@ from rich.console import Console
 
 from factorlab import __version__
 from factorlab.config import settings
+from factorlab.data.fetcher import TeaJoinClient
+from factorlab.data.platform_db import PlatformDB
+from factorlab.data.rebuild import RebuildScope, build_final_db, rebuild_all
+from factorlab.data.refresh import refresh
+from factorlab.data.verify import verify_all
 from factorlab.factor.errors import FactorDSLError
 from factorlab.factor.ast_gate import validate_formula
 from factorlab.ops import plugins, registry
@@ -73,3 +78,51 @@ def op_add(path: Path, force: bool = False) -> None:
 def op_remove(name: str) -> None:
     plugins.remove_plugin(name, plugin_dir=settings.plugin_dir)
     console.print(f"disabled: {name}")
+
+
+data_app = typer.Typer(no_args_is_help=True)
+app.add_typer(data_app, name="data")
+
+
+def _staging_db() -> PlatformDB:
+    settings.data_dir.mkdir(parents=True, exist_ok=True)
+    return PlatformDB(settings.data_dir / "rebuild_staging.duckdb")
+
+
+def _final_db() -> PlatformDB:
+    return PlatformDB(settings.data_dir / "factorlab.duckdb")
+
+
+def _client() -> TeaJoinClient:
+    return TeaJoinClient(token=settings.teajoin_token, base_url=settings.teajoin_base_url)
+
+
+@data_app.command("rebuild")
+def data_rebuild(start: str = "20000104", end: str | None = None, resume: bool = True) -> None:
+    """teajoin 全量重建平台数据（暂存库 → 稀疏剔除 → 最终库）。"""
+    if not settings.teajoin_token:
+        console.print("错误: 未配置 FACTORLAB_TEAJOIN_TOKEN（.env）")
+        raise typer.Exit(code=1)
+    staging = _staging_db()
+    report = rebuild_all(staging, _client(), scope=RebuildScope(start=start, end=end), resume=resume)
+    console.print(f"rebuild 完成: {report['tables']}")
+    final = build_final_db(staging, settings.data_dir / "factorlab.duckdb")
+    console.print(f"稀疏剔除: {final['excluded_fields']}")
+    console.print(f"最终库表: {final['tables']}")
+
+
+@data_app.command("refresh")
+def data_refresh() -> None:
+    """增量拉取到最新交易日。"""
+    if not settings.teajoin_token:
+        console.print("错误: 未配置 FACTORLAB_TEAJOIN_TOKEN（.env）")
+        raise typer.Exit(code=1)
+    report = refresh(_final_db(), _client())
+    console.print(f"refresh 完成: {report}")
+
+
+@data_app.command("verify")
+def data_verify(compare: Path | None = None) -> None:
+    """完整性自检 + 稀疏摘要 + 可选抽样对拍。"""
+    report = verify_all(_final_db(), ref_db=compare)
+    console.print(report)

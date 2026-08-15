@@ -339,4 +339,57 @@ python -m pytest
 ```
 
 当前覆盖 Spec 校验、AST 白名单、算子插件生命周期、最小计算路径、polars_ta 算子族、
-平台薄封装、分区校验与防未来函数，以及 CLI smoke。
+平台薄封装、分区校验与防未来函数、CLI smoke、数据平台单元
+（fetcher/platform_db/rebuild/sparsity/verify/refresh/adjust/audit）与 CLI data
+命令，以及 teajoin 集成测试（token 配置时真实拉取，`tests/test_e2e_data.py`）。
+
+## 6. 数据平台（M3b）
+
+数据平台层以 teajoin（Tushare 兼容代理）为数据源，落地本地 DuckDB 库供因子计算
+与回测只读使用。全链路：拉取（TeaJoinClient）→ 落库（PlatformDB）→ 全量重建/增量
+（rebuild/refresh）→ 校验（verify）→ 复权视图（adjust）。本节为总览 + CLI 用法；
+各模块详细 API 见 `4.x` 对应小节。
+
+### `factorlab.data.fetcher.TeaJoinClient`
+
+teajoin Tushare 兼容代理客户端（全局限流 0.2s、指数退避重试 3 次、4xx 抛
+`TeaJoinError`）：
+
+- `fetch(api_name, params, fields=None) -> pl.DataFrame`：单次拉取。`fields` 为
+  逗号分隔白名单；空串列自动转 null、纯数值列转 Float64；空数据返回空表。
+- `fetch_paged(api_name, params, page_size=5000, max_pages=50, fields=None)`：
+  通用分页（limit/offset 注入，空页停止）；超过 `page_size*max_pages` 行抛
+  `TeaJoinError`。
+
+token 来自 `FACTORLAB_TEAJOIN_TOKEN`；端点 `FACTORLAB_TEAJOIN_BASE_URL`
+（默认 `https://teajoin.com`，根路径）。构造 `TeaJoinClient(token="")` 不报错，
+缺 token 由调用方（`rebuild_all` 抛 `ValueError`、CLI 打印错误并退出）处理。
+
+### CLI：`factorlab data rebuild|refresh|verify`
+
+| 命令 | 说明 |
+|------|------|
+| `factorlab data rebuild [--start 20000104] [--end 20261231] [--resume/--no-resume]` | teajoin 全量重建。先写**暂存库** `data/rebuild_staging.duckdb`（`rebuild_all`，manifest 断点续传），再 `build_final_db` 稀疏剔除重建**最终库** `data/factorlab.duckdb`。缺 token 打印错误并以非 0 退出 |
+| `factorlab data refresh` | 增量续拉：读 manifest 的 `last_updated` 与 failed 日期，`upsert(dedup=True)` 更新**最终库** `data/factorlab.duckdb`。缺 token 同 rebuild；manifest 缺失（未 rebuild 过）抛 `ValueError` |
+| `factorlab data verify [--compare PATH]` | 完整性自检 + 稀疏摘要（读**最终库**）+ 可选抽样对拍（参考库仅参考，差异不阻塞）。无需 token；最终库不存在时完整性规则逐条 skipped，正常退出 |
+
+路径语义：`rebuild` 写暂存库并重建最终库（两库都在 `settings.data_dir`）；
+`refresh`/`verify` 直接操作最终库。`start/end` 为 `YYYYMMDD`（缺省 end 为
+20261231）。
+
+### 汇总速查（详细 API 见 `4.x` 对应小节）
+
+- `factorlab.data.platform_db.PlatformDB`：duckdb 写库，自动建表、按 keys upsert
+  去重（`dedup=False` 纯 INSERT 批量语义）、`integrity_check()` 六规则自检
+  （日历缺日/重复行/pct_chg 自洽/adj_factor 有效/stk_limit 边界/市值有效）。
+- `factorlab.data.rebuild`：`rebuild_all`（manifest 断点续传编排：交易日历 → 静态
+  → 行情 7 表按日 → 财报按报告期 → 指数）；`assess_sparsity`（每表每字段
+  null_ratio/stock_coverage/first_date）；`build_final_db`（null_ratio > 20% 或
+  stock_coverage < 80% 的字段物理剔除后重建最终库）。
+- `factorlab.data.refresh.refresh`：从 manifest `last_updated` 增量续拉行情 7 表，
+  重试 failed 日期，`upsert` 默认 `dedup=True` 去重替换。
+- `factorlab.data.verify`：`verify_all` 完整性 + 稀疏摘要 + 抽样对拍（30 只 ×
+  三段 × 相对误差容差 1e-4）；`compare_sample` 对拍细节与错误语义见 `4.x`。
+- `factorlab.data.adjust`：`view_prices`（raw/qfq/hfq/pit_qfq 价格视图）、
+  `total_return`（HFQ 含分红再投资收益）、审计三查（`lookahead_check` /
+  `scale_invariance_check` / `adjustment_sensitivity_check`）。
