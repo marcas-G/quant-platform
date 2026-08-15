@@ -50,7 +50,8 @@
 - 评估：RankIC / PearsonIC / 十分位收益 / 覆盖度 / 换手率（复用 Rust `quant_core`），
   叠加分层回测累计净值、因子对比、组合合成。
 - 因子与结果本地存储（parquet + JSON 摘要 + 算子版本快照）。
-- CLI：`run / list / show / compare / serve / data refresh / op list / op doc`。
+- CLI：`run / list / show / compare / serve / data refresh / op list / op doc /
+  op add / op remove`。
 - Web 可视化：FastAPI + Jinja2 + Plotly。
 - 新算子扩展：公式内 `def`/白名单 `import` + Python 算子插件注册表 + DSL 宏。
 - 数据源：本地 DuckDB（只读）为主，teajoin 增量补数据到平台自有缓存库。
@@ -122,7 +123,8 @@ Python 3.13 / Windows 可用性与当前环境兼容性。
 - 因子脚本 AST 白名单安全校验（禁止循环、副作用、外部 IO/网络），以及 DSL 错误定位。
 - DuckDB 只读数据层、universe 过滤、teajoin 增量拉取与平台缓存。
 - process 链注册表（winsorize/zscore/neutralize 等），用 Polars 表达式实现。
-- 算子注册表、别名映射、平台特有算子（returns/vwap/adv20 等薄封装）与版本快照。
+- 算子注册表、用户插件目录 `~/.factorlab/plugins` 的加载/启停、别名映射、
+  平台特有算子（returns/vwap/adv20 等薄封装）与版本快照。
 - 评估编排：调 `quant_core`，外加分层回测、因子对比、组合合成。
 - CLI、Web、结果持久化与版本追溯。
 
@@ -136,7 +138,7 @@ quant-platform/
 ├── docs/superpowers/specs/2026-08-15-factor-dsl-platform-design.md
 ├── src/factorlab/
 │   ├── __init__.py
-│   ├── config.py            # pydantic-settings 路径与环境变量（本地 DuckDB 路径、teajoin key 等）
+│   ├── config.py            # pydantic-settings 路径与环境变量（DuckDB、teajoin key、插件目录等）
 │   ├── spec.py              # YAML Spec 数据模型与字段校验
 │   ├── factor/
 │   │   ├── loader.py        # 读取 YAML + formula Python 代码块
@@ -145,6 +147,7 @@ quant-platform/
 │   │   └── errors.py        # DSL 错误统一包装（含源码位置）
 │   ├── ops/
 │   │   ├── registry.py      # factor_op 注册表、别名映射、版本
+│   │   ├── plugins.py       # ~/.factorlab/plugins 发现、加载、启停
 │   │   ├── polars_ta_wrappers.py  # 适配 polars_ta wq/ta/tdx/talib 族
 │   │   ├── platform_ops.py  # returns/vwap/adv20 等平台薄封装
 │   │   └── macros.py        # 内置宏算子
@@ -343,7 +346,18 @@ def event_decay(x: pl.Expr, n: int) -> pl.Expr:
 
 注册时声明算子类别（`el/ts/cs/group/ta`），并生成 `ts_event_decay` /
 `cs_event_decay` 等前缀入口，`expr_codegen` 据此自动分组。
-`factorlab op list` 查看全部已注册算子，`factorlab op doc <name>` 查看签名与文档。
+用户插件统一放入 `~/.factorlab/plugins/`，通过 CLI 管理生命周期：
+
+```bash
+factorlab op add ./my_ops.py     # 校验并注册插件文件；冲突时要求 --force
+factorlab op remove tail_ratio   # 从用户插件清单移除并禁止后续加载
+factorlab op list                # 列出内置 + 用户插件算子及版本
+factorlab op doc tail_ratio      # 查看签名、类别、版本与文档字符串
+```
+
+`op add` 只接受白名单目录中的 `.py` 文件；插件导入前做 AST 安全扫描，
+注册表只暴露返回 `pl.Expr` 的纯函数。移除操作保留已计算历史结果和版本快照，
+只影响后续新运行。
 
 **版本钉住**：每次计算结果记录所用算子集与处理链的版本快照
 （每个算子 name→version 映射 + `expr_codegen` / `polars_ta` / `TA-Lib` 版本 +
@@ -403,6 +417,8 @@ v1 指标：
 | `factorlab data refresh [--start] [--end]` | teajoin 增量补数据到平台缓存库 |
 | `factorlab op list` | 列出注册算子 |
 | `factorlab op doc <name>` | 查看算子签名与文档 |
+| `factorlab op add <plugin.py> [--force]` | 校验并注册用户算子插件 |
+| `factorlab op remove <name>` | 从用户插件清单移除算子，保留历史结果 |
 
 ## 10. Web 可视化（FastAPI + Jinja2 + Plotly）
 
@@ -437,6 +453,7 @@ v1 指标：
   并断言执行计划不含未来行引用。
 - 处理管线单测：每个 process 步骤的截面统计性质。
 - 评估集成测试：小样本调 `quant_core.evaluate_factor`，核对返回结构。
+- 插件生命周期测试：`op add/remove/list/doc`，含冲突、AST 拒绝、版本快照保留。
 - CLI 端到端：`run → list → show → compare` 冒烟。
 - Web smoke test：`/`、`/factor/<name>`、`/compare` 返回 200。
 
