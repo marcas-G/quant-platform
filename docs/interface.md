@@ -94,6 +94,19 @@ combine:
 - `polars_ta.prefix.`
 - `factorlab.ops.`
 
+### 分区与 lookback
+
+- `ts_*` 按 asset 排序并只使用历史窗口。
+- `cs_*` 按 date 分组。
+- `gp_*` 按 date + group key 分组。
+- `ts_delay(x, n)` 和 `ts_delta(x, n)` 的 `n` 不能为负数（字面量负值在执行前被拒绝）。
+- 未知算子会在执行前被拒绝；公式内 `def` 自定义函数、元素级纯函数
+  （`abs/log/sqrt/where` 等）与平台薄封装算子（`returns/vwap/adv20/group_rank/group_mean`）
+  放行。
+
+平台薄封装算子从 `factorlab.ops.platform_ops` 导入；注册到注册表的算子可通过
+`factorlab op list` 查看。
+
 ## 4. Python API
 
 ### `factorlab.spec.load_spec(path) -> FactorSpec`
@@ -107,7 +120,31 @@ combine:
 ### `factorlab.engine.compute.compute_formula(df, formula, asset="code", date="date") -> pl.DataFrame`
 
 在小样本 Polars DataFrame 上执行因子脚本，返回按 `date, asset` 排序的
-`[date, asset, signal]` 面板。当前 M1 不加载 DuckDB。
+`[date, asset, signal]` 面板。当前不加载 DuckDB。
+
+执行前依次：AST 白名单校验 → 幂等注册 `polars_ta` 算子族与平台薄封装 →
+分区校验（拒绝未知算子）→ 负 lookback 拒绝（`ts_delay/ts_delta` 负位移）。
+
+### `factorlab.engine.partitions.validate_partition_calls(source) -> None`
+
+校验因子脚本中的调用均为已知算子、公式内 `def` 函数或元素级纯函数，否则抛
+`FactorDSLError`（含源码位置）。
+
+### `factorlab.engine.partitions.reject_future_shifts(source) -> None`
+
+拒绝 `ts_delay/ts_delta` 的字面量负位移（防未来函数）。
+
+### 算子族注册
+
+```python
+from factorlab.ops.polars_ta_wrappers import register_polars_ta_ops
+from factorlab.ops.platform_ops import register_platform_ops
+
+register_polars_ta_ops()  # wq/ta/tdx 算子族
+register_platform_ops()   # returns/vwap/adv20/group_rank/group_mean
+```
+
+两者均幂等，`compute_formula` 已在内部调用，用户无需手动注册。
 
 ### 算子注册
 
@@ -136,4 +173,5 @@ def tail_ratio(x: pl.Expr, n: int) -> pl.Expr:
 python -m pytest
 ```
 
-当前 M1 覆盖 Spec 校验、AST 白名单、算子插件生命周期、最小计算路径和 CLI smoke。
+当前覆盖 Spec 校验、AST 白名单、算子插件生命周期、最小计算路径、polars_ta 算子族、
+平台薄封装、分区校验与防未来函数，以及 CLI smoke。
