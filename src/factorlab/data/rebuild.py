@@ -193,3 +193,78 @@ def rebuild_all(
     manifest["last_updated"] = dates[-1]
     save_manifest(manifest_path, manifest)
     return report
+
+
+def assess_sparsity(db: PlatformDB) -> dict[str, dict[str, dict]]:
+    """每表每字段稀疏度：null_ratio / stock_coverage / first_date。
+
+    trade_cal 与键列（trade_date/cal_date/ts_code/exchange/index_code）不参与评估；
+    stock_basic 等无日期列的表 first_date 为 None；空表（total=0）字段 null_ratio 记 1.0。
+    """
+    report: dict[str, dict[str, dict]] = {}
+    for table in db.list_tables():
+        if table in {"trade_cal"}:
+            continue
+        cols = [c for c in db.describe(table)
+                if c not in {"trade_date", "cal_date", "ts_code", "exchange", "index_code"}]
+        code_col = "ts_code" if "ts_code" in db.describe(table) else None
+        date_col = "trade_date" if "trade_date" in db.describe(table) else "cal_date"
+        total = db.query(f'SELECT count(*) AS n FROM "{table}"')["n"][0]
+        table_report: dict[str, dict] = {}
+        for col in cols:
+            non_null = db.query(f'SELECT count(*) AS n FROM "{table}" WHERE "{col}" IS NOT NULL')["n"][0]
+            null_ratio = 1.0 - (non_null / total) if total else 1.0
+            stock_coverage = 1.0
+            if code_col and total:
+                with_stock = db.query(
+                    f'SELECT count(DISTINCT "{code_col}") AS n FROM "{table}" WHERE "{col}" IS NOT NULL'
+                )["n"][0]
+                all_stock = db.query(f'SELECT count(DISTINCT "{code_col}") AS n FROM "{table}"')["n"][0]
+                stock_coverage = with_stock / all_stock if all_stock else 1.0
+            first_date = None
+            if date_col in db.describe(table):
+                first = db.query(
+                    f'SELECT min("{date_col}") AS d FROM "{table}" WHERE "{col}" IS NOT NULL'
+                )["d"][0]
+                first_date = str(first) if first is not None else None
+            table_report[col] = {
+                "null_ratio": round(null_ratio, 4),
+                "stock_coverage": round(stock_coverage, 4),
+                "first_date": first_date,
+            }
+        report[table] = table_report
+    return report
+
+
+def build_final_db(
+    staging: PlatformDB,
+    final_path: Path,
+    null_threshold: float = 0.2,
+    coverage_threshold: float = 0.8,
+) -> dict:
+    """评估稀疏度 → 剔除超限字段 → 重建最终库（物理排除）。
+
+    任一超限（null_ratio > null_threshold 或 stock_coverage < coverage_threshold）即剔除；
+    无保留列的表跳过建表；最终库已存在时整体替换（CREATE OR REPLACE，schema 收缩生效）。
+    返回 {"excluded_fields": {table: [cols]}, "tables": [最终库表]}。
+    """
+    if not staging.path.exists():
+        raise ValueError(f"暂存库不存在: {staging.path}")
+    sparsity = assess_sparsity(staging)
+    excluded: dict[str, list[str]] = {}
+    for table, fields in sparsity.items():
+        excluded[table] = [
+            col for col, m in fields.items()
+            if m["null_ratio"] > null_threshold or m["stock_coverage"] < coverage_threshold
+        ]
+    staging_path = str(staging.path).replace("\\", "/")  # Windows 反斜杠在 ATTACH 字符串中需转义
+    with duckdb.connect(str(final_path)) as con:
+        con.execute(f"ATTACH '{staging_path}' AS staging (READ_ONLY)")
+        for table in staging.list_tables():
+            keep = [c for c in staging.describe(table) if c not in excluded.get(table, [])]
+            if not keep:
+                continue
+            cols_sql = ", ".join(f'"{c}"' for c in keep)
+            con.execute(f'CREATE OR REPLACE TABLE "{table}" AS SELECT {cols_sql} FROM staging."{table}"')
+        con.execute("DETACH staging")
+    return {"excluded_fields": excluded, "tables": PlatformDB(final_path).list_tables()}

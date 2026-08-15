@@ -1152,7 +1152,7 @@ git commit -m "feat: add rebuild orchestration with manifest resume"
 **Interfaces:** `assess_sparsity(db) -> dict[str, dict[str, dict]]`（每表每字段 null_ratio/stock_coverage/first_date）；
 `build_final_db(staging, final_path, null_threshold=0.2, coverage_threshold=0.8) -> dict`（含 excluded_fields）。
 
-- [ ] **Step 1: Write the failing test**
+- [x] **Step 1: Write the failing test**
 
 Create `tests/test_sparsity.py`:
 
@@ -1219,12 +1219,12 @@ def test_build_final_db_thresholds_configurable(tmp_path):
     assert "half_field" not in result["excluded_fields"]["daily"]  # 25% < 50% 保留
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `pytest tests/test_sparsity.py -v`
 Expected: FAIL — 函数不存在。
 
-- [ ] **Step 3: Write minimal implementation**
+- [x] **Step 3: Write minimal implementation**
 
 Append to `src/factorlab/data/rebuild.py`:
 
@@ -1314,15 +1314,29 @@ def build_final_db(
                 first_date = str(first) if first is not None else None
 ```
 
-- [ ] **Step 4: Run test to verify it passes**
+**实现修订（Task 6 已落地，与上面示例代码有出入）**：
+- `test_build_final_db_thresholds_configurable` 需同时放宽 `coverage_threshold=0.7`：
+  half_field 的 stock_coverage=0.75 < 默认 0.8，仅放宽 null_threshold 时仍会被
+  coverage 剔除（设计 §2.1：任一超限即剔除），计划版测试只考虑了 null 维度。
+- `build_final_db` 用 `CREATE OR REPLACE TABLE` 而非 `CREATE TABLE`：rebuild 重跑时
+  最终库已存在，整体替换且 schema 收缩生效（补充覆盖重跑的测试）。
+- `build_final_db` 前置守卫：staging 库文件不存在抛中文 `ValueError`（ATTACH
+  READ_ONLY 对不存在文件抛英文 IO Error，语义不清）。
+- `assess_sparsity` 的 `total` 查询提到列循环外（同语义，省每列一次 count(*)）。
+- 测试补充（正常/边界/错误路径）：键列与 trade_cal 排除、全 null 字段、空表、
+  stock_basic 无日期列、非 ASCII 表名、无可保留列跳过建表、coverage 阈值独立生效、
+  数据与键列保留、最终库重跑覆盖、暂存库缺失报错（tests/test_sparsity.py 共 14 例）。
+
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `pytest tests/test_sparsity.py -v`
 Expected: PASS。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
-git add src/factorlab/data/rebuild.py tests/test_sparsity.py
+git add src/factorlab/data/rebuild.py tests/test_sparsity.py \
+        docs/interface.md docs/superpowers/plans/2026-08-16-factorlab-m3b-data-platform.md
 git commit -m "feat: assess field sparsity and rebuild final db excluding sparse fields"
 ```
 

@@ -281,6 +281,15 @@ DuckDB 只读加载；SQL-first 过滤；`date` cast `pl.Date`；数值列 float
   resume=True 跳过 completed、重试 failed（成功后移除）；resume=False 忽略既有
   manifest 全量重拉。缺 token 抛 `ValueError`。返回
   `{"tables": {table: {"dates_fetched"/"report_dates"/"month_dates", "rows", "failed"}}}`。
+- `assess_sparsity(db) -> {table: {col: {null_ratio, stock_coverage, first_date}}}`
+  每表每字段稀疏度评估。键列（trade_date/cal_date/ts_code/exchange/index_code）与
+  trade_cal 不参与；无日期列的表 first_date 为 None；空表字段 null_ratio 记 1.0。
+- `build_final_db(staging, final_path, null_threshold=0.2, coverage_threshold=0.8) -> dict`
+  按稀疏度重建最终库（物理剔除超限字段）：任一超限（null_ratio > 阈值 或
+  stock_coverage < 阈值）即剔除；无保留列的表跳过建表；最终库已存在时整体替换
+  （CREATE OR REPLACE）。返回
+  `{"excluded_fields": {table: [cols]}, "tables": [最终库表]}`。staging 库不存在抛
+  `ValueError`。
 
 常量：`DAILY_TABLES`（7 行情表）、`FINANCIAL_TABLES`（3 财报表）、`INDEX_CODES`（4 指数）。
 
