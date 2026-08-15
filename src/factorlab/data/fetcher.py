@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import threading
 import time
 
 import polars as pl
@@ -31,11 +32,14 @@ class TeaJoinClient:
         self.interval = interval
         self.max_retries = max_retries
         self._last_request = 0.0
+        self._lock = threading.Lock()  # 并发拉取时限流状态线程安全
 
     def _throttle(self) -> None:
-        elapsed = time.monotonic() - self._last_request
-        if elapsed < self.interval:
-            time.sleep(self.interval - elapsed)
+        with self._lock:
+            elapsed = time.monotonic() - self._last_request
+            if elapsed < self.interval:
+                time.sleep(self.interval - elapsed)
+            self._last_request = time.monotonic()  # 预留请求起点（并发下同样成立）
 
     def _post(self, url: str, json: dict, timeout: int = 30):
         return requests.post(url, json=json, timeout=timeout)
@@ -49,7 +53,6 @@ class TeaJoinClient:
             self._throttle()
             try:
                 resp = self._post(self.base_url, json=payload)
-                self._last_request = time.monotonic()
             except requests.RequestException as exc:
                 last_exc = exc
                 time.sleep(2 ** attempt)

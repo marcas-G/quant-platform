@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import datetime
 import json
+from concurrent.futures import ThreadPoolExecutor, as_completed
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -55,6 +56,12 @@ def _table_rows(db: PlatformDB, table: str) -> int:
     return db.query(f'SELECT count(*) AS n FROM "{table}"')["n"][0]
 
 
+def _fetch_one_date(client: TeaJoinClient, table: str, d: str) -> tuple[str, pl.DataFrame]:
+    """单日期拉取（并发 worker 只做网络 IO；写入由主线程串行，duckdb 单写者）。"""
+    df = client.fetch(table, {"trade_date": d})
+    return d, df
+
+
 def _rebuild_daily_table(
     db: PlatformDB,
     con: duckdb.DuckDBPyConnection,
@@ -63,32 +70,40 @@ def _rebuild_daily_table(
     dates: list[str],
     manifest: dict,
     manifest_path: Path,
+    max_workers: int = 5,
 ) -> dict:
-    """按交易日拉取单张行情表：跳过 completed、重试 failed、每批落盘。
+    """按交易日并发拉取单张行情表：worker 并行 fetch（网络瓶颈），主线程串行写入。
 
-    con 为复用写连接（避免每批重开 ~24ms）；单日批按 trade_date 唯一（manifest
-    保证无重复），upsert 传 dedup=False 纯 INSERT，省去全表扫描 DELETE。
-    client 内部已重试 3 次，此处 catch 仅记录 failed，不阻塞其他日期/表。
+    并发 5 路（~250 req/min < teajoin 450/min 上限）；duckdb 单写者——worker 只
+    fetch，主线程用复用连接串行 upsert（dedup=False 纯 INSERT）+ manifest 更新；
+    每 20 个结果落盘一次（崩溃窗口 20 日重拉可接受，integrity 可查）。
     """
     completed = set(manifest.get(table, {}).get("completed", []))
     failed = set(manifest.get(table, {}).get("failed", []))
     fetched: list[str] = []
     total_rows = 0
-    for d in dates:
-        if d in completed:
-            continue
-        try:
-            df = client.fetch(table, {"trade_date": d})
-            db.upsert_on(con, table, df, keys=["trade_date", "ts_code"], dedup=False)
-            completed.add(d)
-            failed.discard(d)  # 重试成功后从 failed 移除
-            fetched.append(d)
-            total_rows += df.height
-        except Exception:
-            failed.add(d)
-        manifest[table] = {"completed": sorted(completed), "failed": sorted(failed)}
-        save_manifest(manifest_path, manifest)
-    return {"dates_fetched": fetched, "rows": total_rows, "failed": sorted(failed)}
+    todo = [d for d in dates if d not in completed]
+    done_count = 0
+    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+        futures = {pool.submit(_fetch_one_date, client, table, d): d for d in todo}
+        for fut in as_completed(futures):
+            d = futures[fut]
+            try:
+                _, df = fut.result()
+                db.upsert_on(con, table, df, keys=["trade_date", "ts_code"], dedup=False)
+                completed.add(d)
+                failed.discard(d)  # 重试成功后从 failed 移除
+                fetched.append(d)
+                total_rows += df.height
+            except Exception:
+                failed.add(d)
+            done_count += 1
+            if done_count % 20 == 0:
+                manifest[table] = {"completed": sorted(completed), "failed": sorted(failed)}
+                save_manifest(manifest_path, manifest)
+    manifest[table] = {"completed": sorted(completed), "failed": sorted(failed)}
+    save_manifest(manifest_path, manifest)
+    return {"dates_fetched": sorted(fetched), "rows": total_rows, "failed": sorted(failed)}
 
 
 def rebuild_all(
@@ -97,6 +112,7 @@ def rebuild_all(
     scope: RebuildScope = RebuildScope(),
     resume: bool = True,
     manifest_path: Path | None = None,
+    max_workers: int = 5,
 ) -> dict:
     """全量重建编排：交易日历 → 静态表 → 行情 7 表按日 → 指数。
 
@@ -135,11 +151,11 @@ def rebuild_all(
 
     report: dict = {"tables": {}}
 
-    # 3. 行情 7 表按日（单连接复用，避免每批重开连接）
+    # 3. 行情 7 表按日（worker 并发 fetch，主线程串行写入复用连接）
     with db.connect() as con:
         for table in DAILY_TABLES:
             report["tables"][table] = _rebuild_daily_table(
-                db, con, client, table, dates, manifest, manifest_path
+                db, con, client, table, dates, manifest, manifest_path, max_workers=max_workers
             )
 
     # 4. 指数：index_daily 全历史 + index_weight 每月最后一个交易日

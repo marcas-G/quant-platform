@@ -195,3 +195,79 @@ def test_rebuild_default_manifest_path_uses_data_dir(tmp_path, monkeypatch):
     rebuild_all(db, client, scope=RebuildScope(start="20240102", end="20240103"))
     assert (tmp_path / "manifest.json").exists()
     assert load_manifest(tmp_path / "manifest.json")["last_updated"] == "20240103"
+
+
+def test_rebuild_concurrent_fetch_completes_all_dates(tmp_path, monkeypatch):
+    dates = ["20240102", "20240103", "20240104", "20240105", "20240108", "20240109"]
+    tables = {
+        ("daily", d): pl.DataFrame({"trade_date": [d], "ts_code": ["A.SZ"], "close": [10.0]})
+        for d in dates
+    }
+    tables[("trade_cal", "")] = pl.DataFrame(
+        {"exchange": ["SSE"] * len(dates), "cal_date": dates, "is_open": [1] * len(dates)}
+    )
+    tables[("stock_basic", "")] = pl.DataFrame({"ts_code": ["A.SZ"], "symbol": ["A"]})
+    db = PlatformDB(tmp_path / "staging.duckdb")
+    client = _fake_client(monkeypatch, tables)
+    report = rebuild_all(db, client, scope=RebuildScope(start=dates[0], end=dates[-1]),
+                         manifest_path=tmp_path / "m.json")
+    assert db.query("SELECT count(*) AS n FROM daily")["n"][0] == len(dates)
+    manifest = load_manifest(tmp_path / "m.json")
+    assert sorted(manifest["daily"]["completed"]) == dates
+    assert report["tables"]["daily"]["failed"] == []
+
+
+def test_rebuild_concurrent_records_failed(tmp_path, monkeypatch):
+    dates = ["20240102", "20240103"]
+    tables = {
+        ("daily", "20240102"): pl.DataFrame({"trade_date": ["20240102"], "ts_code": ["A.SZ"], "close": [10.0]}),
+        ("trade_cal", ""): pl.DataFrame({"exchange": ["SSE"] * 2, "cal_date": dates, "is_open": [1, 1]}),
+    }
+    db = PlatformDB(tmp_path / "staging.duckdb")
+    client = _fake_client(monkeypatch, tables)
+    # 20240103 无数据 → fetch 返回空 → 行数 0（不算失败）；再构造抛异常场景：
+    def flaky(api_name, params, fields=None):
+        if api_name == "daily" and params.get("trade_date") == "20240103":
+            raise RuntimeError("boom")
+        return tables.get((api_name, params.get("trade_date") or params.get("cal_date") or ""), pl.DataFrame())
+    monkeypatch.setattr(client, "fetch", flaky)
+    report = rebuild_all(db, client, scope=RebuildScope(start="20240102", end="20240103"),
+                         manifest_path=tmp_path / "m.json")
+    assert "20240103" in report["tables"]["daily"]["failed"]
+    assert db.query("SELECT count(*) AS n FROM daily")["n"][0] == 1
+
+
+def test_rebuild_concurrent_is_faster_than_serial(tmp_path, monkeypatch):
+    import time
+    dates = ["20240102", "20240103", "20240104", "20240105", "20240108", "20240109"]
+    tables = {
+        ("daily", d): pl.DataFrame({"trade_date": [d], "ts_code": ["A.SZ"], "close": [10.0]})
+        for d in dates
+    }
+    tables[("trade_cal", "")] = pl.DataFrame(
+        {"exchange": ["SSE"] * len(dates), "cal_date": dates, "is_open": [1] * len(dates)}
+    )
+    tables[("stock_basic", "")] = pl.DataFrame({"ts_code": ["A.SZ"], "symbol": ["A"]})
+
+    def make_client(delay):
+        client = TeaJoinClient(token="t", interval=0.0)
+        def responder(api_name, params, fields=None):
+            time.sleep(delay)
+            return tables.get((api_name, params.get("trade_date") or params.get("cal_date") or ""), pl.DataFrame())
+        monkeypatch.setattr(client, "fetch", responder)
+        monkeypatch.setattr(client, "fetch_paged", responder)  # stock_basic 走 fetch_paged
+        return client
+
+    db1 = PlatformDB(tmp_path / "s1.duckdb")
+    t0 = time.monotonic()
+    rebuild_all(db1, make_client(0.2), scope=RebuildScope(start="20240102", end="20240109"),
+                manifest_path=tmp_path / "m1.json", max_workers=1)
+    serial = time.monotonic() - t0
+
+    db5 = PlatformDB(tmp_path / "s5.duckdb")
+    t0 = time.monotonic()
+    rebuild_all(db5, make_client(0.2), scope=RebuildScope(start="20240102", end="20240109"),
+                manifest_path=tmp_path / "m5.json", max_workers=5)
+    concurrent = time.monotonic() - t0
+
+    assert concurrent < serial * 0.8  # 5 路并发应显著快于串行
