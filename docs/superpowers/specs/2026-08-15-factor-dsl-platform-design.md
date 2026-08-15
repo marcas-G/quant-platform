@@ -31,23 +31,28 @@
 - 米筐 RQFactor：横截面中性化与回归残差算子、`jqfactor_analyzer` 式评估输出。
 - AKQuant：TS/CS/EL 算子分类、嵌套表达式自动中间物化、防未来函数。
 - FactorBench / DolphinDB：受限表达式与流批一致的工程理念。
+- `expr_codegen` / `polars_ta`：TS/CS/GP 表达式自动分层、公共子表达式消除、
+  Polars 原生算子库，作为 v1 计算内核。
+- `FastPlus` / `KunQuant`：WorldQuant Fast Expression 解析与 C++ 编译后端，
+  分别作为可选校验器和 v2 高性能路径。
 
 ## 2. 范围
 
 ### v1 包含
 
-- 声明式 DSL：YAML 元数据 + 受限因子脚本（变量 `let`、自定义函数 `def`、条件逻辑、注释）。
-- 算子集：WorldQuant/JoinQuant 全量对齐，含 Alpha101/191、回归族、分组族、TA 技术指标子集
-  （约 80-90 个算子），全部经注册表实现，支持别名兼容。
+- 声明式 DSL：YAML 元数据 + `expr_codegen` 受限 Python 因子块（赋值、自定义函数、
+  条件逻辑、注释、无循环/副作用）。
+- 算子集：复用 `polars_ta` 的 `wq/ta/tdx/talib` 算子族，平台补别名与薄封装；
+  Alpha101/191 语料作为兼容性回归目标。
 - 处理管线：表达式之后独立执行 `winsorize / zscore / csranknorm / robustzscore /
   neutralize / clip / fillna`。
-- Python 引擎解析并计算因子；TS/CS/EL 算子分类，嵌套表达式自动中间物化，防未来函数。
+- `expr_codegen` 解析并生成 Polars 执行图；TS/CS/GP 算子自动分层、嵌套表达式中间物化、防未来函数。
 - 评估：RankIC / PearsonIC / 十分位收益 / 覆盖度 / 换手率（复用 Rust `quant_core`），
   叠加分层回测累计净值、因子对比、组合合成。
 - 因子与结果本地存储（parquet + JSON 摘要 + 算子版本快照）。
 - CLI：`run / list / show / compare / serve / data refresh / op list / op doc`。
 - Web 可视化：FastAPI + Jinja2 + Plotly。
-- 新算子双通道扩展：DSL 内宏组合 + Python 算子插件注册表。
+- 新算子扩展：公式内 `def`/白名单 `import` + Python 算子插件注册表 + DSL 宏。
 - 数据源：本地 DuckDB（只读）为主，teajoin 增量补数据到平台自有缓存库。
 
 ### v1 明确不做
@@ -65,18 +70,63 @@
 |------|------|
 | 使用形态 | 个人工具，单机 |
 | 交互 | CLI 为主，Web 只做结果可视化 |
-| 引擎 | Python 解析 DSL 并计算；评估复用 Rust `quant_core` |
+| 引擎 | `expr_codegen` + `polars_ta` 生成并执行 Polars 因子；评估复用 Rust `quant_core` |
 | 数据范围 | 自选股票池；全 A 是可选范围而非默认加载量 |
 | 历史深度 | DSL 内 `date.start/end` 可调 |
 | 过滤位置 | universe 是 DSL 一等公民（显式列表或规则），数据层按需拉取 |
-| DSL 文件 | YAML 元数据 + 受限因子脚本（let/def/条件逻辑） |
-| 算子集 | WorldQuant 命名 + Alpha101/191 全量 + 回归族 + 分组族 + TA 子集，注册表实现 |
-| 新算子 | 宏组合（不写代码）+ Python 插件（注册表），带版本钉住 |
+| DSL 文件 | YAML 元数据 + `expr_codegen` 受限 Python 因子块（赋值/def/条件，无循环） |
+| 算子集 | 复用 `polars_ta` wq/ta/tdx/talib 算子族 + 平台别名/薄封装；Alpha101/191 兼容 |
+| 新算子 | 公式内 `def`/白名单 `import` + Python 插件注册表，带版本钉住 |
 | 处理管线 | 表达式后独立 process 链（对齐 qlib processors） |
 | 评估产出 | 因子值 + IC/分层/换手 + 分层回测净值 + 因子对比 + 组合合成 |
 | Web 栈 | FastAPI + Jinja2 + Plotly |
 
-## 4. 架构
+## 4. 开源组件选型与复用边界
+
+原则：数值内核尽量复用经过测试的开源实现，我们只自研“产品编排层”和因子平台特有的 glue。以下选型已核对许可证、
+Python 3.13 / Windows 可用性与当前环境兼容性。
+
+### 4.1 v1 运行时依赖（采用）
+
+| 组件 | 用途 | 许可证 | 状态 | 备注 |
+|------|------|--------|------|------|
+| `expr_codegen` 0.16.6 | 受限 Python 因子块 → Polars 代码；TS/CS/GP 自动分组、公共子表达式消除、中间列物化 | BSD-3-Clause | 采用 | 纯 Python wheel，`requires_python>=3.9`；核心替代自研 lexer/parser/engine 分区 |
+| `polars_ta` 0.5.17 | WorldQuant `wq` / `ta` / `tdx` / `talib` 算子族，输出 `pl.Expr` | MIT | 采用 | 纯 Python wheel，`requires_python>=3.8`；替代自研 80-90 个算子实现 |
+| `polars` 1.38.0 | 因子面板计算与分组 | MIT | 已安装 | 与 `expr_codegen`/`polars_ta` 同一生态 |
+| `duckdb` 1.5.3 | 本地只读数据库 SQL 过滤与加载 | MIT | 已安装 | 平台不改 `quant-data` 任何文件 |
+| `pyarrow` 24.0.0 | parquet 结果落盘 | Apache-2.0 | 已安装 | |
+| `quant_core` 0.1.0 | RankIC / PearsonIC / 十分位收益 / 换手率 | 本地 PyO3 | 已安装 | 保留为评估内核 |
+| `TA-Lib` 0.7.1 | `talib` 精确语义技术指标与数值对拍 | BSD | 可选 | PyPI 0.7.1 提供 Windows cp313 wheel；缺省时 `polars_ta.ta/tdx` 仍可用 |
+| `fastapi`/`uvicorn`/`jinja2`/`plotly` | Web 可视化 | MIT/BSD | 已安装 | |
+| `typer`/`rich`/`pydantic-settings` | CLI、进度输出、配置 | MIT | 已安装 | |
+| `sympy` 1.14.0 | `expr_codegen` 表达式化简与 CSE | BSD | 已安装 | 传递依赖 |
+
+### 4.2 不纳入 v1 运行时，但复用/参考（或作为未来后端）
+
+| 组件 | 角色 | 许可证 | 决定 |
+|------|------|--------|------|
+| `FastPlus` (`py-fastplus` 0.3.5) | WorldQuant Fast Expression 解析/签名校验 | MIT | 仅作开发期算子签名目录与兼容性参考；不进入 v1 主解析路径，避免双解析器 |
+| `KunQuant` 0.1.11 | 因子表达式 → C++ 编译执行 | Apache-2.0 | 预留 v2 高性能后端；当前机器无 MSVC/g++，v1 不装 |
+| `microsoft/qlib` | 表达式算子与 processor 语义 | MIT | 不直接依赖（数据格式不匹配 DuckDB），借用其 process/回归算子语义并在平台侧复现 |
+| `HKUDS/Vibe-Trading` Alpha Zoo | 462 因子语料、lookahead 哨兵测试、bench/compare 参考 | MIT | 用作测试语料和基准参考；不运行时集成 |
+| `CharlesJ-ABu/FactorMiner` V4 | 因子挖掘工作台架构 | MIT | 仅架构参考，不整体 fork |
+| `alphalens-reloaded` 0.4.6 | 因子 tearsheet | Apache-2.0 | v1 不采用：官方约束 pandas<3.0，本机为 pandas 3.0.2；保留为后续隔离环境选项 |
+| `pandas-ta` 及社区 fork | 技术指标 | 混杂/维护弱 | 由 `polars_ta` + `TA-Lib` 替代 |
+| `tushare` SDK | Tushare 数据客户端 | 未知/BSD | 不采用：其 endpoint 硬编码为 `api.waditu.com/dataapi`，teajoin 需自定义 HTTP 客户端 |
+
+### 4.3 自研边界
+
+必须自研的部分是平台语义，不重复数值内核：
+
+- YAML Spec 数据模型与校验（name/category/universe/date/target/process/version）。
+- 因子脚本 AST 白名单安全校验（禁止循环、副作用、外部 IO/网络），以及 DSL 错误定位。
+- DuckDB 只读数据层、universe 过滤、teajoin 增量拉取与平台缓存。
+- process 链注册表（winsorize/zscore/neutralize 等），用 Polars 表达式实现。
+- 算子注册表、别名映射、平台特有算子（returns/vwap/adv20 等薄封装）与版本快照。
+- 评估编排：调 `quant_core`，外加分层回测、因子对比、组合合成。
+- CLI、Web、结果持久化与版本追溯。
+
+## 5. 架构
 
 ```
 quant-platform/
@@ -86,33 +136,29 @@ quant-platform/
 ├── docs/superpowers/specs/2026-08-15-factor-dsl-platform-design.md
 ├── src/factorlab/
 │   ├── __init__.py
-│   ├── config.py            # 路径与环境变量（本地 DuckDB 路径、teajoin key 等）
-│   ├── dsl/
-│   │   ├── lexer.py         # 词法分析（数字、标识符、注释、运算符）
-│   │   ├── parser.py        # 递归下降 -> AST（let/def/表达式/三元/布尔）
-│   │   ├── ast.py           # AST 节点
-│   │   ├── expand.py        # 宏展开（spec 内联 + 本地算子库）
-│   │   ├── validate.py      # 语义校验（算子存在、参数个数、列名、作用域）
-│   │   └── errors.py        # DSLParseError（带行列号）
+│   ├── config.py            # pydantic-settings 路径与环境变量（本地 DuckDB 路径、teajoin key 等）
+│   ├── spec.py              # YAML Spec 数据模型与字段校验
+│   ├── factor/
+│   │   ├── loader.py        # 读取 YAML + formula Python 代码块
+│   │   ├── ast_gate.py      # AST 白名单校验（禁循环/副作用/外部 IO）
+│   │   ├── codegen.py       # 把受限 Python 因子块送入 expr_codegen
+│   │   └── errors.py        # DSL 错误统一包装（含源码位置）
 │   ├── ops/
-│   │   ├── registry.py      # @factor_op 注册表（名称、实现、版本、算子类别）
-│   │   ├── el_ops.py        # 元素级算子（abs/log/sign/if/clip…）
-│   │   ├── ts_ops.py        # 时序算子（ts_mean/ts_rank/ts_resi…）
-│   │   ├── cs_ops.py        # 横截面算子（rank/zscore/cs_regression_residual…）
-│   │   ├── group_ops.py     # 分组算子（group_rank/group_mean…）
-│   │   ├── ta_ops.py        # TA-LIB 技术指标算子（rsi/macd/atr…）
+│   │   ├── registry.py      # factor_op 注册表、别名映射、版本
+│   │   ├── polars_ta_wrappers.py  # 适配 polars_ta wq/ta/tdx/talib 族
+│   │   ├── platform_ops.py  # returns/vwap/adv20 等平台薄封装
 │   │   └── macros.py        # 内置宏算子
 │   ├── process/
 │   │   ├── registry.py      # 处理步骤注册表
 │   │   └── processors.py    # winsorize/zscore/csranknorm/robustzscore/neutralize/clip/fillna
 │   ├── data/
-│   │   ├── source.py        # 本地 DuckDB 只读读取（daily、stock_basic_tushare）
+│   │   ├── source.py        # 本地 DuckDB 只读 -> Polars LazyFrame
 │   │   ├── teajoin.py       # Tushare 兼容 HTTP 客户端（限流、重试）
 │   │   ├── universe.py      # universe 解析（显式列表 / 规则过滤）
 │   │   └── cache.py         # 平台自有缓存（parquet + duckdb）
 │   ├── engine/
-│   │   ├── compute.py       # AST -> 因子面板
-│   │   ├── partitions.py    # TS/CS/EL 分类、嵌套中间物化、防未来函数保证
+│   │   ├── compute.py       # 组装数据 -> expr_codegen -> 因子面板
+│   │   ├── partitions.py    # 记录/校验 TS/CS/GP 分区，防未来函数断言
 │   │   └── forward.py       # 前向收益计算与周频对齐
 │   ├── eval/
 │   │   ├── base.py          # Metric 抽象接口
@@ -123,7 +169,7 @@ quant-platform/
 │   │   └── compare.py       # 因子对比与组合合成
 │   ├── registry/
 │   │   ├── store.py         # 因子定义/结果持久化
-│   │   └── versions.py      # 算子集版本快照
+│   │   └── versions.py      # 算子集/依赖版本快照
 │   ├── cli/
 │   │   └── main.py          # typer CLI
 │   └── web/
@@ -132,7 +178,8 @@ quant-platform/
 │       └── static/          # plotly.js 等静态资源
 ├── tests/
 │   ├── conftest.py
-│   ├── test_lexer_parser.py
+│   ├── test_spec_ast_gate.py # YAML Spec 与 AST 白名单
+│   ├── test_codegen.py       # expr_codegen 分层/CSE/错误定位
 │   ├── test_ops.py
 │   ├── test_process.py
 │   ├── test_engine.py
@@ -142,31 +189,35 @@ quant-platform/
 │   └── test_cli.py
 ```
 
-依赖（Python 3.13）：`pandas`、`numpy`、`duckdb`、`pyyaml`、`typer`、`fastapi`、
-`uvicorn`、`jinja2`、`plotly`、`requests`，以及已安装的 `quant_core`。
-TA 算子若采用 talib/pandas-ta，作为可选依赖，缺省时相关算子不可用并给出明确提示。
+依赖（Python 3.13）：`polars`、`pandas`、`numpy`、`duckdb`、`pyarrow`、`pyyaml`、
+`expr_codegen`、`polars_ta`、`sympy`、`typer`、`fastapi`、`uvicorn`、`jinja2`、
+`plotly`、`requests`、`pydantic-settings`，以及已安装的 `quant_core`。
+`TA-Lib` 作为可选依赖，缺省时 `polars_ta.ta/tdx` 仍可用；需要 talib 精确对拍的
+`talib` 族算子会给出明确提示。
 
-## 5. 数据流
+## 6. 数据流
 
 ```
 factorlab run spec.yaml
-  → 解析 YAML + 因子脚本（lexer/parser，let/def/表达式）
-  → 宏展开 + 语义校验（算子类别 TS/CS/EL、作用域、参数）
+  → 解析 YAML Spec 与 formula Python 代码块
+  → AST 白名单校验（无循环/副作用/外部 IO；算子名与列名预检）
   → 解析 universe（显式列表 / 规则过滤，查 stock_basic_tushare）
-  → 加载数据：本地 quant.duckdb 只读；缺日期段时 teajoin 增量补到平台缓存库
-  → 引擎按 TS/CS/EL 分区执行 AST；嵌套分区自动中间物化，保证时序只回溯
+  → 加载数据：本地 quant.duckdb 只读，DuckDB SQL 过滤后转为 Polars LazyFrame；
+    缺日期段时 teajoin 增量补到平台缓存库
+  → expr_codegen 对 TS/CS/GP 表达式分层，生成 Polars 计算图并执行；
+    嵌套分区自动中间物化，时序窗口只回溯
   → 处理管线：winsorize → zscore/neutralize 等 process 链
   → 计算前向收益（daily close），按周频对齐（匹配 Rust 评估语义）
   → 评估：quant_core（IC/十分位/换手）+ 分层回测 + 本地轻量指标
-  → 结果落盘：parquet（因子值）+ JSON（摘要/指标/回测曲线/算子版本快照）
+  → 结果落盘：parquet（因子值）+ JSON（摘要/指标/回测曲线/算子与依赖版本快照）
   → factorlab serve 起 Web 展示
 ```
 
 平台不修改 `quant-data` 下任何文件；本地 DuckDB 一律只读打开。
 
-## 6. DSL 规范
+## 7. DSL 规范
 
-### 6.1 Spec 文件（YAML + 脚本）
+### 7.1 Spec 文件（YAML + 脚本）
 
 ```yaml
 name: vol_skew_mom
@@ -189,13 +240,18 @@ operators:                             # 可选：内联宏定义
     params: [x, n]
     formula: "delay(x, n) / delay(x, 2*n) - 1"
 formula: |
-  def momentum(x, n) {
-    delay(x, n) / delay(x, 2*n) - 1
-  }
-  let ret = returns(close)
-  let vol = ts_std(ret, 20)
-  let cond = (vol < ts_median(vol, 60)) && (close > delay(close, 5))
-  rank(momentum(close, 5) - zscore(vol)) - 0.5
+  # formula 是受白名单限制的 Python 代码块，交给 expr_codegen 转 Polars。
+  # 以 _ 开头的变量为中间变量，最终保留 signal 作为因子输出。
+  from factorlab.ops.platform import returns, vwap, adv20
+  from factorlab.ops.compat import ts_mean, ts_median, ts_std, delay, rank, zscore
+
+  def momentum(x, n):
+      return delay(x, n) / delay(x, 2 * n) - 1
+
+  _ret = returns(close)
+  _vol = ts_std(_ret, 20)
+  _cond = (_vol < ts_median(_vol, 60)) & (close > delay(close, 5))
+  signal = rank(momentum(close, 5) - zscore(_vol)) - 0.5
 ```
 
 多因子组合时，`formula` 可替换为 `factors:` 列表，每个元素含 `name`、`formula`、
@@ -213,69 +269,37 @@ formula: |
 - `date.start/end`：可调历史深度；默认空则取本地库全范围。
 - `target`：评估目标，v1 支持 `forward_return_5d / forward_return_20d`。
 - `formula` 或 `factors`：二选一。
+- `formula` 为受限制的 Python 代码块，最终保留列名 `signal` 作为因子输出。
+  多因子组合时 `factors[].formula` 各自独立，最终由 `combine` 聚合。
 
-### 6.2 脚本语法
+### 7.2 脚本语法
 
-- 语句：`let name = expr`（变量绑定）、`def name(params) { ... }`（自定义函数）、
-  末尾表达式（最终因子值）。
-- 表达式：数字字面量、列引用、算子调用、括号嵌套、一元负号。
-- 二元运算：算术 `+ - * / %`，比较 `< <= > >= == !=`，布尔 `&& ||`。
-- 条件：`if(cond, a, b)`、三元 `cond ? a : b`。
-- 注释：`#` 至行尾。
-- 作用域：函数局部变量遮蔽外层变量；`let` 只读不可重绑定（避免隐藏副作用）。
-- 禁止：循环、副作用、外部导入、任意外部对象访问（保持声明式与安全）。
+- 采用 `expr_codegen` 支持的受限 Python 子集，不是自造语法：
+  赋值、`def` 自定义函数、`class`、`import`（仅允许白名单模块）、
+  Python 表达式、`a if cond else b` 三元、`& | ~` 布尔运算、`#` 注释。
+- 以 `_` 开头的变量为中间变量，最终从输出中剔除；非下划线变量成为因子输出列，
+  v1 约定单因子最终输出名为 `signal`。
+- 禁止循环（`for/while`）、`yield`、`lambda` 中副作用、文件/网络/子进程/系统调用、
+  任意属性访问。平台在编译前用 AST 白名单校验，违反时报错并给出源码位置。
+- 表达式/变量名/算子名预检：未知列或未知算子给出相似名称建议（difflib）。
 
-解析错误携带行列号；未知算子给出相似算子建议（difflib）。
+### 7.3 算子命名与分类
 
-### 6.3 算子命名与分类
+算子实现复用 `polars_ta`，平台负责命名兼容与薄封装，不重复实现数值内核。
 
-命名采用 WorldQuant 事实标准：`ts_*` 时序、`cs_*`/裸 `rank/zscore` 横截面、
-`group_*` 分组、`ta_*` 技术指标；同时保留 Alpha101 别名以保证 626 条公式可直接运行。
+- 时序 / 横截面 / 分组：采用 WorldQuant 风格前缀 `ts_*`、`cs_*`、`gp_*`，
+  由 `polars_ta.prefix.wq` 提供；平台别名映射保证常用写法兼容：
+  `ts_mean/ts_std/ts_sum/ts_rank/ts_corr`、`rank/zscore/cs_rank/cs_zscore`、
+  `group_rank/group_mean/group_zscore` 等。
+- 技术指标：`polars_ta.prefix.ta`（Polars 风格）和 `prefix.tdx`（A 股常用指标）；
+  需要 TA-Lib 精确语义时，`polars_ta.prefix.talib` 按原版签名调用。
+- 元素级运算直接用 Python/Polars 语义：`abs/log/sqrt`、`where/if_else`、算术与比较。
+- 平台薄封装仅用于已有库未覆盖或需要平台语义的少数算子：`returns`、`vwap`、`adv20`、
+  以及 `cross` 等组合宏。
+- Alpha101/191 语料作为兼容性测试，运行前将公式映射到上述算子；缺少数值等价算子时
+  先以平台宏/插件补齐，而不是改写公式含义。
 
-**元素级（EL，逐行无窗口）**
-
-`abs`、`sign`、`log`、`log10`、`log1p`、`exp`、`expm1`、`sqrt`、`power(x,e)`、
-`signed_power(x,e)`、`min(a,b)`、`max(a,b)`、`if(cond,a,b)`、`clip(x,lo,hi)`、
-`ceil`、`floor`、`round`、`isnan(x)`。
-
-**时序（TS，按 code 分组、按日期排序、只回溯）**
-
-`delay(x,d)`（别名 `ref`）、`delta(x,d)`、`pct_change(x,d)`、`ts_mean(x,d)`
-（别名 `mean/ma/sma`）、`ts_std(x,d)`（别名 `stddev/std`）、`ts_sum(x,d)`（别名 `sum`）、
-`ts_product(x,d)`（别名 `product`）、`ts_min(x,d)`（别名 `llv`）、`ts_max(x,d)`
-（别名 `hhv`）、`ts_median(x,d)`、`ts_var(x,d)`、`ts_skew(x,d)`、`ts_kurt(x,d)`、
-`ts_quantile(x,d,q)`、`ts_mad(x,d)`、`ts_count(x,d)`、`ts_count_nonzero(x,d)`、
-`ts_rank(x,d)`、`ts_arg_max(x,d)`（别名 `ts_argmax`）、`ts_arg_min(x,d)`
-（别名 `ts_argmin`）、`ts_zscore(x,d)`、`ts_corr(x,y,d)`（别名 `correlation/corr`）、
-`ts_cov(x,y,d)`（别名 `covariance/cov`）、`ts_slope(x,d)`、`ts_rsquare(x,d)`、
-`ts_resi(x,d)`、`ts_regression(y,x,d)`、`wma(x,d)`、`ewma(x,d)`（别名 `ema`）、
-`decay_linear(x,d)`（别名 `ts_decay_linear`）、`cross(a,b)`（a 从下向上穿越 b）、
-`returns`（日收益，`close / delay(close, 1) - 1`）、`vwap`（当日成交额/成交量）、
-`adv20`（20 日均成交量）。
-
-**横截面（CS，按 date 分组）**
-
-`rank(x)`（别名 `cs_rank`）、`zscore(x)`（别名 `cs_zscore/standardize`）、
-`scale(x,a=1)`、`demean(x)`、`quantile(x,bins=5)`、`top(x,threshold,pct)`、
-`bottom(x,threshold,pct)`、`cs_regression_residual(y, *x, add_const=true)`、
-`cs_fillna(x, by=industry)`。
-
-**分组（date + key，key 默认 industry）**
-
-`group_rank(key, x)`、`group_mean(key, x)`、`group_zscore(key, x)`、
-`group_scale(key, x)`。
-
-**技术指标（TA，插件族）**
-
-`ta_sma`、`ta_ema`、`ta_wma`、`ta_mom`、`ta_roc`、`ta_rsi`、`ta_atr(high,low,close,d)`、
-`ta_adx(high,low,close,d)`、`ta_cci(high,low,close,d)`、`ta_bbands_u/m/l(close,d)`、
-`ta_bias(close,d)`、`ta_macd_dif/dea/hist(close)`、`ta_kdj_k/d/j(high,low,close)`、
-`ta_willr`、`ta_trix`。其中布林带拆为 `ta_bbands_u(close,d)`、`ta_bbands_m(close,d)`、
-`ta_bbands_l(close,d)`；MACD 拆为 `ta_macd_dif`、`ta_macd_dea`、`ta_macd_hist`；
-KDJ 拆为 `ta_kdj_k`、`ta_kdj_d`、`ta_kdj_j`。实现基于可选依赖 talib/pandas-ta，
-注册表挂载。
-
-### 6.4 处理管线（process）
+### 7.4 处理管线（process）
 
 `process:` 链为可插拔步骤，顺序执行于因子表达式之后：
 
@@ -291,9 +315,12 @@ KDJ 拆为 `ta_kdj_k`、`ta_kdj_d`、`ta_kdj_j`。实现基于可选依赖 talib
 
 处理步骤同样经注册表实现，新增步骤不改主流程。
 
-### 6.5 新算子扩展（双通道 + 版本钉住）
+### 7.5 新算子扩展（三层 + 版本钉住）
 
-**通道 1：DSL 内宏组合**。spec 内联 `operators` 或本地算子库定义，解析期展开：
+**第 1 层：公式内 `def`/白名单 `import`**。单次使用的新算子直接在 formula 代码块里定义，
+经 AST 白名单校验后原样交给 `expr_codegen`，不进入全局注册表。
+
+**第 2 层：DSL 内宏组合**。spec 内联 `operators` 或本地算子库定义，解析期展开：
 
 ```yaml
 operators:
@@ -302,40 +329,49 @@ operators:
     formula: "ts_mean(x, n) / delay(ts_mean(x, n), n)"
 ```
 
-**通道 2：Python 算子插件**。组合表达不了的新语义写小函数挂注册表：
+**第 3 层：Python 算子插件**。可复用、需要版本钉住的新语义写小函数挂注册表：
 
 ```python
+import polars as pl
+
 from factorlab.ops.registry import factor_op
 
 @factor_op("event_decay", kind="ts", version="0.1.0")
-def event_decay(x: pd.Series, n: int, *, ctx) -> pd.Series:
-    ...
+def event_decay(x: pl.Expr, n: int) -> pl.Expr:
+    return x.rolling_mean(window_size=n)
 ```
 
-注册时声明算子类别（`el/ts/cs/group/ta`），引擎据此选择分区语义。
+注册时声明算子类别（`el/ts/cs/group/ta`），并生成 `ts_event_decay` /
+`cs_event_decay` 等前缀入口，`expr_codegen` 据此自动分组。
 `factorlab op list` 查看全部已注册算子，`factorlab op doc <name>` 查看签名与文档。
 
 **版本钉住**：每次计算结果记录所用算子集与处理链的版本快照
-（每个算子 name→version 映射 + 注册表总体版本）；算子实现变更后历史结果不变，重跑可复现。
+（每个算子 name→version 映射 + `expr_codegen` / `polars_ta` / `TA-Lib` 版本 +
+注册表总体版本）；算子实现变更后历史结果不变，重跑可复现。
 
-### 6.6 防未来函数
+### 7.6 防未来函数
 
 引擎层保证，不依赖用户自觉：
 
-- TS 算子一律使用截至当前行的历史窗口，禁止前视窗口。
+- 由 `expr_codegen` 依据 `ts_/cs_/gp_` 前缀自动分层；TS 算子按
+  `sort([ASSET, DATE]).groupby(ASSET)` 执行，Polars 滚动窗口仅使用历史区间。
 - 嵌套 `CS(TS(...))`、`TS(CS(...))` 自动拆为中间列并物化，避免分区语义歧义。
 - 评估某日 T 的因子值只使用 ≤ T 的数据；前向收益取自 T 之后，不参与因子计算。
 - 处理链只做同日截面变换；`neutralize` 不引入未来数据。
 - 数据加载时按交易日历补全停牌记录，避免滚动窗口错位（对齐 AKQuant 语义）。
+- 平台在 `engine/partitions.py` 对生成的执行计划做断言：任何 TS 窗口不得出现
+  未来行引用；发现违规直接失败并定位表达式。
 
-## 7. 评估指标插件
+## 8. 评估指标插件
 
 接口：
 
 ```python
+import polars as pl
+
 class Metric:
     name: str
-    def compute(self, df: pd.DataFrame, ctx: EvalContext) -> dict: ...
+    def compute(self, df: pl.DataFrame, ctx: EvalContext) -> dict: ...
 ```
 
 v1 指标：
@@ -351,12 +387,15 @@ v1 指标：
 指标经注册表按 name 调用；后续信息增益率、残差分析等作为新 Metric 挂入，不改主流程。
 评估目标（前向收益）来源：v1 从本地 `daily` 的 close 自行计算并周频对齐；
 `quant_factor.duckdb.factor_weekly` 仅作测试交叉验证，不做运行时依赖。
+`alphalens-reloaded` 不进入 v1 运行时（其 pandas<3.0 约束与本机 pandas 3.0.2 冲突），
+如需成熟 tearsheet，可在后续用隔离环境或 vendor 兼容实现。
 
-## 8. CLI 命令
+## 9. CLI 命令
 
 | 命令 | 说明 |
 |------|------|
 | `factorlab run <spec>` | 解析、计算、处理、评估、落盘 |
+| `factorlab lint <spec>` | 预检 YAML/AST/算子，报告源码位置与相似名称建议 |
 | `factorlab list` | 列出已保存因子与最近运行 |
 | `factorlab show <name>` | 查看某因子摘要与指标 |
 | `factorlab compare <name...>` | 多因子对比报告与相关矩阵 |
@@ -365,7 +404,7 @@ v1 指标：
 | `factorlab op list` | 列出注册算子 |
 | `factorlab op doc <name>` | 查看算子签名与文档 |
 
-## 9. Web 可视化（FastAPI + Jinja2 + Plotly）
+## 10. Web 可视化（FastAPI + Jinja2 + Plotly）
 
 - `/`：因子列表（名称、类别、方向、最近运行时间、IC 摘要）。
 - `/factor/<name>`：因子详情——IC 曲线、十分位收益柱状图、分层回测累计净值曲线、
@@ -373,58 +412,65 @@ v1 指标：
 - `/compare?names=...`：多因子 IC 相关矩阵热力图与两两对比。
 - 结果只读自平台结果目录，无需写数据库。
 
-## 10. 错误处理
+## 11. 错误处理
 
-- DSL 语法/语义错误：明确信息 + 行列号；未知算子给出相似算子建议。
-- 算子类别错误：如把横截面算子当元素级使用，报错并给出正确用法。
+- AST 白名单违规（循环/副作用/外部 IO）：报错并给出源码位置。
+- DSL 语法/语义错误：包装 `expr_codegen`/`sympy` 异常，输出源码位置；
+  未知列或算子给出相似名称建议。
+- 算子类别错误：如把横截面算子当元素级使用，报错并给出正确前缀用法。
 - 空 universe / 无有效股票：报错并提示检查 `codes` 或 `rules`。
 - 数据缺失：提示该日期段本地缺失，可运行 `factorlab data refresh`。
 - teajoin 限流/网络错误：指数退避重试（上限 3 次），保留进度可断点续传。
 - 评估数据不足（有效行过少）：返回指标为 null 并在摘要中标注，不中断流程。
 
-## 11. 测试策略
+## 12. 测试策略
 
-- 解析器单测：语法正确性、错误行列号、let/def 作用域、宏展开、三元与布尔优先级。
-- 算子数值单测：TS/CS/EL/group 算子与 pandas/numpy 原生实现逐值对照。
-- TA 算子对拍：与 talib（可用时）逐值对照，容差内一致。
+- AST 白名单单测：合法 assignment/def/import/三元通过；循环、文件/网络/系统调用被拒。
+- 解析/错误定位单测：未知列、未知算子、作用域错误返回源码位置与相似名称建议。
+- 算子数值单测：`polars_ta` 的 `ts_/cs_/gp_` 结果与 pandas/numpy 原生实现逐值对照。
+- TA 算子对拍：`polars_ta.ta/tdx/talib` 与 TA-Lib（可用时）逐值对照，容差内一致。
 - Alpha101/191 语料对拍：626 条公式在样本数据上运行不报错，并与本地已实现因子交叉验证。
+- `expr_codegen` 生成代码黄金用例：校验 TS/CS/GP 分层与公共子表达式消除后结果一致。
 - 引擎黄金用例：用现有 `factor_weekly` 中的已知因子（如 `value_reversal_20d`）
   在相同输入下对拍，误差阈值内一致。
-- 防未来函数测试：构造停牌/缺失数据，验证滚动窗口与前瞻收益不串期。
+- 防未来函数测试：构造停牌/缺失数据，验证滚动窗口与前瞻收益不串期，
+  并断言执行计划不含未来行引用。
 - 处理管线单测：每个 process 步骤的截面统计性质。
 - 评估集成测试：小样本调 `quant_core.evaluate_factor`，核对返回结构。
 - CLI 端到端：`run → list → show → compare` 冒烟。
 - Web smoke test：`/`、`/factor/<name>`、`/compare` 返回 200。
 
-## 12. 复用清单
+## 13. 复用清单
 
 | 资产 | 用途 |
 |------|------|
+| `expr_codegen` / `polars_ta` | DSL 解析、TS/CS/GP 分层、算子实现与 Polars 代码生成 |
+| `TA-Lib`（可选） | talib 精确语义技术指标与数值对拍 |
 | `quant_core`（PyO3 已装） | IC/十分位/换手/覆盖率评估 |
 | `quant.duckdb`（只读） | daily、stock_basic_tushare 数据源 |
 | `quant_tushare_full.duckdb`（可选只读） | 更全历史数据源 |
 | `quant_factor.duckdb`（只读，测试用） | 已知因子对拍、forward return 交叉验证 |
 | JoinQuant 公式目录（CSV/JSON，626 条） | 算子命名参考 + Alpha101/191 回归语料 |
-| talib / pandas-ta（可选） | TA 算子实现与数值对拍 |
+| Vibe-Trading Alpha Zoo 语料 | 462 因子兼容性/基准/lookahead 哨兵测试参考 |
 | teajoin API key | 增量补数据 |
 
-## 13. 里程碑
+## 14. 里程碑
 
-1. M1：项目骨架 + DSL 词法/语法/校验（let/def/作用域）+ 算子注册表。
-2. M2：TS/CS/EL/group 算子 + 引擎分区与中间物化 + 防未来函数。
+1. M1：项目骨架 + YAML Spec 模型 + AST 白名单校验 + `expr_codegen` 接入 + 算子注册表。
+2. M2：`polars_ta` 算子适配/别名 + TS/CS/GP 分区验证 + 防未来函数。
 3. M3：数据层（DuckDB 只读 + teajoin 增量）+ 前向收益 + 处理管线。
 4. M4：评估指标 + 分层回测 + 因子对比 + 组合合成 + CLI 全命令。
 5. M5：Web 可视化。
-6. M6：Alpha101/191 语料对拍 + TA 对拍 + 文档。
+6. M6：Alpha101/191 与 Vibe-Trading Alpha Zoo 语料对拍 + TA 对拍 + 文档。
 
 详细拆分见实施计划（writing-plans 产物）。
 
-## 14. 未来扩展（v2 候选）
+## 15. 未来扩展（v2 候选）
 
 - 因子库管理后台（注册、分级、对比、淘汰）。
 - 信息增益率、残差诊断等统计指标（算子已内置，指标插件预留）。
 - 风格中性化（size/beta 等更多维度）。
-- DSL 编译进 Rust 引擎（高性能路径）。
+- 可选高性能后端：安装 MSVC 后接 `KunQuant` 或 `FastPlus.compile()`，用编译后代码替换 Polars 执行。
 - 事件驱动 / 跨资产 context 语法。
 - Web 端 DSL 编辑与实时预览。
 - 多用户与权限。
