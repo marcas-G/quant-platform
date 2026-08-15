@@ -1625,6 +1625,12 @@ git add src/factorlab/data/refresh.py tests/test_refresh.py
 git commit -m "feat: add incremental refresh"
 ```
 
+**实现修订（Task 8 已落地，与上面示例代码有出入）：**
+
+1. 测试 `_client` 的 trade_cal mock 列高不等（exchange 1 行 vs cal_date/is_open 2 行，
+   polars 建 df 报 ShapeError），修正为 `["SSE", "SSE"]`。
+2. refresh 记录 failed 日期并从最早 failed 日之后重试（原计划失败日静默跳过造成永久数据缺口）。
+
 ---
 
 ### Task 9: CLI data 子命令、文档与集成测试
