@@ -1042,7 +1042,19 @@ def neutralize(df: pl.DataFrame, ctx, by: str = "market") -> pl.DataFrame:
             pl.col("ts_code").str.split(".").list.first().alias("code"),
         ).select(["date", "code", "total_mv"])
         enriched = df.join(mv, on=["date", "code"], how="left")
-        return enriched.with_columns((x - x.mean().over(["date", "total_mv"])).alias(SIGNAL)).drop("total_mv")
+        missing = enriched["total_mv"].null_count()
+        if missing:
+            raise ValueError(f"{missing} 行缺少 daily_basic.total_mv，无法 neutralize(by=size)")
+        # 每日期内按 total_mv 排名十分位分桶（组键 date+_mv_decile），
+        # 避免按原始连续市值分组导致组内 1 行 → demean 恒 0 的退化
+        decile = (
+            pl.col("total_mv").rank("ordinal").over("date") * 10
+            // (pl.col("total_mv").count().over("date") + 1)
+        ).clip(0, 9)
+        enriched = enriched.with_columns(decile.alias("_mv_decile"))
+        return enriched.with_columns(
+            (x - x.mean().over(["date", "_mv_decile"])).alias(SIGNAL)
+        ).drop("total_mv", "_mv_decile")
     raise ValueError(f"neutralize 不支持的 by: {by}（market|industry|size）")
 ```
 
@@ -1084,11 +1096,7 @@ git commit -m "feat: add neutralize and industry-mean fillna"
   `.cast(pl.String).alias("date")`——面板 `date` 为 String（"2024-01-02"），
   polars 拒绝 String↔Date 混型 join key（SchemaError）。
 - 错误消息含小写 `ctx` 以匹配测试 `match="ctx"`（"ProcessCtx" 大写 C 不匹配）。
-- 已知 concern：size 按 `total_mv` 原始值分组，连续市值下组内通常 1 行 →
-  demean 恒 0（退化）；未匹配 daily_basic 的股票 `total_mv` 为 null → 单行组
-  demean 恒 0。已用单元测试固化该行为（`test_neutralize_size_demean` /
-  `test_neutralize_size_unmatched_code_demean_zero`），分桶修正在后续任务
-  （Task 9/集成）评估。
+- size 中性化修复：按 date 内 total_mv 排名十分位分桶后组内 demean（原"按原始 total_mv 分组"在连续市值下每组 1 行 → demean 恒 0，静默全零）；无 daily_basic 匹配 → 报错（M3a spec §5）。
 - 行业缺失路径：股票不在 `stock_basic_tushare` → `ValueError`
   （`test_neutralize_industry_missing_info`）；fillna industry_mean 对缺失行业
   不做报错（null 组内填自身均值）。
