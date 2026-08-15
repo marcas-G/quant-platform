@@ -39,6 +39,11 @@ def test_normalize_code():
         normalize_code("000001.SZ.X")
 
 
+def test_normalize_code_rejects_whitespace():
+    with pytest.raises(ValueError):
+        normalize_code(" 00000 ")
+
+
 def test_resolve_codes_inline(db):
     spec = spec_with(codes=["000001.SZ", "600519"])
     assert resolve_codes(spec, db) == ["000001", "600519"]

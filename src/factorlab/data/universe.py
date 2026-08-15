@@ -16,9 +16,12 @@ _ALLOWED_RULES = {"exclude_st", "min_list_days", "exchanges"}
 def normalize_code(code: str) -> str:
     """'000001.SZ' -> '000001'；纯数字直通；非法格式报错。"""
     parts = code.split(".")
-    if len(parts) > 2 or not parts[0].strip().isdigit() or len(parts[0]) != 6:
+    if len(parts) > 2:
         raise ValueError(f"非法股票代码: {code}（期望 6 位数字或 ts_code 格式）")
-    return parts[0]
+    base = parts[0].strip()
+    if len(base) != 6 or not base.isdigit() or base != parts[0]:
+        raise ValueError(f"非法股票代码: {code}（期望 6 位数字或 ts_code 格式）")
+    return base
 
 
 def load_universe_file(path: Path) -> dict[str, Any]:
