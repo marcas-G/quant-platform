@@ -22,6 +22,8 @@ class UniverseSpec(BaseModel):
     @classmethod
     def _from_string(cls, value: Any) -> Any:
         if isinstance(value, str):
+            if not value.strip():
+                raise ValueError("universe 引用名不能为空")
             return {"ref": value}
         return value
 

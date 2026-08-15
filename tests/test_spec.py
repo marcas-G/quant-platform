@@ -102,3 +102,8 @@ def test_universe_rejects_multiple_sources(tmp_path):
 def test_universe_rejects_empty(tmp_path):
     with pytest.raises(ValueError):
         load_spec(make_spec(tmp_path, universe={}))
+
+
+def test_universe_rejects_blank_reference(tmp_path):
+    with pytest.raises(ValueError):
+        load_spec(make_spec(tmp_path, universe="   "))
