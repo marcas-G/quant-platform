@@ -1,6 +1,6 @@
 # 框架与工具目录（保留在工作区，但不纳入版本控制）
-superpowers/
-.agents/
+/superpowers/
+/.agents/
 
 # Python
 __pycache__/
