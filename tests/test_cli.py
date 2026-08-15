@@ -75,6 +75,32 @@ def test_op_add_and_remove(tmp_path):
         settings.plugin_dir = original
 
 
+def test_op_doc_prints_registered_operator(tmp_path):
+    registry.reset_registry()
+    plugin_path = tmp_path / "doc_op.py"
+    plugin_path.write_text(textwrap.dedent('''
+        import polars as pl
+        from factorlab.ops.registry import factor_op
+
+        @factor_op("doc_dummy", kind="el", version="0.2.0")
+        def doc_dummy(x: pl.Expr) -> pl.Expr:
+            """return input unchanged"""
+            return x
+    '''), encoding="utf-8")
+
+    from factorlab.config import settings
+    original = settings.plugin_dir
+    settings.plugin_dir = tmp_path
+    try:
+        assert runner.invoke(app, ["op", "add", str(plugin_path)]).exit_code == 0
+        result = runner.invoke(app, ["op", "doc", "doc_dummy"])
+        assert result.exit_code == 0
+        assert "doc_dummy" in result.stdout
+        assert "0.2.0" in result.stdout
+    finally:
+        settings.plugin_dir = original
+
+
 def test_m1_cli_help_lists_commands():
     result = runner.invoke(app, ["--help"])
     assert result.exit_code == 0

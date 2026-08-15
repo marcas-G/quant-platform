@@ -10,6 +10,7 @@ from pydantic import BaseModel, Field, model_validator
 
 NAME_PATTERN = r"^[A-Za-z_][A-Za-z0-9_]{0,63}$"
 PROCESS_PATTERN = r"^[a-z_][a-z0-9_]*(\(.*\))?$"
+DATE_PATTERN = r"^\d{4}-\d{2}-\d{2}$"
 
 
 class UniverseSpec(BaseModel):
@@ -26,6 +27,14 @@ class UniverseSpec(BaseModel):
 class DateRange(BaseModel):
     start: str | None = None
     end: str | None = None
+
+    @model_validator(mode="after")
+    def _valid_dates(self) -> "DateRange":
+        for field in ("start", "end"):
+            value = getattr(self, field)
+            if value is not None and not re.match(DATE_PATTERN, value):
+                raise ValueError(f"{field} 必须为 YYYY-MM-DD 格式")
+        return self
 
 
 class OperatorMacro(BaseModel):
@@ -50,6 +59,12 @@ class CombineSpec(BaseModel):
     method: Literal["ic_weight", "equal_weight", "weight_sum"]
     weights: list[float] | None = None
 
+    @model_validator(mode="after")
+    def _valid_weights(self) -> "CombineSpec":
+        if self.method == "weight_sum" and not self.weights:
+            raise ValueError("weight_sum 必须提供非空 weights")
+        return self
+
 
 class FactorSpec(BaseModel):
     name: str = Field(pattern=NAME_PATTERN)
@@ -71,6 +86,10 @@ class FactorSpec(BaseModel):
             raise ValueError("formula 与 factors 必须二选一")
         if self.factors is not None and self.combine is None:
             raise ValueError("使用 factors 时必须提供 combine")
+        if self.factors is not None and self.combine is not None:
+            if self.combine.method == "weight_sum":
+                if self.combine.weights is None or len(self.combine.weights) != len(self.factors):
+                    raise ValueError("weight_sum 的 weights 数量必须等于 factors 数量")
         for item in self.process:
             if not re.match(PROCESS_PATTERN, item):
                 raise ValueError(f"非法 process 项: {item}")

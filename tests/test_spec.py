@@ -42,3 +42,46 @@ def test_rejects_formula_and_factors_together(tmp_path):
             factors=[{"name": "a", "formula": "signal = close"}],
             combine={"method": "equal_weight"},
         ))
+
+
+def test_load_valid_factors_and_combine(tmp_path):
+    path = make_spec(
+        tmp_path,
+        formula=None,
+        factors=[
+            {"name": "a", "formula": "signal = close / open - 1"},
+            {"name": "b", "formula": "signal = close - open"},
+        ],
+        combine={"method": "equal_weight"},
+    )
+    spec = load_spec(path)
+    assert len(spec.factors) == 2
+    assert spec.combine.method == "equal_weight"
+
+
+def test_rejects_invalid_date_format(tmp_path):
+    with pytest.raises(ValueError):
+        load_spec(make_spec(tmp_path, date={"start": "2020/01/01"}))
+
+
+def test_rejects_weight_sum_without_weights(tmp_path):
+    with pytest.raises(ValueError):
+        load_spec(make_spec(
+            tmp_path,
+            formula=None,
+            factors=[{"name": "a", "formula": "signal = close"}],
+            combine={"method": "weight_sum"},
+        ))
+
+
+def test_rejects_weight_sum_length_mismatch(tmp_path):
+    with pytest.raises(ValueError):
+        load_spec(make_spec(
+            tmp_path,
+            formula=None,
+            factors=[
+                {"name": "a", "formula": "signal = close"},
+                {"name": "b", "formula": "signal = open"},
+            ],
+            combine={"method": "weight_sum", "weights": [0.5]},
+        ))

@@ -1,6 +1,7 @@
 import textwrap
 
 import polars as pl
+import pytest
 
 from factorlab.ops import plugins, registry
 
@@ -33,3 +34,16 @@ def test_remove_plugin_disables_operator(tmp_path):
     plugins.add_plugin(write_plugin(plugin_dir), plugin_dir=plugin_dir)
     plugins.remove_plugin("dummy_op", plugin_dir=plugin_dir)
     assert "dummy_op" not in plugins.list_enabled_operators(plugin_dir)
+
+
+def test_add_plugin_conflict_requires_force(tmp_path):
+    registry.reset_registry()
+    plugin_dir = tmp_path / "plugins"
+    path = write_plugin(plugin_dir)
+    plugins.add_plugin(path, plugin_dir=plugin_dir)
+
+    with pytest.raises(ValueError):
+        plugins.add_plugin(path, plugin_dir=plugin_dir, force=False)
+
+    names = plugins.add_plugin(path, plugin_dir=plugin_dir, force=True)
+    assert "dummy_op" in names

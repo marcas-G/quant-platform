@@ -66,12 +66,15 @@ def add_plugin(path: str | Path, plugin_dir: Path, force: bool = False) -> list[
     before = {op.name for op in registry.list_ops()}
     _import_plugin(source_path)
     new_names = {op.name for op in registry.list_ops()} - before
-    if not new_names:
-        raise ValueError("插件未注册任何新算子")
 
     conflicts = new_names & existing
     if conflicts and not force:
         raise ValueError(f"算子已存在: {sorted(conflicts)}，使用 --force 覆盖")
+    if not new_names:
+        if force and existing:
+            new_names = existing
+        else:
+            raise ValueError("插件未注册任何新算子")
 
     dest = plugin_dir / source_path.name
     if source_path.resolve() != dest.resolve():
