@@ -130,6 +130,83 @@ combine:
         run_factor(load_spec(path), RunContext(db_path=tmp_path / "q.duckdb", output_dir=tmp_path / "out5"))
 
 
+def test_run_factor_neutralize_industry(tmp_path):
+    # 回归：process 链 ctx（duckdb 连接）经 run_factor 完整链路可用（行业来自 stock_basic_tushare）
+    build_db(tmp_path)
+    spec_path = tmp_path / "spec_n.yaml"
+    spec_path.write_text("""
+name: demo_n
+category: custom
+direction: 1
+universe:
+  codes: ["A.SZ", "B.SH"]
+date:
+  start: "2024-01-02"
+  end: "2024-01-09"
+process:
+  - neutralize(by=industry)
+formula: |
+  signal = close / open - 1
+""", encoding="utf-8")
+    result = run_factor(load_spec(spec_path), RunContext(db_path=tmp_path / "q.duckdb", output_dir=tmp_path / "out_n"))
+    assert "signal" in result.panel.columns
+    assert result.panel.height > 0
+
+
+def test_run_factor_neutralize_size(tmp_path):
+    # 回归：size 分支的日期 join key 必须与面板 date 同 dtype（run_factor 面板为 pl.Date，
+    # 原 cast String 导致 SchemaError）
+    build_db(tmp_path)
+    db = duckdb.connect(tmp_path / "q.duckdb")
+    db.execute("CREATE TABLE daily_basic (trade_date VARCHAR, ts_code VARCHAR, total_mv DOUBLE)")
+    for d in ("20240102", "20240103", "20240104", "20240105", "20240108", "20240109"):
+        db.execute("INSERT INTO daily_basic VALUES (?, 'A.SZ', 100.0)", (d,))
+        db.execute("INSERT INTO daily_basic VALUES (?, 'B.SH', 200.0)", (d,))
+    db.close()
+    spec_path = tmp_path / "spec_size.yaml"
+    spec_path.write_text("""
+name: demo_size
+category: custom
+direction: 1
+universe:
+  codes: ["A.SZ", "B.SH"]
+date:
+  start: "2024-01-02"
+  end: "2024-01-09"
+process:
+  - neutralize(by=size)
+formula: |
+  signal = close / open - 1
+""", encoding="utf-8")
+    result = run_factor(load_spec(spec_path), RunContext(db_path=tmp_path / "q.duckdb", output_dir=tmp_path / "out_s"))
+    assert "signal" in result.panel.columns
+    assert result.panel.height > 0
+    # 每十分位组单只 → 组内 demean 恒 0（截面 N<10 已知局限）
+    assert result.panel["signal"].abs().max() < 1e-9
+
+
+def test_run_factor_missing_db(tmp_path):
+    with pytest.raises(FileNotFoundError, match="nope.duckdb"):
+        run_factor(_spec(tmp_path), RunContext(db_path=tmp_path / "nope.duckdb", output_dir=tmp_path / "out6"))
+
+
+def test_run_factor_syntax_error_rejected(tmp_path):
+    build_db(tmp_path)
+    spec = _spec(tmp_path)
+    spec.formula = "signal = (close"
+    with pytest.raises(ValueError, match="语法错误"):
+        run_factor(spec, RunContext(db_path=tmp_path / "q.duckdb", output_dir=tmp_path / "out7"))
+
+
+def test_run_factor_attribute_call_rejected(tmp_path):
+    # 属性调用（np.abs）须在装配层被拒绝，而不是被 _formula_columns 误读为列名
+    build_db(tmp_path)
+    spec = _spec(tmp_path)
+    spec.formula = "signal = np.abs(close)"
+    with pytest.raises(ValueError, match="属性调用"):
+        run_factor(spec, RunContext(db_path=tmp_path / "q.duckdb", output_dir=tmp_path / "out8"))
+
+
 def test_formula_columns_extracts_data_cols_only():
     formula = '''
 from polars_ta.prefix.wq import ts_mean, ts_delay

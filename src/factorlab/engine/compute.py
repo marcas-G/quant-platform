@@ -69,6 +69,8 @@ def _formula_columns(formula: str) -> list[str]:
 
 @dataclass
 class RunContext:
+    """运行上下文。universe_override：6 位代码（如 600519）、universe 引用名或 yaml 文件路径。"""
+
     db_path: Path = _settings.quant_db
     output_dir: Path = Path("results")
     universe_override: str | None = None
@@ -86,7 +88,11 @@ def run_factor(spec: FactorSpec, ctx: RunContext) -> FactorResult:
     """装配链路：universe → 加载 → 停牌补全 → 因子 → process → forward → 周频对齐 → 落盘。"""
     if spec.factors is not None:
         raise NotImplementedError("多因子 factors/combine 组合尚未支持（M3a 仅支持单公式因子）")
-    con = duckdb.connect(str(ctx.db_path), read_only=True)
+    validate_formula(spec.formula)  # 提前校验：语法/禁止调用错误在打开数据库前抛出
+    try:
+        con = duckdb.connect(str(ctx.db_path), read_only=True)
+    except duckdb.IOException as exc:
+        raise FileNotFoundError(f"数据库不存在: {ctx.db_path}（可运行 data refresh 或检查路径）") from exc
     try:
         codes = resolve_codes(spec, con, override=ctx.universe_override)
         cols = _formula_columns(spec.formula)
@@ -118,10 +124,11 @@ def run_factor(spec: FactorSpec, ctx: RunContext) -> FactorResult:
         "category": spec.category,
         "direction": spec.direction,
         "universe_count": len(codes),
-        "date_start": str(panel["date"].min()) if panel.height else None,
-        "date_end": str(panel["date"].max()) if panel.height else None,
+        "codes": codes,
+        "date_start": str(panel["date"].min()),  # panel.height == 0 已在链路中 raise，无需兜底
+        "date_end": str(panel["date"].max()),
         "panel_rows": panel.height,
-        "signal_null_ratio": round(panel["signal"].null_count() / panel.height, 4) if panel.height else 1.0,
+        "signal_null_ratio": round(panel["signal"].null_count() / panel.height, 4),
         "process": spec.process,
         "float32": ctx.float32,
         "spec_yaml": yaml.safe_dump(spec.model_dump(), allow_unicode=True),

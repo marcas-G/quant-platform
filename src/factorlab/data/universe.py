@@ -77,7 +77,8 @@ def resolve_codes(
     override: str | None = None,
     settings=settings,
 ) -> list[str]:
-    """universe 三层解析：override > spec 内联/引用 > 全局默认。返回纯数字代码列表。"""
+    """universe 解析：override > spec 内联（ref/codes/rules）。返回纯数字代码列表（daily.code 格式）。
+    全局默认层（config.default_universe）未接线，保留给 M4 CLI（--universe 默认值）。"""
     if override is not None:
         try:
             normalize_code(override)

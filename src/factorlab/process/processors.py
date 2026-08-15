@@ -103,8 +103,9 @@ def neutralize(df: pl.DataFrame, ctx, by: str = "market") -> pl.DataFrame:
         return enriched.with_columns((x - x.mean().over(["date", "industry"])).alias(SIGNAL)).drop("industry")
     if by == "size":
         mv = ctx.db.execute("SELECT trade_date, ts_code, total_mv FROM daily_basic").pl().with_columns(
-            # trade_date 'YYYYMMDD' → 面板 date 同格式（ISO 字符串），ts_code → symbol（去后缀）
-            pl.col("trade_date").str.strptime(pl.Date, "%Y%m%d").cast(pl.String).alias("date"),
+            # trade_date 'YYYYMMDD' → 面板 date 同 dtype（run_factor 面板为 pl.Date；单测面板为 str），
+            # join key 必须与面板一致，否则 SchemaError
+            pl.col("trade_date").str.strptime(pl.Date, "%Y%m%d").cast(df.schema["date"]).alias("date"),
             pl.col("ts_code").str.split(".").list.first().alias("code"),
         ).select(["date", "code", "total_mv"])
         enriched = df.join(mv, on=["date", "code"], how="left")
