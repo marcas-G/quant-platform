@@ -10,14 +10,15 @@ from factorlab.config import settings
 from factorlab.spec import FactorSpec
 
 VALID_EXCHANGES = ("SSE", "SZSE")
+_ALLOWED_RULES = {"exclude_st", "min_list_days", "exchanges"}
 
 
 def normalize_code(code: str) -> str:
     """'000001.SZ' -> '000001'；纯数字直通；非法格式报错。"""
-    base = code.split(".")[0].strip()
-    if not base.isdigit() or len(base) != 6:
+    parts = code.split(".")
+    if len(parts) > 2 or not parts[0].strip().isdigit() or len(parts[0]) != 6:
         raise ValueError(f"非法股票代码: {code}（期望 6 位数字或 ts_code 格式）")
-    return base
+    return parts[0]
 
 
 def load_universe_file(path: Path) -> dict[str, Any]:
@@ -33,11 +34,16 @@ def _resolve_source(name: str, universes_dir: Path) -> dict[str, Any]:
     path = Path(name)
     if path.is_file():
         return load_universe_file(path)
+    if name.endswith(".yaml"):
+        name = name[: -len(".yaml")]
     candidate = universes_dir / f"{name}.yaml"
     return load_universe_file(candidate)
 
 
 def _codes_from_rules(rules: dict[str, Any], db: duckdb.DuckDBPyConnection, date_start: str | None) -> list[str]:
+    unknown = set(rules) - _ALLOWED_RULES
+    if unknown:
+        raise ValueError(f"未知 universe 规则: {sorted(unknown)}（支持: {sorted(_ALLOWED_RULES)}）")
     sql = "SELECT symbol FROM stock_basic_tushare WHERE exchange IN (SELECT unnest(?))"
     params: list[Any] = [list(VALID_EXCHANGES)]
     if rules.get("exclude_st"):
@@ -50,11 +56,14 @@ def _codes_from_rules(rules: dict[str, Any], db: duckdb.DuckDBPyConnection, date
         sql += " AND exchange IN (SELECT unnest(?))"
         params.append(list(exchanges))
     min_days = rules.get("min_list_days")
-    if min_days:
+    if min_days is not None:
+        min_days = int(min_days)
+        if min_days < 0:
+            raise ValueError(f"min_list_days 不能为负: {min_days}")
         if date_start is None:
             date_start = db.execute("SELECT min(date) FROM daily").fetchone()[0]
         sql += " AND CAST(list_date AS DATE) <= CAST(? AS DATE) - INTERVAL (?) DAY"
-        params.extend([date_start, int(min_days)])
+        params.extend([date_start, min_days])
     rows = db.execute(sql, params).fetchall()
     return sorted(r[0] for r in rows)
 
@@ -77,12 +86,16 @@ def resolve_codes(
         data = _resolve_source(spec.universe.ref, settings.universes_dir)
     elif spec.universe.codes is not None:
         data = {"codes": spec.universe.codes}
-    else:
-        assert spec.universe.rules is not None
+    elif spec.universe.rules is not None:
         data = {"rules": spec.universe.rules}
+    else:
+        raise ValueError("universe 解析失败：spec 缺少 ref/codes/rules")
 
     if "codes" in data:
-        codes = [normalize_code(c) for c in data["codes"]]
+        codes = sorted({normalize_code(c) for c in data["codes"]})
+        known = {r[0] for r in db.execute(
+            "SELECT symbol FROM stock_basic_tushare WHERE symbol IN (SELECT unnest(?))", [codes]).fetchall()}
+        codes = [c for c in codes if c in known]
     elif "rules" in data:
         codes = _codes_from_rules(data["rules"], db, spec.date.start)
     else:
