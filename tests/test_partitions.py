@@ -26,11 +26,19 @@ def test_allows_elementwise_functions():
     validate_partition_calls("signal = abs(close - open) + log(volume) / sqrt(abs(close))")
 
 
-def test_allows_inline_def_functions():
+def test_allows_inline_def_with_elementwise_ops():
     validate_partition_calls(
-        "def momentum(x, n):\n    return ts_delay(x, n) / ts_delay(x, 2 * n) - 1\n"
-        "signal = momentum(close, 5)"
+        "def flip(x, n):\n    return x * n\n"
+        "signal = flip(close, 5)"
     )
+
+
+def test_rejects_window_op_inside_def():
+    with pytest.raises(ValueError, match="def"):
+        validate_partition_calls(
+            "def momentum(x, n):\n    return ts_delay(x, n) / ts_delay(x, 2 * n) - 1\n"
+            "signal = momentum(close, 5)"
+        )
 
 
 def test_rejects_unknown_operator():
@@ -56,3 +64,37 @@ def test_errors_carry_source_location():
     with pytest.raises(FactorDSLError) as exc_info:
         reject_future_shifts("signal = ts_delay(close, -1)")
     assert exc_info.value.line == 1
+
+
+def test_rejects_folded_negative_delay():
+    with pytest.raises(ValueError):
+        reject_future_shifts("signal = ts_delay(close, 1 - 2)")
+
+
+def test_rejects_keyword_negative_delay():
+    with pytest.raises(ValueError):
+        reject_future_shifts("signal = ts_delay(close, d=-1)")
+
+
+def test_rejects_float_negative_delay():
+    with pytest.raises(ValueError):
+        reject_future_shifts("signal = ts_delay(close, -1.0)")
+
+
+def test_allows_variable_shift_and_positive_expr():
+    reject_future_shifts("signal = ts_delay(close, n)")
+
+
+def test_import_alias_resolves_to_known_op():
+    validate_partition_calls(
+        "from factorlab.ops.platform_ops import returns as ret\nsignal = ret(close)"
+    )
+
+
+def test_import_alias_of_window_op_inside_def_rejected():
+    with pytest.raises(ValueError, match="def"):
+        validate_partition_calls(
+            "from polars_ta.prefix.wq import ts_delay as d\n"
+            "def f(x):\n    return d(x, 1)\n"
+            "signal = f(close)"
+        )

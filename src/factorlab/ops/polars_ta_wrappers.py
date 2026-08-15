@@ -9,6 +9,7 @@ _WQ_TS = (
     "ts_delay", "ts_delta", "ts_mean", "ts_std_dev", "ts_sum", "ts_product",
     "ts_min", "ts_max", "ts_median", "ts_rank", "ts_zscore",
     "ts_corr", "ts_covariance", "ts_skewness", "ts_kurtosis",
+    "ts_cum_sum", "ts_cum_max", "ts_cum_min", "ts_cum_prod",
 )
 
 _WQ_CS = (
