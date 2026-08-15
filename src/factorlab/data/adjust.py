@@ -23,6 +23,10 @@ def view_prices(
     if view == "pit_qfq" and asof is None:
         raise ValueError("pit_qfq 视图必须提供 asof 研究日")
 
+    if view in ("qfq", "pit_qfq"):
+        # latest 语义基于日期而非行序：先按 code+date 排序保证 .last() 取日期最新
+        df = df.sort(["code", "date"])
+
     if view == "qfq":
         factor = pl.col(adj_col) / pl.col(adj_col).last().over("code")
     elif view == "hfq":

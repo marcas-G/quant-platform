@@ -43,6 +43,12 @@ def test_view_pit_qfq_requires_asof():
         view_prices(_panel(), "pit_qfq")
 
 
+def test_view_qfq_uses_date_order_not_row_order():
+    df = _panel().sort("date", descending=True)  # 打乱行序
+    out = view_prices(df, "qfq")
+    assert out["close"].to_list() == pytest.approx([10.0 / 1.5, 11.0 / 1.5, 8.0, 9.0])
+
+
 def test_view_qfq_groups_by_code():
     # 多 code：不同复权因子不能跨 code 混用（A 1→1.5，B 2→3）
     df = pl.DataFrame({
