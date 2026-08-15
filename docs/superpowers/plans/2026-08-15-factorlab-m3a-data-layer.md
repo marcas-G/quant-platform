@@ -318,6 +318,11 @@ def resolve_codes(
 3. `min_list_days` SQL 改为 `CAST(list_date AS DATE) <= CAST(? AS DATE) - INTERVAL (?) DAY`：计划原代码对 VARCHAR list_date 直接比较报 DuckDB BinderError。
 4. BSE 错误消息改为「v1 仅支持 SSE、SZSE，不含 BSE」：计划原文自相矛盾。
 
+**追加修正记录（2026-08-15，代码审查修复）：**
+5. `_codes_from_rules` 对未知规则键（如 `min_list_day` 拼写错误）抛错，避免拼写错误导致无过滤 universe 的静默错误。
+6. `codes` 分支与 `stock_basic_tushare.symbol` 取交集：库中不存在的内联代码被过滤，空结果报「universe 无有效股票」——符合 M3a spec §5「空 universe 报错 + 检查 codes 拼写」。
+7. `min_list_days` 拒绝负值；`_resolve_source` 兼容尾部 `.yaml`；`normalize_code` 拒绝多段代码（`000001.SZ.X`）；内联 codes 去重排序。
+
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `pytest tests/test_universe.py -v`
