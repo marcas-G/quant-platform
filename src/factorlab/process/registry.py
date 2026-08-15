@@ -8,6 +8,8 @@ import duckdb
 import polars as pl
 
 _ITEM_RE = re.compile(r"^([a-z_][a-z0-9_]*)(?:\((.*)\))?$")
+_KEY_RE = re.compile(r"^[a-z_][a-z0-9_]*$")
+_POSITIONAL_NAMES = ("lower", "upper", "value")
 
 
 def _parse_value(raw: str) -> Any:
@@ -29,22 +31,38 @@ def _parse_value(raw: str) -> Any:
 
 def parse_chain_item(item: str) -> tuple[str, dict[str, Any]]:
     """'winsorize(quantile=0.99)' -> ('winsorize', {'quantile': 0.99})；
-    'clip(-3, 3)' -> ('clip', {'lower': -3.0, 'upper': 3.0})（位置参数按序命名）。"""
+    'neutralize(by: industry)' -> ('neutralize', {'by': 'industry'})（key 支持 = 与 : 分隔）；
+    'clip(-3, 3)' -> ('clip', {'lower': -3.0, 'upper': 3.0})（位置参数按序命名）；
+    关键字参数后不允许位置参数（防止静默覆盖）。"""
     match = _ITEM_RE.match(item.strip())
     if not match:
         raise ValueError(f"非法 process 项: {item}")
     name, args_raw = match.group(1), match.group(2)
     kwargs: dict[str, Any] = {}
     if args_raw:
+        seen_keyword = False
         for i, part in enumerate(args_raw.split(",")):
             part = part.strip()
             if not part:
                 raise ValueError(f"非法 process 参数: {item}")
             if "=" in part:
                 key, _, value = part.partition("=")
-                kwargs[key.strip()] = _parse_value(value)
+                key = key.strip()
+                if not _KEY_RE.match(key):
+                    raise ValueError(f"非法 process 参数 key: {key}（{item}）")
+                kwargs[key] = _parse_value(value)
+                seen_keyword = True
+            elif ":" in part:
+                key, _, value = part.partition(":")
+                key = key.strip()
+                if not _KEY_RE.match(key):
+                    raise ValueError(f"非法 process 参数 key: {key}（{item}）")
+                kwargs[key] = _parse_value(value)
+                seen_keyword = True
             else:
-                kwargs[["lower", "upper", "value"][i] if i < 3 else f"arg{i}"] = _parse_value(part)
+                if seen_keyword:
+                    raise ValueError(f"关键字参数后不允许位置参数: {item}")
+                kwargs[_POSITIONAL_NAMES[i] if i < 3 else f"arg{i}"] = _parse_value(part)
     return name, kwargs
 
 
@@ -90,6 +108,8 @@ def get_processor(name: str) -> ProcessorDef:
 
 def run_process_chain(df: pl.DataFrame, chain: list[str], ctx=None) -> pl.DataFrame:
     """顺序执行 process 链；处理对象为 signal 列。ctx 为 ProcessCtx 或裸 duckdb 连接。"""
+    if "signal" not in df.columns:
+        raise ValueError("process 链需要 signal 列，请先计算因子")
     pctx = ctx if isinstance(ctx, ProcessCtx) else ProcessCtx(db=ctx)
     result = df
     for item in chain:

@@ -52,3 +52,87 @@ def test_run_chain_applies_sequentially():
     out = run_process_chain(df, ["winsorize(quantile=0.5)", "standardize()"], ctx=None)
     assert out.columns == ["date", "code", "signal"]
     assert out["signal"].abs().max() < 5  # 去极值后 z-score 有界
+
+
+def _panel():
+    return pl.DataFrame({
+        "date": ["2024-01-02"] * 4 + ["2024-01-03"] * 4,
+        "code": ["A", "B", "C", "D"] * 2,
+        "signal": [1.0, 2.0, 3.0, 100.0, 1.0, 2.0, 3.0, 4.0],
+    })
+
+
+def test_winsorize_clips_extremes():
+    out = run_process_chain(_panel(), ["winsorize(quantile=0.5)"], ctx=None)
+    assert out["signal"].max() < 100.0
+
+
+def test_standardize_cross_section():
+    out = run_process_chain(_panel(), ["standardize()"], ctx=None)
+    per_date = out.group_by("date").agg(
+        mean=pl.col("signal").mean(),
+        std=pl.col("signal").std(),
+    )
+    assert per_date["mean"].abs().max() < 1e-9
+    assert per_date["std"].abs().max() > 0.9
+
+
+def test_csranknorm_in_unit_interval():
+    out = run_process_chain(_panel(), ["csranknorm()"], ctx=None)
+    assert out["signal"].min() > 0.0 and out["signal"].max() <= 1.0
+
+
+def test_robustzscore_bounds_extremes():
+    out = run_process_chain(_panel(), ["robustzscore()"], ctx=None)
+    # 01-02 截面 [1,2,3,100]：中位数 2.5、MAD 1.0，极端值 100.0 → 稳健 z ≈ 65.8
+    # （标准 MAD 公式下 <10 在数学上不可能）；断言极端值仍远小于原始幅度、其余在 ±1 附近
+    abs_sig = out["signal"].abs()
+    assert abs_sig.max() < 100.0
+    assert abs_sig.filter(abs_sig < abs_sig.max()).max() < 1.1
+
+
+def test_clip_bounds():
+    out = run_process_chain(_panel(), ["clip(-1, 1)"], ctx=None)
+    assert out["signal"].min() >= -1.0 and out["signal"].max() <= 1.0
+
+
+def test_fillna_value():
+    df = _panel().with_columns(pl.when(pl.col("code") == "D").then(None).otherwise(pl.col("signal")).alias("signal"))
+    out = run_process_chain(df, ["fillna(method=value, value=0.0)"], ctx=None)
+    assert out["signal"].null_count() == 0
+    assert out.filter(pl.col("code") == "D")["signal"].to_list() == [0.0, 0.0]
+
+
+def test_fillna_forward_within_asset():
+    df = pl.DataFrame({
+        "date": ["2024-01-02", "2024-01-03", "2024-01-04", "2024-01-05"],
+        "code": ["A", "A", "A", "A"],
+        "signal": [1.0, None, 3.0, None],
+    })
+    out = run_process_chain(df, ["fillna(method=forward)"], ctx=None)
+    assert out["signal"].to_list() == [1.0, 1.0, 3.0, 3.0]
+
+
+def test_fillna_invalid_method():
+    with pytest.raises(ValueError, match="fillna"):
+        run_process_chain(_panel(), ["fillna(method=bogus)"], ctx=None)
+
+
+def test_parse_chain_item_colon_separator():
+    assert parse_chain_item("neutralize(by: industry)") == ("neutralize", {"by": "industry"})
+
+
+def test_parse_chain_item_bad_key_rejected():
+    with pytest.raises(ValueError):
+        parse_chain_item("clip(=3)")
+
+
+def test_parse_chain_item_keyword_before_positional_rejected():
+    with pytest.raises(ValueError):
+        parse_chain_item("clip(upper=3, -3)")
+
+
+def test_run_chain_requires_signal_column():
+    df = pl.DataFrame({"date": ["2024-01-02"], "code": ["A"]})
+    with pytest.raises(ValueError, match="signal"):
+        run_process_chain(df, ["standardize()"], ctx=None)
