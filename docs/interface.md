@@ -264,6 +264,9 @@ DuckDB 只读加载；SQL-first 过滤；`date` cast `pl.Date`；数值列 float
 - `upsert_on(con, table, df, keys, dedup=True)`：在给定连接上 upsert，与 `upsert()`
   同语义。`dedup=False` 纯 INSERT——调用方保证批内无重复（如 rebuild 单日批按
   trade_date 唯一），省去全表扫描 DELETE（~80ms/批）。
+  **表已存在时 INSERT 前过滤 df 中表不存在的列**：`build_final_db` 稀疏剔除后
+  refresh 用全字段 df 写最终库不再 Binder 报错（此前被 except 吞掉 → 数据永不
+  更新），仅插入存在的列；表不存在时按 df 全字段建表（首插路径不变）。
 - `upsert(table, df, keys)`：公共 API，每次自开连接，`dedup=True` 保持去重语义。
 - `query(sql, params=None) -> pl.DataFrame` / `list_tables()` / `describe(table)` /
   `integrity_check() -> dict`。
@@ -274,13 +277,18 @@ DuckDB 只读加载；SQL-first 过滤；`date` cast `pl.Date`；数值列 float
   manifest 读写（每批落盘）。结构：`{table: {completed: [dates], failed: [dates]}, last_updated: "YYYYMMDD"}`。
 - `RebuildScope(start="20000104", end=None)`：重建日期范围（end 缺省 20261231）。
 - `rebuild_all(db, client, scope=RebuildScope(), resume=True, manifest_path=None) -> dict`
-  编排时序：trade_cal（is_open=1 过滤，无交易日报错）→ stock_basic（L/D 分页）→
-  行情 7 表按日（DAILY_TABLES，单连接复用，completed 跳过、failed 记录）→ 财报 3 表
-  按报告期（每季末，空返回正常）→ index_daily（4 指数全历史）+ index_weight（每月
-  最后一个交易日当期成分）。manifest_path 缺省 `settings.data_dir / "manifest.json"`。
+  编排时序：trade_cal（is_open=1 过滤，无交易日报错；**未来公告日截断到 today**——
+  真实 API 返回未来日，避免为未来日白拉请求）→ stock_basic（L/D 分页）→
+  行情 7 表按日（DAILY_TABLES，单连接复用，completed 跳过、failed 记录）→
+  index_daily（4 指数全历史，ts_code 参数）+ index_weight（每月最后一个交易日，
+  **index_code 参数**——真实 API 必填 index_code 而非 ts_code；upsert 键
+  `["index_code", "trade_date"]`）。**M3b v1 不含财报三表**（真实 API 强制 ts_code，
+  全市场按报告期不可行；`FINANCIAL_TABLES` 常量保留，M3b+ 按 ts_code 分批拉取）。
+  manifest_path 缺省 `settings.data_dir / "manifest.json"`。
   resume=True 跳过 completed、重试 failed（成功后移除）；resume=False 忽略既有
   manifest 全量重拉。缺 token 抛 `ValueError`。返回
-  `{"tables": {table: {"dates_fetched"/"report_dates"/"month_dates", "rows", "failed"}}}`。
+  `{"tables": {table: {"dates_fetched"/"month_dates", "rows", "failed"}}}`。
+  `last_updated` = 截断后的最近交易日（< today，refresh 增量窗口起点）。
 - `assess_sparsity(db) -> {table: {col: {null_ratio, stock_coverage, first_date}}}`
   每表每字段稀疏度评估。键列（trade_date/cal_date/ts_code/exchange/index_code）与
   trade_cal 不参与；无日期列的表 first_date 为 None；空表字段 null_ratio 记 1.0。
@@ -291,7 +299,8 @@ DuckDB 只读加载；SQL-first 过滤；`date` cast `pl.Date`；数值列 float
   `{"excluded_fields": {table: [cols]}, "tables": [最终库表]}`。staging 库不存在抛
   `ValueError`。
 
-常量：`DAILY_TABLES`（7 行情表）、`FINANCIAL_TABLES`（3 财报表）、`INDEX_CODES`（4 指数）。
+常量：`DAILY_TABLES`（7 行情表）、`FINANCIAL_TABLES`（3 财报表，M3b v1 不拉取，
+M3b+ 按 ts_code 分批）、`INDEX_CODES`（4 指数）。
 
 ### `factorlab.data.refresh` 增量续拉
 
@@ -307,6 +316,9 @@ DuckDB 只读加载；SQL-first 过滤；`date` cast `pl.Date`；数值列 float
   不同）；成功日期加入 completed 并从 failed 移除，失败日期记入 failed（下次
   refresh 重试，与 rebuild 同语义），单日失败不阻塞其他日期/表。处理后
   `last_updated` 推进到处理范围末端（failed 日也算已处理，避免重复拉）并落盘。
+  **死锁修复语义**：rebuild 已将 `last_updated` 截断为最近交易日（< today），
+  trade_cal 请求 `start_date=last / end_date=today`，`d > last` 即增量窗口——不会
+  出现 last_updated 为未来日导致永久无新日。
   错误语义：manifest 缺失或 `last_updated` 不存在抛
   `ValueError("manifest 无 last_updated，请先 rebuild")`；trade_cal 缺 `is_open`
   列或返回异常时异常向上传播（fail-loud，不静默）。
@@ -326,9 +338,17 @@ DuckDB 只读加载；SQL-first 过滤；`date` cast `pl.Date`；数值列 float
   单侧 close 为 null 记 mismatch，双侧 null（停牌/无数据）不算差异。差异逐条进
   `details`（最多 50 条）。返回
   `{"compared_rows", "mismatches", "details", "sampled_stocks"}`。
+  **参考库列结构自动检测映射**（`_ref_query_sql(ref_cols)`）：`DESCRIBE daily` 后
+  有 `trade_date/ts_code` 用原列；quant-data 风格（`date/code`，日期 `2024-01-02`
+  VARCHAR 或 DATE、代码纯数字）映射为 `strftime(CAST(date AS DATE), '%Y%m%d')
+  AS trade_date`（对齐 primary 的 YYYYMMDD）、`code = substr(?, 1, 6)`（ts_code
+  前 6 位）、日期 `CAST(date AS DATE) BETWEEN CAST(strptime(?, '%Y%m%d') AS DATE) ...`
+  （显式 CAST：DuckDB 禁止 VARCHAR 与 TIMESTAMP 混用 BETWEEN）。join 只取
+  trade_date/close（映射后列名），date/code 之外的参考列不影响。
   错误语义：参考库文件不存在抛 `ValueError("参考库不存在...")`；primary 无 daily
-  表返回零报告（含 `note`）；参考库无 daily 表时对应段跳过（duckdb 错误捕获，
-  不阻塞）。primary 为 `PlatformDB`，ref_path 接受 `PlatformDB | Path`。
+  表返回零报告（含 `note`）；参考库无 daily 表或结构不兼容时返回零报告（含
+  `note`）或对应段跳过（duckdb 错误捕获，不阻塞）。primary 为 `PlatformDB`，
+  ref_path 接受 `PlatformDB | Path`。
 
 ## 5. 测试
 
@@ -382,14 +402,17 @@ token 来自 `FACTORLAB_TEAJOIN_TOKEN`；端点 `FACTORLAB_TEAJOIN_BASE_URL`
 - `factorlab.data.platform_db.PlatformDB`：duckdb 写库，自动建表、按 keys upsert
   去重（`dedup=False` 纯 INSERT 批量语义）、`integrity_check()` 六规则自检
   （日历缺日/重复行/pct_chg 自洽/adj_factor 有效/stk_limit 边界/市值有效）。
-- `factorlab.data.rebuild`：`rebuild_all`（manifest 断点续传编排：交易日历 → 静态
-  → 行情 7 表按日 → 财报按报告期 → 指数）；`assess_sparsity`（每表每字段
-  null_ratio/stock_coverage/first_date）；`build_final_db`（null_ratio > 20% 或
-  stock_coverage < 80% 的字段物理剔除后重建最终库）。
-- `factorlab.data.refresh.refresh`：从 manifest `last_updated` 增量续拉行情 7 表，
-  重试 failed 日期，`upsert` 默认 `dedup=True` 去重替换。
+- `factorlab.data.rebuild`：`rebuild_all`（manifest 断点续传编排：交易日历（未来
+  公告日截断）→ 静态 → 行情 7 表按日 → 指数（index_weight 用 index_code 参数）；
+  **无财报三表**）；`assess_sparsity`（每表每字段 null_ratio/stock_coverage/
+  first_date）；`build_final_db`（null_ratio > 20% 或 stock_coverage < 80% 的字段
+  物理剔除后重建最终库）。
+- `factorlab.data.refresh.refresh`：从 manifest `last_updated`（rebuild 截断后的
+  最近交易日）增量续拉行情 7 表，重试 failed 日期，`upsert` 默认 `dedup=True`
+  去重替换。
 - `factorlab.data.verify`：`verify_all` 完整性 + 稀疏摘要 + 抽样对拍（30 只 ×
-  三段 × 相对误差容差 1e-4）；`compare_sample` 对拍细节与错误语义见 `4.x`。
+  三段 × 相对误差容差 1e-4）；`compare_sample` 自动映射参考库列结构
+  （trade_date/ts_code 或 date/code 风格），对拍细节与错误语义见 `4.x`。
 - `factorlab.data.adjust`：`view_prices`（raw/qfq/hfq/pit_qfq 价格视图）、
   `total_return`（HFQ 含分红再投资收益）、审计三查（`lookahead_check` /
   `scale_invariance_check` / `adjustment_sensitivity_check`）。

@@ -85,6 +85,27 @@ def test_upsert_on_dedup_false_keeps_duplicates(tmp_path):
     assert db.query("SELECT count(*) AS n FROM daily")["n"][0] == 2  # 纯 INSERT 不去重
 
 
+def test_upsert_filters_missing_columns(tmp_path):
+    """建表后剔除一列（模拟 build_final_db 稀疏剔除）再 upsert 全字段 df：
+    仅插入表存在的列，不抛 Binder 错误（refresh 写最终库的崩溃窗口）。"""
+    db = build_db(tmp_path)
+    db.upsert("daily", pl.DataFrame({
+        "trade_date": ["20240102"], "ts_code": ["A"], "close": [10.0], "sparse_field": [1.0],
+    }), keys=["trade_date", "ts_code"])
+    with db.connect() as con:  # 模拟最终库：物理剔除稀疏字段
+        con.execute("ALTER TABLE daily DROP COLUMN sparse_field")
+    db.upsert("daily", pl.DataFrame({
+        "trade_date": ["20240102", "20240103"],
+        "ts_code": ["A", "A"],
+        "close": [11.0, 12.0],
+        "sparse_field": [2.0, 3.0],  # 表不存在此列：应被过滤
+    }), keys=["trade_date", "ts_code"])
+    out = db.query("SELECT * FROM daily ORDER BY trade_date")
+    assert out.height == 2
+    assert out.columns == ["trade_date", "ts_code", "close"]  # sparse_field 未插入
+    assert out.filter(pl.col("trade_date") == "20240102")["close"][0] == 11.0  # 去重替换生效
+
+
 def test_upsert_on_empty_df_is_noop(tmp_path):
     db = build_db(tmp_path)
     with db.connect() as con:

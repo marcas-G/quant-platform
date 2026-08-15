@@ -53,19 +53,23 @@ class PlatformDB:
 
         dedup=True 按 keys 先删后插（默认）；dedup=False 纯 INSERT——调用方保证批内
         无重复（如 rebuild 单日批按 trade_date 唯一），省去全表扫描 DELETE。
+        表已存在时 INSERT 前过滤 df 中表不存在的列（refresh 用全字段 df 写稀疏剔除
+        后的最终库时不再 Binder 报错，仅插存在列）；表不存在时按 df 全字段建表。
         空 df 为 no-op；失败回滚并抛出带 table/keys 上下文的错误，连接仍可继续使用。
         """
         if df.height == 0:
             return
         try:
             con.execute("BEGIN TRANSACTION")
-            exists = con.execute(
-                "SELECT 1 FROM information_schema.tables "
+            existing = {r[0] for r in con.execute(
+                "SELECT column_name FROM information_schema.columns "
                 "WHERE table_schema = 'main' AND table_name = ?",
                 [table],
-            ).fetchone()
+            ).fetchall()}
+            if existing:  # 表已存在：只保留表内有的列（稀疏剔除后列集合收缩）
+                df = df.select([c for c in df.columns if c in existing])
             con.register("df", df.to_arrow())
-            if not exists:
+            if not existing:
                 con.execute(f'CREATE TABLE "{table}" AS SELECT * FROM df LIMIT 0')
             cols = ", ".join(f'"{c}"' for c in df.columns)
             if keys and dedup:

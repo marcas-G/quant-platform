@@ -17,6 +17,26 @@ def _resolve_path(db_or_path: PlatformDB | Path) -> Path:
     return db_or_path.path if isinstance(db_or_path, PlatformDB) else Path(db_or_path)
 
 
+def _ref_query_sql(ref_cols: set[str]) -> tuple[str, str, str]:
+    """参考库 daily 列映射 → (SELECT 日期表达式, 代码条件, 日期条件)。
+
+    参数顺序恒为 [code, start, end]：先代码后日期范围。平台库风格
+    （trade_date/ts_code）原列直用；quant-data 风格（date/code，日期
+    '2024-01-02'、代码纯数字）映射：date 转 'YYYYMMDD' 对齐 primary，
+    code 取 ts_code 前 6 位。
+    """
+    if "trade_date" in ref_cols and "ts_code" in ref_cols:
+        return "trade_date", "ts_code = ?", "trade_date BETWEEN ? AND ?"
+    # quant-data 风格：date VARCHAR '2024-01-02'（或 DATE）、code 纯数字
+    # 显式 CAST(date AS DATE)：DuckDB 禁止 VARCHAR 与 TIMESTAMP 混用 BETWEEN，
+    # 且 strftime 对 VARCHAR 无候选函数（DATE/VARCHAR 列统一先转 DATE 再格式化）
+    return (
+        "strftime(CAST(date AS DATE), '%Y%m%d') AS trade_date",
+        "code = substr(?, 1, 6)",
+        "CAST(date AS DATE) BETWEEN CAST(strptime(?, '%Y%m%d') AS DATE) AND CAST(strptime(?, '%Y%m%d') AS DATE)",
+    )
+
+
 def verify_all(
     db: PlatformDB,
     ref_db: PlatformDB | Path | None = None,
@@ -52,7 +72,10 @@ def compare_sample(
     """随机抽样股票 × 日期段，对比 daily.close（相对误差容差 tol）。
 
     参考库（ref_path，PlatformDB 或路径）仅作参考：行数不一致、差异、参考库缺
-    daily 表等均不抛错，计入报告。差异逐条进 details（最多 50 条）。返回
+    daily 表等均不抛错，计入报告。参考库 daily 列结构自动检测映射：
+    平台库风格（trade_date/ts_code）原列直用；quant-data 风格（date/code，
+    日期 '2024-01-02'、代码纯数字）按 date 转 'YYYYMMDD'、ts_code 前 6 位映射。
+    差异逐条进 details（最多 50 条）。返回
     {"compared_rows", "mismatches", "details", "sampled_stocks"}。
     """
     ref = _resolve_path(ref_path)
@@ -68,6 +91,14 @@ def compare_sample(
     details: list[dict] = []
     compared = 0
     with duckdb.connect(str(ref), read_only=True) as ref_con:
+        try:
+            ref_cols = {r[0] for r in ref_con.execute("DESCRIBE daily").fetchall()}
+        except duckdb.Error:
+            ref_cols = set()
+        if not ref_cols:
+            return {"compared_rows": 0, "mismatches": 0, "details": [], "sampled_stocks": len(sample),
+                    "note": "参考库无 daily 表，跳过对拍"}
+        ref_date_sel, ref_code_cond, ref_date_cond = _ref_query_sql(ref_cols)
         for code in sample:
             for start, end in segments:
                 local = primary.query(
@@ -76,11 +107,12 @@ def compare_sample(
                 )
                 try:
                     remote = ref_con.execute(
-                        "SELECT trade_date, close FROM daily WHERE ts_code = ? AND trade_date BETWEEN ? AND ? ORDER BY trade_date",
+                        f"SELECT {ref_date_sel}, close FROM daily "
+                        f"WHERE {ref_code_cond} AND {ref_date_cond} ORDER BY trade_date",
                         [code, start, end],
                     ).pl()
                 except duckdb.Error:
-                    continue  # 参考库缺 daily 表：该股票段视为不可比
+                    continue  # 参考库缺 daily 表/结构不兼容：该股票段视为不可比
                 if local.height == 0 or remote.height == 0:
                     continue
                 joined = local.join(remote, on="trade_date", how="inner", suffix="_ref")

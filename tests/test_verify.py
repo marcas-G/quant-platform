@@ -17,6 +17,33 @@ def _mk_db(path, close_values=None):
     return db
 
 
+def _mk_quant_style_ref(path, close_values=None, date_type="str"):
+    """quant-data 风格参考库：date '2024-01-02'（或 DATE 类型）、code 纯数字；
+    daily 另有 date/code 之外列（对拍只取 close）。"""
+    dates = ["2024-01-02", "2024-01-03", "2024-01-02", "2024-01-03"]
+    if date_type == "date":
+        import datetime
+        dates = [datetime.date.fromisoformat(d) for d in dates]
+    db = PlatformDB(path)
+    db.upsert("daily", pl.DataFrame({
+        "date": dates,
+        "code": ["000001", "000001", "000002", "000002"],
+        "close": close_values or [10.0, 11.0, 20.0, 21.0],
+        "vol_ratio": [1.0, 1.1, 1.2, 1.3],  # date/code 之外的列：join 只取 trade_date/close
+    }), keys=["date", "code"])
+    return db
+
+
+def _mk_platform_primary(path, close_values=None):
+    db = PlatformDB(path)
+    db.upsert("daily", pl.DataFrame({
+        "trade_date": ["20240102", "20240103", "20240102", "20240103"],
+        "ts_code": ["000001.SZ", "000001.SZ", "000002.SZ", "000002.SZ"],
+        "close": close_values or [10.0, 11.0, 20.0, 21.0],
+    }), keys=["trade_date", "ts_code"])
+    return db
+
+
 def test_verify_all_runs_integrity(tmp_path):
     db = _mk_db(tmp_path / "p.duckdb")
     report = verify_all(db)
@@ -38,6 +65,35 @@ def test_compare_sample_detects_mismatch(tmp_path):
     report = compare_sample(primary, ref, n_stocks=2, segments=[("20240102", "20240103")], tol=1e-6)
     assert report["mismatches"] >= 1
     assert len(report["details"]) >= 1
+
+
+def test_compare_sample_ref_quant_style_maps_columns(tmp_path):
+    """参考库为 quant-data 风格（date '2024-01-02' VARCHAR、code 纯数字）：
+    自动映射列结构，对拍正常匹配行数 > 0（修复前 BinderException 被吞、静默比 0 行）。"""
+    primary = _mk_platform_primary(tmp_path / "p.duckdb")
+    ref = _mk_quant_style_ref(tmp_path / "r.duckdb")
+    report = compare_sample(primary, ref, n_stocks=2, segments=[("20240102", "20240103")], tol=1e-6)
+    assert report["compared_rows"] == 4
+    assert report["mismatches"] == 0
+
+
+def test_compare_sample_ref_quant_style_date_type(tmp_path):
+    """quant-data 风格 date 为 DATE 类型时同样映射（strptime 比较 + strftime 转换）。"""
+    primary = _mk_platform_primary(tmp_path / "p.duckdb")
+    ref = _mk_quant_style_ref(tmp_path / "r.duckdb", date_type="date")
+    report = compare_sample(primary, ref, n_stocks=2, segments=[("20240102", "20240103")], tol=1e-6)
+    assert report["compared_rows"] == 4
+    assert report["mismatches"] == 0
+
+
+def test_compare_sample_ref_quant_style_detects_mismatch(tmp_path):
+    """quant-data 风格参考库下 mismatch 检测仍生效。"""
+    primary = _mk_platform_primary(tmp_path / "p.duckdb")
+    ref = _mk_quant_style_ref(tmp_path / "r.duckdb", close_values=[10.0, 99.0, 20.0, 21.0])
+    report = compare_sample(primary, ref, n_stocks=2, segments=[("20240102", "20240103")], tol=1e-6)
+    assert report["mismatches"] >= 1
+    assert len(report["details"]) >= 1
+    assert report["details"][0]["ts_code"] == "000001.SZ"
 
 
 def test_verify_all_empty_db(tmp_path):
