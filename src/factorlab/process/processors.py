@@ -27,9 +27,10 @@ def winsorize(df: pl.DataFrame, ctx, quantile: float = 0.99) -> pl.DataFrame:
 
 @register_processor
 def standardize(df: pl.DataFrame, ctx) -> pl.DataFrame:
-    """截面 z-score。"""
+    """截面 z-score；零方差截面输出 null（NaN 不是 null，fillna 无法处理）。"""
     x = _x(df)
-    return df.with_columns(((x - x.mean().over("date")) / x.std().over("date")).alias(SIGNAL))
+    std = x.std().over("date")
+    return df.with_columns(pl.when(std > 0).then((x - x.mean().over("date")) / std).otherwise(None).alias(SIGNAL))
 
 
 register_processor(name="zscore")(standardize)
@@ -37,18 +38,19 @@ register_processor(name="zscore")(standardize)
 
 @register_processor
 def csranknorm(df: pl.DataFrame, ctx) -> pl.DataFrame:
-    """截面排名归一化到 (0, 1]。"""
+    """截面排名归一化到 (0, 1)。"""
     x = _x(df)
     return df.with_columns((x.rank().over("date") / (x.count().over("date") + 1)).alias(SIGNAL))
 
 
 @register_processor
 def robustzscore(df: pl.DataFrame, ctx) -> pl.DataFrame:
-    """中位数/MAD 稳健标准化。"""
+    """中位数/MAD 稳健标准化；MAD=0 的截面输出 null。"""
     x = _x(df)
     med = x.median().over("date")
     mad = (x - med).abs().median().over("date")
-    return df.with_columns(((x - med) / (1.4826 * mad)).alias(SIGNAL))
+    scaled = (x - med) / (1.4826 * mad)
+    return df.with_columns(pl.when((1.4826 * mad) > 0).then(scaled).otherwise(None).alias(SIGNAL))
 
 
 @register_processor
@@ -66,5 +68,5 @@ def fillna(df: pl.DataFrame, ctx, method: str = "value", value: float = 0.0) -> 
     elif method == "forward":
         expr = x.fill_null(strategy="forward").over("code", order_by="date")
     else:
-        raise ValueError(f"fillna 不支持的 method: {method}（value|forward|industry_mean）")
+        raise ValueError(f"fillna 不支持的 method: {method}（value|forward）")
     return df.with_columns(expr.alias(SIGNAL))

@@ -79,7 +79,7 @@ def test_standardize_cross_section():
 
 def test_csranknorm_in_unit_interval():
     out = run_process_chain(_panel(), ["csranknorm()"], ctx=None)
-    assert out["signal"].min() > 0.0 and out["signal"].max() <= 1.0
+    assert out["signal"].min() > 0.0 and out["signal"].max() < 1.0  # rank/(N+1) 最大 N/(N+1) < 1
 
 
 def test_robustzscore_bounds_extremes():
@@ -136,3 +136,47 @@ def test_run_chain_requires_signal_column():
     df = pl.DataFrame({"date": ["2024-01-02"], "code": ["A"]})
     with pytest.raises(ValueError, match="signal"):
         run_process_chain(df, ["standardize()"], ctx=None)
+
+
+def test_fillna_forward_no_cross_asset_leak():
+    df = pl.DataFrame({
+        "date": ["2024-01-02", "2024-01-03", "2024-01-02", "2024-01-03"],
+        "code": ["A", "A", "B", "B"],
+        "signal": [1.0, None, None, 4.0],
+    })
+    out = run_process_chain(df, ["fillna(method=forward)"], ctx=None)
+    assert out.filter(pl.col("code") == "A")["signal"].to_list() == [1.0, 1.0]
+    assert out.filter(pl.col("code") == "B")["signal"].to_list() == [None, 4.0]  # B 首行不借用 A
+
+
+def test_zscore_alias_registered():
+    assert get_processor("zscore").name == "zscore"
+
+
+def test_winsorize_rejects_quantile_one():
+    with pytest.raises(ValueError):
+        run_process_chain(_panel(), ["winsorize(quantile=1.0)"], ctx=None)
+
+
+def test_standardize_null_preserved_for_constant_section():
+    df = pl.DataFrame({
+        "date": ["2024-01-02", "2024-01-02", "2024-01-03", "2024-01-03"],
+        "code": ["A", "B", "A", "B"],
+        "signal": [5.0, 5.0, 1.0, 2.0],
+    })
+    out = run_process_chain(df, ["standardize()"], ctx=None)
+    a2 = out.filter((pl.col("code") == "A") & (pl.col("date") == "2024-01-02"))["signal"]
+    assert a2.to_list() == [None]  # 01-02 截面零方差 → null
+    assert out["signal"].drop_nulls().len() == 2
+
+
+def test_robustzscore_null_for_mad_zero_section():
+    df = pl.DataFrame({
+        "date": ["2024-01-02", "2024-01-02", "2024-01-02", "2024-01-03", "2024-01-03"],
+        "code": ["A", "B", "C", "A", "B"],
+        "signal": [5.0, 5.0, 5.0, 1.0, 2.0],
+    })
+    out = run_process_chain(df, ["robustzscore()"], ctx=None)
+    sec1 = out.filter(pl.col("date") == "2024-01-02")["signal"]
+    assert sec1.to_list() == [None, None, None]  # MAD=0 截面 → null（不产生 inf）
+    assert out["signal"].drop_nulls().len() == 2  # 01-03 截面 [1,2] MAD>0 → 有值
