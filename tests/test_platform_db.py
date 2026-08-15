@@ -1,0 +1,160 @@
+import duckdb
+import polars as pl
+import pytest
+
+from factorlab.data.platform_db import PlatformDB
+
+
+def build_db(tmp_path):
+    return PlatformDB(tmp_path / "p.duckdb")
+
+
+def test_upsert_creates_table_and_deduplicates(tmp_path):
+    db = build_db(tmp_path)
+    df1 = pl.DataFrame({"trade_date": ["20240102", "20240102"], "ts_code": ["A", "B"], "close": [10.0, 20.0]})
+    df2 = pl.DataFrame({"trade_date": ["20240102"], "ts_code": ["A"], "close": [11.0]})
+    db.upsert("daily", df1, keys=["trade_date", "ts_code"])
+    db.upsert("daily", df2, keys=["trade_date", "ts_code"])
+    out = db.query("SELECT * FROM daily ORDER BY ts_code")
+    assert out.height == 2
+    assert out.filter(pl.col("ts_code") == "A")["close"][0] == 11.0  # 去重后更新
+
+
+def test_upsert_keys_empty_keeps_duplicates(tmp_path):
+    db = build_db(tmp_path)
+    db.upsert("daily", pl.DataFrame({
+        "trade_date": ["20240102", "20240102"],
+        "ts_code": ["A", "A"],
+        "close": [10.0, 10.0],
+    }), keys=[])
+    assert db.query("SELECT count(*) AS n FROM daily")["n"][0] == 2
+
+
+def test_upsert_empty_df_is_noop(tmp_path):
+    db = build_db(tmp_path)
+    db.upsert("daily", pl.DataFrame({"trade_date": [], "ts_code": [], "close": []}),
+              keys=["trade_date", "ts_code"])
+    assert db.list_tables() == []
+
+
+def test_query_with_params(tmp_path):
+    db = build_db(tmp_path)
+    db.upsert("daily", pl.DataFrame({
+        "trade_date": ["20240102", "20240103"],
+        "ts_code": ["A", "A"],
+        "close": [10.0, 11.0],
+    }), keys=["trade_date", "ts_code"])
+    out = db.query("SELECT close FROM daily WHERE trade_date = ?", ["20240103"])
+    assert out["close"][0] == 11.0
+
+
+def test_list_tables_and_describe(tmp_path):
+    db = build_db(tmp_path)
+    db.upsert("daily", pl.DataFrame({"trade_date": ["20240102"], "ts_code": ["A"], "close": [1.0]}), keys=[])
+    assert db.list_tables() == ["daily"]
+    assert set(db.describe("daily")) >= {"trade_date", "ts_code", "close"}
+
+
+def test_describe_unknown_table_raises(tmp_path):
+    db = build_db(tmp_path)
+    with pytest.raises(duckdb.Error):
+        db.describe("no_such_table")
+
+
+def test_integrity_calendar_gaps(tmp_path):
+    db = build_db(tmp_path)
+    db.upsert("trade_cal", pl.DataFrame({"cal_date": ["20240102", "20240103", "20240104"], "is_open": [1, 1, 1]}), keys=[])
+    db.upsert("daily", pl.DataFrame({
+        "trade_date": ["20240102", "20240104"],
+        "ts_code": ["A", "A"],
+        "close": [10.0, 11.0],
+    }), keys=["trade_date", "ts_code"])
+    report = db.integrity_check()
+    gaps = report["daily"]["calendar_gaps"]
+    assert gaps["failed"] > 0
+    assert "20240103" in gaps["details"]
+
+
+def test_integrity_duplicate_rows(tmp_path):
+    db = build_db(tmp_path)
+    db.upsert("daily", pl.DataFrame({
+        "trade_date": ["20240102", "20240102"],
+        "ts_code": ["A", "A"],
+        "close": [10.0, 10.0],
+    }), keys=[])
+    report = db.integrity_check()
+    assert report["daily"]["duplicate_rows"]["failed"] == 1
+
+
+def test_integrity_pct_chg_consistency(tmp_path):
+    db = build_db(tmp_path)
+    db.upsert("daily", pl.DataFrame({
+        "trade_date": ["20240102", "20240103"],
+        "ts_code": ["A", "A"],
+        "close": [10.0, 11.0],
+        "pct_chg": [0.0, 9.0],  # 应为 10.0
+    }), keys=["trade_date", "ts_code"])
+    report = db.integrity_check()
+    assert report["daily"]["pct_chg_consistency"]["failed"] > 0
+
+
+def test_integrity_pct_chg_consistent_passes(tmp_path):
+    db = build_db(tmp_path)
+    db.upsert("daily", pl.DataFrame({
+        "trade_date": ["20240102", "20240103"],
+        "ts_code": ["A", "A"],
+        "close": [10.0, 11.0],
+        "pct_chg": [0.0, 10.0],  # (11/10-1)*100 = 10.0
+    }), keys=["trade_date", "ts_code"])
+    report = db.integrity_check()
+    assert report["daily"]["pct_chg_consistency"]["failed"] == 0
+
+
+def test_integrity_adj_factor_valid(tmp_path):
+    db = build_db(tmp_path)
+    db.upsert("adj_factor", pl.DataFrame({
+        "trade_date": ["20240102"], "ts_code": ["A"], "adj_factor": [0.0],
+    }), keys=["trade_date", "ts_code"])
+    report = db.integrity_check()
+    assert report["adj_factor"]["adj_factor_valid"]["failed"] == 1
+
+
+def test_integrity_stk_limit_boundary(tmp_path):
+    db = build_db(tmp_path)
+    db.upsert("stk_limit", pl.DataFrame({
+        "trade_date": ["20240102"], "ts_code": ["A"], "up_limit": [10.0], "down_limit": [5.0],
+    }), keys=["trade_date", "ts_code"])
+    db.upsert("daily", pl.DataFrame({
+        "trade_date": ["20240102"], "ts_code": ["A"], "close": [15.0],  # 超 up_limit
+    }), keys=["trade_date", "ts_code"])
+    report = db.integrity_check()
+    assert report["daily"]["stk_limit_boundary"]["failed"] == 1
+
+
+def test_integrity_stk_limit_at_boundary_passes(tmp_path):
+    db = build_db(tmp_path)
+    db.upsert("stk_limit", pl.DataFrame({
+        "trade_date": ["20240102"], "ts_code": ["A"], "up_limit": [10.0], "down_limit": [5.0],
+    }), keys=["trade_date", "ts_code"])
+    db.upsert("daily", pl.DataFrame({
+        "trade_date": ["20240102"], "ts_code": ["A"], "close": [10.0],  # 恰在涨停价，容差内
+    }), keys=["trade_date", "ts_code"])
+    report = db.integrity_check()
+    assert report["daily"]["stk_limit_boundary"]["failed"] == 0
+
+
+def test_integrity_market_cap_valid(tmp_path):
+    db = build_db(tmp_path)
+    db.upsert("daily_basic", pl.DataFrame({
+        "trade_date": ["20240102"], "ts_code": ["A"], "total_mv": [0.0],
+    }), keys=["trade_date", "ts_code"])
+    report = db.integrity_check()
+    assert report["daily_basic"]["market_cap_valid"]["failed"] == 1
+
+
+def test_integrity_skips_missing_dependency(tmp_path):
+    db = build_db(tmp_path)
+    report = db.integrity_check()
+    assert report["daily"]["calendar_gaps"]["passed"] is True
+    assert "跳过" in report["daily"]["calendar_gaps"]["details"][0]
+    assert report["adj_factor"]["adj_factor_valid"]["passed"] is True

@@ -511,6 +511,8 @@ class PlatformDB:
 
 注意：`daily` 表在 tushare 协议中主键是 `(trade_date, ts_code)`（不是平台的 `(date, code)`）——**M3b 平台库统一用 tushare 原始列名**（`trade_date`/`ts_code`），与 API 零转换，最干净。M4 引擎接入时再映射到平台的 `date/code`。
 
+**实现修订（Task 2 已落地，与上面示例代码有出入）**：DuckDB 1.5 的 `INSERT OR REPLACE` 要求表带 UNIQUE/PRIMARY KEY 约束（CTAS 建的表没有，会 Binder 报错），实际改为事务内 `DELETE + INSERT`（按 keys 行值 IN 子查询），行为等价；`_rules()` 改为 (rule_name, 报告键, 依赖表元组, 检查函数) —— `calendar_gaps` 依赖 `trade_cal`+`daily`、`stk_limit_boundary` 依赖 `daily`+`stk_limit`，任一依赖表缺失或列结构不匹配（如 daily 无 pct_chg 列）时该规则跳过并在 details 注明原因，与 spec §5「报错并跳过」语义一致。
+
 - [ ] **Step 4: Run test to verify it passes**
 
 Run: `pytest tests/test_platform_db.py -v`
