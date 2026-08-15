@@ -7,13 +7,15 @@ from factorlab.data.rebuild import load_manifest, save_manifest
 from factorlab.data.refresh import refresh
 
 
-def _client(monkeypatch, table_df: pl.DataFrame) -> TeaJoinClient:
+def _client(monkeypatch, table_df: pl.DataFrame, fail_dates: set[str] | None = None) -> TeaJoinClient:
     client = TeaJoinClient(token="t", interval=0.0)
 
     def responder(api_name, params, fields=None):
         if api_name == "trade_cal":
             return pl.DataFrame({"exchange": ["SSE", "SSE"], "cal_date": ["20240103", "20240104"], "is_open": [1, 1]})
         if api_name == "daily":
+            if fail_dates and params.get("trade_date") in fail_dates:
+                raise RuntimeError(f"daily {params['trade_date']} 拉取失败")
             return table_df
         return pl.DataFrame()
 
@@ -75,3 +77,36 @@ def test_refresh_upsert_dedup_replaces_existing(tmp_path, monkeypatch):
     assert report["new_dates"] == ["20240104"]
     assert db.query("SELECT count(*) AS n FROM daily")["n"][0] == 1  # 去重：仍为 1 行
     assert db.query("SELECT close FROM daily")["close"][0] == 12.0   # 旧行被替换
+
+
+def test_refresh_retries_failed_dates(tmp_path, monkeypatch):
+    """failed 日期重试：manifest 中 failed 日（即使 ≤ last_updated）被重拉，成功后移出 failed。"""
+    db = PlatformDB(tmp_path / "p.duckdb")
+    manifest_path = tmp_path / "manifest.json"
+    save_manifest(manifest_path, {"daily": {"completed": ["20240102"], "failed": ["20240103"]},
+                                  "last_updated": "20240103"})
+    client = _client(monkeypatch, pl.DataFrame({
+        "trade_date": ["20240103"], "ts_code": ["A.SZ"], "close": [12.0],
+    }))
+    report = refresh(db, client, manifest_path=manifest_path)
+    assert report["new_dates"] == ["20240103", "20240104"]  # failed 日重试 + 新日
+    manifest = load_manifest(manifest_path)
+    assert manifest["daily"]["failed"] == []               # 重试成功后移除
+    assert "20240103" in manifest["daily"]["completed"]
+    assert manifest["last_updated"] == "20240104"
+
+
+def test_refresh_records_failed(tmp_path, monkeypatch):
+    """失败记录：单日拉取异常记入 manifest failed，不阻塞其他日期；last_updated 仍推进。"""
+    db = PlatformDB(tmp_path / "p.duckdb")
+    manifest_path = tmp_path / "manifest.json"
+    save_manifest(manifest_path, {"last_updated": "20240103"})
+    client = _client(monkeypatch, pl.DataFrame({
+        "trade_date": ["20240104"], "ts_code": ["A.SZ"], "close": [12.0],
+    }), fail_dates={"20240104"})
+    report = refresh(db, client, manifest_path=manifest_path)
+    manifest = load_manifest(manifest_path)
+    assert manifest["daily"]["failed"] == ["20240104"]     # 失败日被记录
+    assert "20240104" not in manifest["daily"]["completed"]
+    assert report["tables"]["daily"]["failed"] == ["20240104"]
+    assert manifest["last_updated"] == "20240104"          # 已处理范围末端，推进避免重复拉

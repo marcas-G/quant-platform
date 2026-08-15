@@ -296,14 +296,17 @@ DuckDB 只读加载；SQL-first 过滤；`date` cast `pl.Date`；数值列 float
 ### `factorlab.data.refresh` 增量续拉
 
 - `refresh(db, client, manifest_path=None) -> dict`
-  从 manifest.last_updated 次日到最新交易日（`datetime.date.today()`）增量续拉
-  行情 7 表（DAILY_TABLES）。manifest_path 缺省 `settings.data_dir / "manifest.json"`。
-  返回 `{"new_dates": [新交易日], "tables": {table: {"rows": 新拉行数}}}`。
-  行为：trade_cal 按 is_open=1 过滤取 `> last_updated` 的日期；无新日期直接返回空
-  报告（不改写 manifest）；逐表逐日拉取，`upsert` 默认 `dedup=True`——崩溃窗口
-  重拉已存在日期按 (trade_date, ts_code) 去重替换（与 rebuild 的 dedup=False 不同），
-  单日失败跳过不阻塞其他日期/表。每表 completed 合并回 manifest，成功后
-  `last_updated` 推进到 `new_dates[-1]` 并落盘。
+  增量续拉行情 7 表（DAILY_TABLES）：重试 manifest 中 failed 日期，并从
+  last_updated 续拉到最新交易日（`datetime.date.today()`）。manifest_path 缺省
+  `settings.data_dir / "manifest.json"`。返回
+  `{"new_dates": [处理日期], "tables": {table: {"rows": 新拉行数, "failed": [失败日期]}}}`。
+  行为：起始日期取最早 failed 日（若有，覆盖 ≤ last_updated 的重试窗口），
+  trade_cal 按 is_open=1 过滤，取 `> last_updated` 或 failed 的日期；无新日期直接
+  返回空报告（不改写 manifest）。逐表逐日拉取，`upsert` 默认 `dedup=True`——崩溃
+  窗口重拉已存在日期按 (trade_date, ts_code) 去重替换（与 rebuild 的 dedup=False
+  不同）；成功日期加入 completed 并从 failed 移除，失败日期记入 failed（下次
+  refresh 重试，与 rebuild 同语义），单日失败不阻塞其他日期/表。处理后
+  `last_updated` 推进到处理范围末端（failed 日也算已处理，避免重复拉）并落盘。
   错误语义：manifest 缺失或 `last_updated` 不存在抛
   `ValueError("manifest 无 last_updated，请先 rebuild")`；trade_cal 缺 `is_open`
   列或返回异常时异常向上传播（fail-loud，不静默）。
