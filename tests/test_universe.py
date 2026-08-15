@@ -76,3 +76,19 @@ def test_resolve_codes_missing_reference_file(tmp_path):
     settings = Settings(universes_dir=tmp_path / "nope")
     with pytest.raises(FileNotFoundError):
         resolve_codes(spec_with(ref="ghost"), db, settings=settings)
+
+
+def test_resolve_codes_rules_min_list_days(tmp_path):
+    db = build_db(tmp_path)
+    # 600519 上市于 2001-08-27；date.start=2026-01-01 时 600519 上市已超 100 天，000001 同理
+    spec = spec_with(rules={"min_list_days": 100})
+    spec.date.start = "2026-01-01"
+    assert resolve_codes(spec, db) == ["000001", "600519"]
+
+
+def test_resolve_codes_rules_min_list_days_filters_young(tmp_path):
+    db = build_db(tmp_path)
+    # 600519 上市于 2001-08-27：距 2002-01-01 不足 365 天 → 被过滤；000001 上市于 1991 → 保留
+    spec = spec_with(rules={"min_list_days": 365})
+    spec.date.start = "2002-01-01"
+    assert resolve_codes(spec, db) == ["000001"]
