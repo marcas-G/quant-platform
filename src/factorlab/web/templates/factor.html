@@ -1,0 +1,29 @@
+<!DOCTYPE html>
+<html lang="zh"><head><meta charset="utf-8"><title>{{ name }} - FactorLab</title>
+<script src="/static/plotly.min.js"></script></head>
+<body>
+<h1>{{ name }}</h1>
+<p>universe={{ summary.universe_count }} | {{ summary.date_start }} ~ {{ summary.date_end }}
+| rows={{ summary.panel_rows }} | null={{ summary.signal_null_ratio }}</p>
+<table border="1" cellpadding="6">
+<tr><th>IC mean</th><th>IC t_stat</th><th>十分位 spread</th><th>月换手</th><th>覆盖</th></tr>
+<tr><td>{{ summary.evaluation.ic.mean }}</td>
+<td>{{ summary.evaluation.ic.t_stat }}</td>
+<td>{{ summary.evaluation.decile_returns.spread.ret }}</td>
+<td>{{ summary.evaluation.turnover.monthly }}</td>
+<td>{{ summary.evaluation.coverage.pct_valid }}</td></tr>
+</table>
+{% if charts.ic %}
+<div id="ic-chart"></div>
+<script>Plotly.newPlot("ic-chart", {{ charts.ic | safe }});</script>
+{% elif not has_weekly %}<p>无周频数据（IC 曲线不可用）</p>{% endif %}
+{% if charts.decile %}
+<div id="decile-chart"></div>
+<script>Plotly.newPlot("decile-chart", {{ charts.decile | safe }});</script>
+{% endif %}
+{% if charts.layered %}
+<div id="layered-chart"></div>
+<script>Plotly.newPlot("layered-chart", {{ charts.layered | safe }});</script>
+{% endif %}
+<pre>{{ summary.spec_yaml }}</pre>
+</body></html>

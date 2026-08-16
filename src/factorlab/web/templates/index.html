@@ -1,0 +1,16 @@
+<!DOCTYPE html>
+<html lang="zh"><head><meta charset="utf-8"><title>FactorLab</title></head>
+<body>
+<h1>FactorLab 因子库</h1>
+{% if factors %}
+<table border="1" cellpadding="6">
+<tr><th>名称</th><th>类别</th><th>方向</th><th>IC mean</th><th>十分位 spread</th><th>最近运行</th></tr>
+{% for f in factors %}
+<tr><td><a href="/factor/{{ f.name }}">{{ f.name }}</a></td>
+<td>{{ f.category }}</td><td>{{ f.direction }}</td>
+<td>{{ f.ic_mean }}</td><td>{{ f.spread }}</td>
+<td>{{ f.run_at }}</td></tr>
+{% endfor %}
+</table>
+{% else %}<p>暂无因子结果（先运行 factorlab run）</p>{% endif %}
+</body></html>

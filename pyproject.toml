@@ -37,6 +37,9 @@ factorlab = "factorlab.cli.main:app"
 [tool.setuptools.packages.find]
 where = ["src"]
 
+[tool.setuptools.package-data]
+factorlab = ["web/templates/*.html", "web/static/*.js"]
+
 [tool.pytest.ini_options]
 testpaths = ["tests"]
 pythonpath = ["src"]

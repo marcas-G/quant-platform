@@ -1,0 +1,106 @@
+from __future__ import annotations
+
+import json
+from datetime import datetime
+from pathlib import Path
+
+import polars as pl
+from fastapi import FastAPI, HTTPException
+from fastapi.responses import HTMLResponse
+from fastapi.staticfiles import StaticFiles
+from fastapi.templating import Jinja2Templates
+from starlette.requests import Request
+
+from factorlab.eval.ic_series import weekly_ic
+from factorlab.web import charts
+
+_TEMPLATES_DIR = Path(__file__).parent / "templates"
+
+
+def _load_summary(results_dir: Path, name: str) -> dict:
+    """读取因子 summary.json；缺失/损坏 → 404（与 spec §3.2 缺失兼容一致）。"""
+    path = results_dir / name / "summary.json"
+    if not path.exists():
+        raise HTTPException(status_code=404, detail=f"因子 {name} 不存在")
+    try:
+        data = json.loads(path.read_text(encoding="utf-8"))
+    except json.JSONDecodeError as exc:
+        raise HTTPException(status_code=404, detail=f"因子 {name} 的 summary 损坏") from exc
+    if not isinstance(data, dict):
+        raise HTTPException(status_code=404, detail=f"因子 {name} 的 summary 损坏")
+    return data
+
+
+def _group(d: dict, key: str) -> dict:
+    """安全取嵌套分组：缺失或非 dict → 空 dict（模板链式访问降级不崩）。"""
+    v = d.get(key) if isinstance(d, dict) else None
+    return v if isinstance(v, dict) else {}
+
+
+def _display(v):
+    """模板展示用：None → 空串（避免表格/卡片渲染 'None'）。"""
+    return "" if v is None else v
+
+
+def create_app(results_dir: Path) -> FastAPI:
+    """构建只读 Web 可视化应用（因子列表 + 详情）。results_dir 显式传入（可测性）。"""
+    app = FastAPI(title="FactorLab")
+    templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
+    app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "static")), name="static")
+
+    @app.get("/", response_class=HTMLResponse)
+    def index(request: Request):
+        factors = []
+        if results_dir.exists():
+            for summary_path in sorted(results_dir.glob("*/summary.json")):
+                try:
+                    s = json.loads(summary_path.read_text(encoding="utf-8"))
+                except (json.JSONDecodeError, OSError):
+                    continue  # 损坏/不可读的 summary 跳过，不中断列表
+                ev = _group(s, "evaluation")
+                ic = _group(ev, "ic")
+                decile = _group(ev, "decile_returns")
+                factors.append({
+                    "name": s.get("name") or summary_path.parent.name,
+                    "category": _display(s.get("category")),
+                    "direction": _display(s.get("direction")),
+                    "ic_mean": _display(ic.get("mean")),
+                    "spread": _display(_group(decile, "spread").get("ret")),
+                    "run_at": datetime.fromtimestamp(summary_path.stat().st_mtime).strftime("%Y-%m-%d %H:%M"),
+                })
+        return templates.TemplateResponse(request, "index.html", {"factors": factors})
+
+    @app.get("/factor/{name}", response_class=HTMLResponse)
+    def factor_detail(request: Request, name: str):
+        summary = _load_summary(results_dir, name)
+        # 归一化 evaluation 各分组：缺失 → 空 dict，模板链式访问渲染空串而非崩溃
+        ev = _group(summary, "evaluation")
+        decile = _group(ev, "decile_returns")
+        summary = {**summary, "evaluation": {
+            "ic": _group(ev, "ic"),
+            "decile_returns": {
+                "spread": _group(decile, "spread"),
+                "groups": decile.get("groups") if isinstance(decile.get("groups"), list) else [],
+            },
+            "turnover": _group(ev, "turnover"),
+            "coverage": _group(ev, "coverage"),
+            "layered_backtest": _group(ev, "layered_backtest"),
+        }}
+        charts_data = {}
+        weekly_path = results_dir / name / "weekly.parquet"
+        if weekly_path.exists():
+            panel = pl.read_parquet(weekly_path)
+            charts_data["ic"] = charts.ic_curve_figure(weekly_ic(panel))
+        groups = summary["evaluation"]["decile_returns"]["groups"]
+        if groups:
+            charts_data["decile"] = charts.decile_bar_figure(groups)
+        layered = summary["evaluation"]["layered_backtest"]
+        if isinstance(layered.get("net_values"), dict) and layered["net_values"]:
+            charts_data["layered"] = charts.layered_net_value_figure(
+                layered["net_values"], layered.get("dates", []))
+        return templates.TemplateResponse(request, "factor.html", {
+            "name": name, "summary": summary, "charts": charts_data,
+            "has_weekly": weekly_path.exists(),
+        })
+
+    return app
