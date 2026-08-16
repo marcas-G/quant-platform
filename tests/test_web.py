@@ -1,3 +1,4 @@
+import asyncio
 import json
 
 import polars as pl
@@ -5,6 +6,27 @@ import pytest
 from fastapi.testclient import TestClient
 
 from factorlab.web.app import create_app
+
+
+def _raw_get(app, path):
+    """直连 ASGI scope 发起 GET——绕过 httpx 客户端路径规范化（等价真实服务器/curl 的原始路径）。"""
+    scope = {"type": "http", "method": "GET", "path": path, "raw_path": path.encode(),
+             "query_string": b"", "headers": [], "client": ("127.0.0.1", 1),
+             "server": ("test", 80), "scheme": "http", "root_path": "",
+             "http_version": "1.1", "app": app}
+    res = {"status": None, "body": b""}
+
+    async def receive():
+        return {"type": "http.request", "body": b"", "more_body": False}
+
+    async def send(msg):
+        if msg["type"] == "http.response.start":
+            res["status"] = msg["status"]
+        elif msg["type"] == "http.response.body":
+            res["body"] += msg["body"]
+
+    asyncio.run(app(scope, receive, send))
+    return res["status"], res["body"].decode("utf-8", errors="replace")
 
 
 def _write_factor(results_dir, name, with_weekly=True, with_layered=True):
@@ -109,3 +131,41 @@ def test_factor_detail_missing_evaluation_fields(tmp_path):
     assert resp.status_code == 200
     assert "sparse" in resp.text
     assert "decile-chart" in resp.text  # 有数据的图表照常渲染
+
+
+def test_factor_name_path_traversal_rejected(tmp_path):
+    """CWE-22 回归：因子名含路径穿越片段/分隔符 → 一律 404，不泄露 results_dir 之外的文件。"""
+    results_dir = tmp_path / "results"
+    _write_factor(results_dir, "alpha_1")
+    # results_dir 上一级放一个可读目标目录（模拟越权读取的 summary）
+    victim = tmp_path / "victim"
+    victim.mkdir()
+    (victim / "summary.json").write_text(json.dumps(
+        {"name": "victim", "spec_yaml": "TOP-SECRET"}, ensure_ascii=False), encoding="utf-8")
+    app = create_app(results_dir=results_dir)
+    client = TestClient(app)
+    # TestClient 会把 %5c/%2e 解码后交给处理器——这些变体必须被服务端拒绝
+    # （".." 会被 httpx 客户端规范化为 "/" 重写为首页，故在下方 RAW scope 中覆盖）
+    for bad in ("%2e%2e", "..%5cvictim", "..%5c..%5c", "..%5cvictim%5csummary.json",
+                "../victim", "..%2fvictim", "a/b", "a\\b", "a%5cb", "C%3asecret"):
+        resp = client.get(f"/factor/{bad}")
+        assert resp.status_code == 404, f"/factor/{bad} 应 404（实际 {resp.status_code}）"
+        assert "TOP-SECRET" not in resp.text
+    # 直连 ASGI scope：真实服务器会收到原始路径（curl 的原始反斜杠、裸 ".."）
+    for path in ("/factor/..", "/factor/..\\victim", "/factor/a\\b"):
+        status, body = _raw_get(app, path)
+        assert status == 404, f"RAW {path} 应 404（实际 {status}）"
+        assert "TOP-SECRET" not in body
+    # 正常因子不受影响
+    assert client.get("/factor/alpha_1").status_code == 200
+
+
+def test_factor_detail_corrupt_weekly_degrade(tmp_path):
+    # 损坏的 weekly.parquet → IC 曲线区域降级为"无周频数据"（不 500，其余图表照常）
+    _write_factor(tmp_path, "broken", with_weekly=True)
+    (tmp_path / "broken" / "weekly.parquet").write_bytes(b"not a parquet file")
+    client = TestClient(create_app(results_dir=tmp_path))
+    resp = client.get("/factor/broken")
+    assert resp.status_code == 200
+    assert "无周频数据" in resp.text
+    assert "decile-chart" in resp.text

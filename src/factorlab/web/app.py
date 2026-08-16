@@ -17,8 +17,20 @@ from factorlab.web import charts
 _TEMPLATES_DIR = Path(__file__).parent / "templates"
 
 
+def _safe_name(name: str) -> str:
+    """拒绝路径穿越（CWE-22）：因子名只允许普通名称段。
+
+    空名、`.`、`..`、路径分隔符 `/` 与 `\\`、盘符标记 `:`（Windows 盘相对
+    路径可逃逸 results_dir）一律 404——与"因子不存在"同语义，不泄露路径信息。
+    """
+    if not name or name in (".", "..") or any(c in name for c in "/\\:"):
+        raise HTTPException(status_code=404, detail=f"因子 {name} 不存在")
+    return name
+
+
 def _load_summary(results_dir: Path, name: str) -> dict:
-    """读取因子 summary.json；缺失/损坏 → 404（与 spec §3.2 缺失兼容一致）。"""
+    """读取因子 summary.json；缺失/损坏 → 404。入口先校验 name（防御纵深）。"""
+    name = _safe_name(name)
     path = results_dir / name / "summary.json"
     if not path.exists():
         raise HTTPException(status_code=404, detail=f"因子 {name} 不存在")
@@ -72,6 +84,7 @@ def create_app(results_dir: Path) -> FastAPI:
 
     @app.get("/factor/{name}", response_class=HTMLResponse)
     def factor_detail(request: Request, name: str):
+        name = _safe_name(name)  # 路由入口校验（_load_summary 内部再校验，双保险）
         summary = _load_summary(results_dir, name)
         # 归一化 evaluation 各分组：缺失 → 空 dict，模板链式访问渲染空串而非崩溃
         ev = _group(summary, "evaluation")
@@ -88,9 +101,14 @@ def create_app(results_dir: Path) -> FastAPI:
         }}
         charts_data = {}
         weekly_path = results_dir / name / "weekly.parquet"
+        has_weekly = False
         if weekly_path.exists():
-            panel = pl.read_parquet(weekly_path)
-            charts_data["ic"] = charts.ic_curve_figure(weekly_ic(panel))
+            try:
+                panel = pl.read_parquet(weekly_path)
+                charts_data["ic"] = charts.ic_curve_figure(weekly_ic(panel))
+                has_weekly = True
+            except (OSError, ValueError, pl.exceptions.PolarsError):
+                pass  # 损坏/缺列的 weekly.parquet → IC 曲线区域降级（其余图表照常）
         groups = summary["evaluation"]["decile_returns"]["groups"]
         if groups:
             charts_data["decile"] = charts.decile_bar_figure(groups)
@@ -100,7 +118,7 @@ def create_app(results_dir: Path) -> FastAPI:
                 layered["net_values"], layered.get("dates", []))
         return templates.TemplateResponse(request, "factor.html", {
             "name": name, "summary": summary, "charts": charts_data,
-            "has_weekly": weekly_path.exists(),
+            "has_weekly": has_weekly,
         })
 
     return app
