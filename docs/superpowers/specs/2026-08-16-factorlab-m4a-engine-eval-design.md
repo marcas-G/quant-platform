@@ -48,7 +48,9 @@ run_factor(spec, ctx)：
 ```
 
 - **因子值**用复权视图（默认 qfq——价格序列连续，除权日不假崩）。
-- **前向收益**用 **raw close**（真实市场收益，与官方 pct_chg 口径一致）。
+- **前向收益**用 **total_return 口径**（close×adj 序列计算，含分红再投资——
+  M3b 复权架构的"收益率/Total Return 统一计算"；HFQ 收益 = QFQ 收益，
+  等比缩放不影响收益率）。M3a 的 raw close 版 forward 在切换到平台库时升级。
 - `pit_qfq` 需 asof——M4a 支持 spec 级 `adjustment: raw|qfq|hfq`；`pit_qfq` 预留
   （asof=spec.date.end 研究日语义，审计场景 M4b 消费）。
 
@@ -112,7 +114,7 @@ def evaluate_factor_weekly(panel: pl.DataFrame, factor_name: str, direction: int
 ### 3.4 评估输入语义
 
 - 因子值：周频对齐后的 signal（对齐日取值）。
-- 前向收益：`forward_return_5d`（raw close 计算，M3a 已有）。
+- 前向收益：`forward_return_5d`（total_return 口径——close×adj 序列，含分红再投资）。
 - direction：spec.direction（1/-1）——评估时传入（IC 符号与十分位方向）。
 
 ## 4. `factorlab run <spec>` 命令
