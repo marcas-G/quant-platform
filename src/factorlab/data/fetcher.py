@@ -33,6 +33,8 @@ class TeaJoinClient:
         self.max_retries = max_retries
         self._last_request = 0.0
         self._lock = threading.Lock()  # 并发拉取时限流状态线程安全
+        self._inflight = threading.BoundedSemaphore(3)  # 最大 in-flight 请求数（服务端并发敏感）
+        self._session = requests.Session()  # 连接复用（避免每次新建连接）
 
     def _throttle(self) -> None:
         with self._lock:
@@ -42,7 +44,13 @@ class TeaJoinClient:
             self._last_request = time.monotonic()  # 预留请求起点（并发下同样成立）
 
     def _post(self, url: str, json: dict, timeout: int = 30):
-        return requests.post(url, json=json, timeout=timeout)
+        return self._session.post(url, json=json, timeout=timeout)
+
+    def _request_once(self, payload: dict, timeout: int = 30):
+        """单次请求：信号量限制 in-flight（并发下服务端连接压力可控）+ 限流 + 发送。"""
+        with self._inflight:
+            self._throttle()
+            return self._post(self.base_url, json=payload, timeout=timeout)
 
     def _call(self, api_name: str, params: dict, fields: list[str] | None) -> pl.DataFrame:
         payload = {"api_name": api_name, "token": self.token, "params": params}
@@ -50,9 +58,8 @@ class TeaJoinClient:
             payload["fields"] = ",".join(fields)
         last_exc: Exception | None = None
         for attempt in range(self.max_retries):
-            self._throttle()
             try:
-                resp = self._post(self.base_url, json=payload)
+                resp = self._request_once(payload)
             except requests.RequestException as exc:
                 last_exc = exc
                 time.sleep(2 ** attempt)
