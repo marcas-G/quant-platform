@@ -3,7 +3,7 @@ import pytest
 from factorlab.engine.partitions import reject_future_shifts, validate_partition_calls
 from factorlab.factor.errors import FactorDSLError
 from factorlab.ops import registry
-from factorlab.ops.platform_ops import register_platform_ops
+from factorlab.ops.platform_ops import inline_defs, register_platform_ops
 from factorlab.ops.polars_ta_wrappers import register_polars_ta_ops
 
 
@@ -34,11 +34,21 @@ def test_allows_inline_def_with_elementwise_ops():
 
 
 def test_rejects_window_op_inside_def():
+    # guard 保留为安全网：直接路径（不经 inline_defs）的 def 内窗口算子仍拒绝
     with pytest.raises(ValueError, match="def"):
         validate_partition_calls(
             "def momentum(x, n):\n    return ts_delay(x, n) / ts_delay(x, 2 * n) - 1\n"
             "signal = momentum(close, 5)"
         )
+
+
+def test_inlined_def_with_window_ops_allowed():
+    # def 内窗口算子经 inline_defs 内联后合法：def 已删除 → guard 不触发
+    src = ("def momentum(x, n):\n    return ts_delay(x, n) / ts_delay(x, 2 * n) - 1\n"
+           "signal = momentum(close, 5)")
+    out = inline_defs(src)
+    assert "def momentum" not in out  # 内联后 def 无残留
+    validate_partition_calls(out)
 
 
 def test_rejects_unknown_operator():

@@ -84,12 +84,27 @@ def test_compute_partitions_platform_ops_by_asset():
     assert values[1] == pytest.approx(0.2)
 
 
-def test_compute_def_with_window_op_rejected():
-    with pytest.raises(ValueError, match="def"):
-        compute_formula(
-            pl.DataFrame({"date": [], "code": [], "close": []}),
-            "from polars_ta.prefix.wq import ts_delay\ndef mom(x):\n    return ts_delay(x, 1)\nsignal = mom(close)",
-        )
+def test_compute_def_with_window_op_inlined():
+    # def 内窗口算子合法：compute_formula 内联展开为顶层 ts_ 调用——多资产窗口分区无泄漏
+    df = pl.DataFrame({
+        "date": ["2020-01-01", "2020-01-02", "2020-01-01", "2020-01-02"],
+        "code": ["A", "A", "B", "B"],
+        "close": [10.0, 12.0, 100.0, 110.0],
+    })
+    formula = '''
+from polars_ta.prefix.wq import ts_delay
+
+def mom(x, n):
+    return ts_delay(x, 1) / x - 1
+
+signal = mom(close, 1)
+'''
+    result = compute_formula(df, formula)
+    assert result.columns == ["date", "code", "signal"]
+    assert result["signal"].null_count() == 2  # 每资产首行 ts_delay null
+    b = result.filter(pl.col("code") == "B").sort("date")["signal"].to_list()
+    assert b[0] is None                        # B 首行不得借用 A 末行（分区正确）
+    assert b[1] == pytest.approx(100.0 / 110.0 - 1)
 
 
 def test_compute_elementwise_names_resolve():

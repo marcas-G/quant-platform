@@ -87,6 +87,7 @@ class FactorSpec(BaseModel):
     target: Literal["forward_return_5d", "forward_return_20d"] = "forward_return_5d"
     process: list[str] = Field(default_factory=list)
     operators: dict[str, OperatorMacro] = Field(default_factory=dict)
+    params: dict[str, Any] = Field(default_factory=dict)  # 顶层参数（formula 内 ${name} 引用）
     formula: str | None = None
     factors: list[SubFactorSpec] | None = None
     combine: CombineSpec | None = None
