@@ -1,7 +1,24 @@
-# FactorLab 接口文档（M1–M4b）
+# FactorLab 接口文档（M1–M5）
 
-本文件描述 M1–M4b 已交付的 CLI、Spec、因子脚本和 Python API。实现与设计文档
+本文件描述 M1–M5 已交付的 CLI、Spec、因子脚本和 Python API。实现与设计文档
 冲突时以 `docs/superpowers/specs/2026-08-15-factor-dsl-platform-design.md` 为准。
+
+## 0. M5 汇总：Web 可视化
+
+M5 在 M4b 结果落盘（summary.json/weekly.parquet）之上补齐浏览器可视化闭环：
+
+- **`factorlab serve`**（`--port`/`--host`，默认 `127.0.0.1:8000`）：只读启动
+  Web 服务，可视化 `settings.results_dir`（`FACTORLAB_RESULTS_DIR` 可覆盖）下
+  已保存因子（见 §1 与 §4 `factorlab.web`）。
+- **web 包**（`factorlab.web`）：`app.create_app(results_dir)` 构建 FastAPI 只读
+  应用——列表 `/` + 详情 `/factor/<name>`，Jinja2 模板 + Plotly 图表内嵌；
+  `charts` 构造 IC 曲线/十分位柱状/分层净值 figure JSON；缺失/损坏 summary 与
+  缺 evaluation 字段的因子降级展示不崩溃（见 §4）。
+- **`factorlab.eval.ic_series.weekly_ic`**：周度 RankIC 序列（Spearman 秩相关，
+  与 quant_core 同源定义；signal/target null 过滤、有效股票 < 3 的周 ic = null），
+  详情页 IC 曲线数据源（见 §4）。
+- 集成测试 `tests/test_e2e_web.py`：真实 results 目录（main 工作树，3 个因子）
+  冒烟——列表含因子名、详情含图表数据、旧因子降级、缺失 404（见 §5）。
 
 ## 0. M4b 汇总：分层回测与因子清单
 
@@ -54,6 +71,7 @@ M4a 打通「平台库数据 → 因子计算 → 复权视图 → 周频评估�
 | `factorlab op doc <name>` | 查看算子名称、类别、版本与 docstring |
 | `factorlab op add <plugin.py> [--force]` | 校验并注册用户插件；同名冲突需 `--force` |
 | `factorlab op remove <name>` | 禁用用户插件，保留已计算历史结果 |
+| `factorlab serve [--port 8000] [--host 127.0.0.1]` | 启动只读 Web 可视化（浏览器查看已保存因子列表与图表，扫描 `results_dir`） |
 
 ### `factorlab run <spec.yaml>`
 
@@ -101,6 +119,24 @@ factorlab run factor/demo.yaml --no-backtest       # 仅评估，不产分层回
 ```bash
 factorlab list
 factorlab show demo
+```
+
+### `factorlab serve`
+
+run 后运维闭环的可视化环节（同 `results_dir` 锚定，只读）：
+
+- 启动只读 Web 服务，浏览器打开 `http://127.0.0.1:8000/` 查看因子列表与单因子
+  图表（周度 RankIC 曲线/十分位收益/分层回测净值，Plotly 内嵌）。
+- `--port 8000` / `--host 127.0.0.1`：监听地址（默认仅本机回环）。
+- 只读：不写 `results_dir`，不依赖平台库（图表数据来自落盘的 `summary.json`
+  与 `weekly.parquet`）；损坏 summary 列表页跳过、详情页 404（与 `list`/`show`
+  缺失兼容一致）。
+
+示例：
+
+```bash
+factorlab serve                       # http://127.0.0.1:8000/
+factorlab serve --port 9000 --host 0.0.0.0
 ```
 
 ## 2. Spec 文件
@@ -301,6 +337,41 @@ adjustment、float32）。
 `decile_returns`（含 spread）、`turnover`、`coverage`（pct_valid/total_rows/valid_rows）。
 空面板（列齐全）不崩溃，返回全 nan 结构（`n_weeks=0`）。`direction` 透传
 `1/-1`（翻转信号方向）。
+
+### `factorlab.eval.ic_series.weekly_ic(panel, target="forward_return_5d") -> pl.DataFrame`
+
+周度 RankIC 序列：每期（周）signal 与 target 的 Spearman 秩相关——与
+`quant_core` 的 RankIC 同源定义（秩相关即秩的 Pearson，polars 1.38
+`pl.corr(method="spearman")` 直接支持）。输入须含 `date/code/signal/target`
+四列，缺列抛 `ValueError`（不依赖 polars 内部异常）；`signal`/`target` null
+行排除（复用 rust_ic 的过滤语义）。面板中每个日期都保留一行：有效股票 < 3
+（`MIN_STOCKS`）的周 ic = null（秩相关不稳健，含有效股票为 0 的周）。
+返回 `(date, ic)` 按日期排序——`factorlab.web` 详情页 IC 曲线数据源。
+
+### `factorlab.web`：Web 可视化（M5）
+
+只读 FastAPI 应用，可视化 `results_dir` 下已保存因子（M4b 落盘产物）：
+`factorlab.web.app.create_app(results_dir: Path) -> FastAPI`，results_dir
+显式传入（可测性）。
+
+路由：
+
+- `GET /`：因子列表页——扫描 `results_dir/*/summary.json`（损坏/不可读跳过，
+  不中断列表），展示 name/category/direction/ic_mean/spread/run_at。
+- `GET /factor/{name}`：单因子详情页——读 `summary.json`（缺失/损坏 → 404，
+  与 spec §3.2 缺失兼容一致），渲染指标表 + 图表：周度 RankIC 曲线
+  （`weekly.parquet` + `weekly_ic`）、十分位收益柱状（`decile_returns.groups`）、
+  分层回测净值（`layered_backtest.net_values`）；缺 weekly.parquet 或
+  evaluation 字段时对应图表/指标降级（空串/空图），页面不崩溃。
+- `GET /static/*`：静态资源（plotly.min.js 等）。
+
+图表构造（`factorlab.web.charts`，返回 plotly figure JSON 字符串内嵌模板）：
+`ic_curve_figure(ic_series)`（周度 RankIC 折线，含 0 参考线）/
+`decile_bar_figure(groups)`（十分位平均收益柱状）/
+`layered_net_value_figure(net_values, dates)`（分层净值曲线，dates 空时 x 缺省）。
+
+模板与静态文件在 `src/factorlab/web/{templates,static}/`；CLI 入口
+`factorlab serve`（见 §1）。
 
 ### `factorlab.data.universe.resolve_codes(spec, db, override=None, settings=settings) -> list[str]`
 
@@ -552,8 +623,9 @@ python -m pytest
 命令、分层回测（`tests/test_layered.py`：分档/方向翻转/净值数学/long-short/摘要/
 无效周排除/全 null 空回测）、run 参数与 list/show（`tests/test_cli_run.py`、
 `tests/test_cli_list_show.py`）、真实平台库集成（`tests/test_e2e_m4.py`：
-run → 周频评估 + 分层回测，回测期数 = 评估周数），以及 teajoin 集成测试
-（token 配置时真实拉取，`tests/test_e2e_data.py`）。
+run → 周频评估 + 分层回测，回测期数 = 评估周数），真实 results 目录 Web 冒烟
+（`tests/test_e2e_web.py`：列表含因子名/详情含图表数据/旧因子降级/缺失 404），
+以及 teajoin 集成测试（token 配置时真实拉取，`tests/test_e2e_data.py`）。
 
 ## 6. 数据平台（M3b）
 

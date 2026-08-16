@@ -13,11 +13,12 @@ factorlab data verify [--compare <ref.duckdb>]          # 完整性自检 + 稀�
 factorlab run <spec.yaml> [--universe U] [--output-dir D]  # 因子计算 + 周频评估 + 分层回测（消费环节）
 factorlab list                                          # 已保存因子清单与最近运行摘要
 factorlab show <name>                                   # 查看单因子完整摘要（spec/评估/分层回测）
+factorlab serve [--port 8000] [--host 127.0.0.1]        # Web 可视化（浏览器查看列表与图表）
 ```
 
 数据目录（gitignored）：`data/rebuild_staging.duckdb`（全字段暂存）、`data/factorlab.duckdb`（最终库，稀疏剔除后）、`data/manifest.json`（拉取进度 + 剔除清单 + 失败诊断）。因子计算结果（gitignored）落 `results/<name>/`（`FACTORLAB_RESULTS_DIR` 可覆盖根目录）：`panel.parquet`（日频面板）、`weekly.parquet`（周频对齐面板）、`summary.json`（含 `evaluation` 周频评估摘要 + `layered_backtest` 分层回测）。
 
-**运维闭环**：`data update`（拉新数据）→ `factorlab run`（计算 + 评估 + 分层回测）→ `factorlab list`/`show`（查询因子清单与摘要），判断因子有效性（IC/十分位 spread/换手/覆盖/分层回测，见 §6）。
+**运维闭环**：`data update`（拉新数据）→ `factorlab run`（计算 + 评估 + 分层回测）→ `factorlab list`/`show`（查询因子清单与摘要）→ `factorlab serve`（浏览器可视化列表与图表），判断因子有效性（IC/十分位 spread/换手/覆盖/分层回测，见 §6）。
 
 ## 2. 全量重建经验（2026-08-16 实战）
 
@@ -117,3 +118,15 @@ factorlab show demo   # 单因子完整摘要：spec 原文 / evaluation.ic / �
   因子或损坏的 summary.json 以非 0 退出并打印原因。
 - 判断因子有效性的快速路径：`list` 看 IC/spread 横向比较 → `show` 看分层回测
   （D1 年化/夏普、long-short 单调性与盈亏）→ 决定是否值得进一步研究。
+
+### Web 可视化（serve）
+
+```bash
+factorlab serve [--port 8000] [--host 127.0.0.1]   # 默认 http://127.0.0.1:8000/
+```
+
+run 后运维闭环的浏览器环节（只读 `results_dir`，不依赖平台库）：列表页
+（name/ic_mean/spread/run_at）+ 详情页（周度 RankIC 曲线/十分位收益/分层回测
+净值，Plotly 内嵌）。旧结果（缺 evaluation/weekly.parquet）降级展示不崩溃；
+损坏 summary 列表页跳过、详情页 404（与 `list`/`show` 缺失兼容一致）。
+浏览器打开 `http://127.0.0.1:8000/` 即可查看。
