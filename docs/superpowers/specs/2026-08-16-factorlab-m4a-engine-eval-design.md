@@ -44,7 +44,7 @@ run_factor(spec, ctx)：
   2. load_daily（平台库，含 adj_factor）→ 停牌补全（平台库 trade_cal）
   3. view_prices(adjustment 口径) —— FactorSpec.adjustment: raw|qfq|hfq|pit_qfq（默认 qfq）
   4. compute_formula（含 operators 宏展开，见 2.5）
-  5. process 链 → 前向收益（raw close）→ 日频面板落盘
+  5. process 链 → 前向收益（total_return 口径）→ 日频面板落盘
 ```
 
 - **因子值**用复权视图（默认 qfq——价格序列连续，除权日不假崩）。
