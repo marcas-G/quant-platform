@@ -808,7 +808,7 @@ git commit -m "feat: add factorlab run command with evaluation"
 - Modify: `docs/interface.md`、`docs/data-ops-playbook.md`、`CLAUDE.md`
 - Test: 全量验证
 
-- [ ] **Step 1: 清理残留**
+- [x] **Step 1: 清理残留**
 
 grep 全库确认无 `quant-data` / `quant_db` 引用（代码）：
 
@@ -818,22 +818,22 @@ grep -rn "quant-data\|quant_db" src/ tests/ docs/interface.md 2>/dev/null | grep
 
 `CLAUDE.md` 环境事实更新：quant-data 描述移除，改为平台库。
 
-- [ ] **Step 2: 文档汇总**
+- [x] **Step 2: 文档汇总**
 
 `docs/interface.md`：M4a 新 API（load_daily 平台库语义、view_prices 装配、evaluate_factor_weekly、
 run 命令、eval 包）；`docs/data-ops-playbook.md` 更新链路（run 加入运维闭环）。
 
-- [ ] **Step 3: 全量验证 + 集成**
+- [x] **Step 3: 全量验证 + 集成**
 
 Run: `python -m pytest -q`（含 integration——真实平台库 run e2e）
 Expected: 全部 PASS。
 
-- [ ] **Step 4: 验收报告**
+- [x] **Step 4: 验收报告**
 
 真实因子 run（平台库 5 只 × 2 年）→ 输出评估摘要（IC/十分位/换手/覆盖）→
 与 quant-data 对比摘要（可选）→ **提交验收报告给用户，确认后清理 quant-data**。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add -A
