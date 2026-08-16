@@ -125,6 +125,8 @@ def run_factor_cli(
     original_memory = settings.default_max_memory
     settings.default_max_memory = max_memory
     try:
+        if spec.target != "forward_return_5d":
+            console.print(f"提示: quant_core 当前固定评估 forward_return_5d（spec.target={spec.target} 暂未接线，M4b 处理）")
         result = run_impl(spec, ctx)
         evaluation = evaluate_factor_weekly(result.panel, spec.name, spec.direction)
     except (ValueError, FileNotFoundError, FactorDSLError) as exc:
