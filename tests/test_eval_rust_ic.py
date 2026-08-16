@@ -37,6 +37,17 @@ def test_evaluate_factor_weekly_direction_flips_decile():
     assert up["decile_returns"]["spread"]["ret"] == pytest.approx(-down["decile_returns"]["spread"]["ret"])
 
 
+def test_evaluate_factor_weekly_aligns_weekly():
+    # 日频输入（60 个隔日 ≈ 12 周）→ 桥接内部周频对齐，n_weeks 反映周数
+    rows = []
+    for i in range(60):
+        d = datetime.date(2024, 1, 2) + datetime.timedelta(days=i * 2)  # 隔日（工作日近似）
+        for s in range(10):
+            rows.append({"date": d, "code": f"{s:06d}", "signal": float(s), "forward_return_5d": 0.01})
+    result = evaluate_factor_weekly(pl.DataFrame(rows), "demo", 1)
+    assert result["n_weeks"] >= 10  # 60 个隔日 ≈ 12 周（周末跳过）
+
+
 def test_evaluate_factor_weekly_missing_columns():
     with pytest.raises(ValueError, match="缺少列"):
         evaluate_factor_weekly(pl.DataFrame({"date": [], "code": []}), "demo", 1)

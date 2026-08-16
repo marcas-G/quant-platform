@@ -702,6 +702,11 @@ git add src/factorlab/eval/rust_ic.py tests/test_eval_rust_ic.py
 git commit -m "feat: bridge quant_core evaluation with weekly alignment"
 ```
 
+**实现修正记录：**
+1. quant_core 对 None 崩溃（TypeError）——桥接层在周频对齐后过滤 null signal/target 行；NaN 被容忍（保留透传）。
+2. 缺列检查在 align_weekly 之前（空 Null dtype 面板会崩 align 的 iso_year 操作）。
+3. direction=0 被 quant_core 按 -1 处理（桥接不校验，文档注明）。
+
 ---
 
 ### Task 7: `factorlab run` 命令与端到端

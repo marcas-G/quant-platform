@@ -13,7 +13,8 @@ def evaluate_factor_weekly(
 ) -> dict:
     """周频评估：日频面板 → 周频对齐 → quant_core.evaluate_factor。
 
-    factor_name 参数必须传 "_factor"（quant_core 内部列名约定，文档未记载）。
+    内部传给 quant_core 的 factor 恒为 "_factor"（其内部列名约定，文档未记载）；
+    factor_name 仅作显示名回填到结果的 factor_name 字段。
 
     - 列检查先于周频对齐：缺列时抛 ValueError（不依赖 align_weekly 的 dtype 错误）。
     - signal/target 为 null 的行在桥接层过滤——quant_core 拒绝 None
