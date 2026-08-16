@@ -286,3 +286,12 @@ def data_verify(compare: Path | None = None) -> None:
     """完整性自检 + 稀疏摘要 + 可选抽样对拍。"""
     report = verify_all(_final_db(), ref_db=compare)
     console.print(report)
+
+
+@app.command("serve")
+def serve(port: int = 8000, host: str = "127.0.0.1") -> None:
+    """启动 Web 可视化（只读 results_dir）。"""
+    import uvicorn
+
+    from factorlab.web.app import create_app
+    uvicorn.run(create_app(settings.results_dir), host=host, port=port)
