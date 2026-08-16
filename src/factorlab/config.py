@@ -10,7 +10,8 @@ class Settings(BaseSettings):
         extra="ignore",
     )
 
-    quant_db: Path = Path("C:/Users/ThinkPad/quant-data/quant.duckdb")
+    # quant_db 已废弃（quant-data 彻底移除，项目自包含）；平台库为唯一数据源
+    platform_db: Path = Path("data/factorlab.duckdb")
     plugin_dir: Path = Path.home() / ".factorlab" / "plugins"
     teajoin_base_url: str = "https://teajoin.com"  # 根路径；/g 为文档页
     teajoin_token: str = ""

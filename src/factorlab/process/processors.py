@@ -72,7 +72,7 @@ def fillna(df: pl.DataFrame, ctx, method: str = "value", value: float = 0.0) -> 
         if ctx is None or ctx.db is None:
             raise ValueError("fillna(method=industry_mean) 需要 ProcessCtx(db) 上下文")
         industry = ctx.db.execute(
-            "SELECT symbol, industry FROM stock_basic_tushare WHERE industry IS NOT NULL AND industry != ''"
+            "SELECT symbol, industry FROM stock_basic WHERE industry IS NOT NULL AND industry != ''"
         ).pl()
         enriched = df.join(industry.rename({"symbol": "code"}), on="code", how="left")
         return enriched.with_columns(
@@ -94,7 +94,7 @@ def neutralize(df: pl.DataFrame, ctx, by: str = "market") -> pl.DataFrame:
         raise ValueError("neutralize(by=industry/size) 需要 ctx（ProcessCtx 的 db 连接）")
     if by == "industry":
         industry = ctx.db.execute(
-            "SELECT symbol, industry FROM stock_basic_tushare WHERE industry IS NOT NULL AND industry != ''"
+            "SELECT symbol, industry FROM stock_basic WHERE industry IS NOT NULL AND industry != ''"
         ).pl()
         enriched = df.join(industry.rename({"symbol": "code"}), on="code", how="left")
         missing = enriched["industry"].null_count()

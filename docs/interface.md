@@ -173,14 +173,21 @@ def tail_ratio(x: pl.Expr, n: int) -> pl.Expr:
 
 ### `factorlab.engine.compute.run_factor(spec, ctx) -> FactorResult`
 
-装配完整链路：universe 解析 → `load_daily` → 停牌补全 → `compute_formula` →
-process 链 → 前向收益 → 周频对齐 → 落盘 `panel.parquet` + `summary.json`。
+装配完整链路：universe 解析 → `load_daily`（含 `adj_factor`）→ 停牌补全 →
+前向收益（total_return 口径，raw close×adj）→ 复权视图（`adjustment` 口径，
+因子计算使用）→ `compute_formula` → process 链 → 落盘 `panel.parquet` + `summary.json`。
+周频对齐在评估阶段（`eval`）进行，run_factor 输出日频面板。
 
-`RunContext` 字段：`db_path`（默认 `settings.quant_db`）、`output_dir`、
-`universe_override`（6 位代码或引用名称/路径，优先级最高）、`float32`。
+`RunContext` 字段：`db_path`（默认 `settings.platform_db` = `data/factorlab.duckdb`）、
+`output_dir`、`universe_override`（6 位代码或引用名称/路径，优先级最高）、`float32`、
+`adjustment`（复权视图口径 `raw|qfq|hfq`，默认 `qfq`；spec 声明 adjustment 时以 spec 为准）。
 
-`FactorResult`：`spec`、`panel`（列：`date, code, signal, forward_return_5d, forward_return_20d, close`）、
-`summary`（含 spec 原文、codes、universe_count、panel_rows、signal_null_ratio、process、float32）。
+`FactorResult`：`spec`、`panel`（列：`date, code, signal, forward_return_5d, forward_return_20d, close`，
+其中 close 为复权视图价格）、
+`summary`（含 spec 原文、codes、universe_count、panel_rows、signal_null_ratio、process、
+adjustment、float32）。
+
+补全面板按交易日历截断到今天（trade_cal 含未来公告日，不产生未来 null 行）。
 
 `factors`/`combine` 多因子组合暂不支持（NotImplementedError，M4 实现）。
 
@@ -215,7 +222,7 @@ DuckDB 只读加载；SQL-first 过滤；`date` cast `pl.Date`；数值列 float
 **spec 文件内的链项必须用 `=` 分隔**（`neutralize(by=industry)`），`key: value` 冒号
 写法会被 YAML 解析为映射而报错。
 
-`neutralize` 的行业依赖 `stock_basic_tushare` 静态行业（v1 近似）；`size` 按
+`neutralize` 的行业依赖平台库 `stock_basic` 静态行业（v1 近似）；`size` 按
 `daily_basic.total_mv` 每日期内排名十分位分桶后组内 demean（无 daily_basic 匹配时报错）；
 截面 N<10 时 size 中性化每桶 1 只股票，demean 恒 0（分组式中性化固有属性）。
 
@@ -223,9 +230,12 @@ DuckDB 只读加载；SQL-first 过滤；`date` cast `pl.Date`；数值列 float
 
 ### `factorlab.engine.forward.compute_forward_returns / align_weekly`
 
-前向收益 `close[t+h]/close[t]-1`（h 交易日索引差，输入须停牌补全）；
+前向收益 **total_return 口径** `close[t+h]×adj[t+h] / (close[t]×adj[t]) - 1`
+（含分红再投资；输入须停牌补全且 close 为 raw 价格——先于复权视图计算，避免二次复权）；
+签名 `compute_forward_returns(df, horizons=(5, 20), close_col="close", adj_col="adj_factor")`，
+缺 adj 列时显式报错。
 `align_weekly` 对齐到 **ISO 周**最后一个交易日（跨年日期同属 ISO 周时合并为该周
-最后交易日，与 tushare weekly 语义一致）。
+最后交易日，与 tushare weekly 语义一致；M4a 起由 `eval` 使用）。
 
 ### `factorlab.data.adjust.view_prices / total_return`
 
@@ -234,6 +244,8 @@ DuckDB 只读加载；SQL-first 过滤；`date` cast `pl.Date`；数值列 float
 - RAW 原样；QFQ `×adj/adj[latest]`（最新因子基准）；HFQ `×adj`（连续价格）；
   PIT_QFQ `×adj/adj[asof]`（研究日视角防未来，必须给 `asof`）。
 - QFQ/PIT_QFQ 按 code+date 排序后计算，latest 语义基于日期而非行序；跨 code 独立。
+- 停牌补全行的 adj 为 null：QFQ 的 latest 与 PIT_QFQ 的 asof 基准跳过 null
+  （窗口末行/截止日补全行不污染整组），补全行价格保持 null。
 
 `total_return(close, adj)`：HFQ 收益 `close[t]×adj[t]/(close[t-1]×adj[t-1])-1`
 （含分红再投资的真实收益；除权日上 RAW 收益率 ≠ QFQ/HFQ 收益率，用 total_return）。

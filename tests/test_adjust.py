@@ -79,6 +79,35 @@ def test_total_return_grouped_via_over():
         [None, 0.1, 12.0 / 11.0 - 1, None, 0.1, 24.0 / 22.0 - 1], nan_ok=True)
 
 
+def test_view_qfq_skips_null_adj_suspension_rows():
+    # 回归：fill_suspensions 补全的停牌行 adj 为 null——latest 若把 null 当最后值
+    # 则整组 None（窗口末行停牌即触发）；latest 应跳过 null
+    df = pl.DataFrame({
+        "date": [datetime.date(2024, 1, 2), datetime.date(2024, 1, 3),
+                 datetime.date(2024, 1, 4), datetime.date(2024, 1, 5)],
+        "code": ["A"] * 4,
+        "close": [10.0, 11.0, 12.0, None],
+        "adj_factor": [1.0, 1.0, 1.5, None],
+    })
+    out = view_prices(df, "qfq")
+    # latest = 1.5（末行 null 跳过）；停牌行价格 null
+    assert out["close"].to_list() == pytest.approx([10.0 / 1.5, 11.0 / 1.5, 12.0, None], nan_ok=True)
+
+
+def test_view_pit_qfq_skips_null_adj_asof_row():
+    # 回归：asof 当日补全行 adj 为 null——asof 基准取截至日的最近非 null adj
+    df = pl.DataFrame({
+        "date": [datetime.date(2024, 1, 2), datetime.date(2024, 1, 3),
+                 datetime.date(2024, 1, 4), datetime.date(2024, 1, 5)],
+        "code": ["A"] * 4,
+        "close": [10.0, 11.0, None, 13.0],
+        "adj_factor": [1.0, 1.0, None, 1.5],
+    })
+    out = view_prices(df, "pit_qfq", asof=datetime.date(2024, 1, 4))
+    # 截止 01-04 的最近非 null adj = 1.0（01-04 补全行 null 跳过）
+    assert out["close"].to_list() == pytest.approx([10.0, 11.0, None, 19.5], nan_ok=True)
+
+
 def test_view_unknown_raises():
     with pytest.raises(ValueError, match="view"):
         view_prices(_panel(), "bogus")

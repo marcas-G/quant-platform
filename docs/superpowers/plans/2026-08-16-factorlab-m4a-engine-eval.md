@@ -313,7 +313,7 @@ git commit -m "feat: adapt universe and calendar to platform db schema"
 **语义**：因子值用复权视图（spec.adjustment 默认 qfq）；前向收益 total_return 口径
 （close×adj 序列）；run_factor 默认 db_path = 平台库。
 
-- [ ] **Step 1: 更新测试 fixture 并新增**
+- [x] **Step 1: 更新测试 fixture 并新增**
 
 `tests/test_run_factor.py` 的 `build_db` 改为平台库风格（daily/adj_factor/daily_basic/stock_basic/stock_st/trade_cal）。新增：
 
@@ -349,12 +349,12 @@ def test_forward_returns_total_return_semantics():
     assert out["forward_return_4d"][0] == 0.8
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Run: `pytest tests/test_forward.py tests/test_run_factor.py -v`
 Expected: FAIL — forward 仍 raw close；RunContext 默认 quant_db。
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 `src/factorlab/config.py`：
 
@@ -420,17 +420,43 @@ def run_factor(spec: FactorSpec, ctx: RunContext) -> FactorResult:
 （停牌日）复权后价格 null——因子计算自然处理。`compute_formula` 的列引用（close 等）在 view_prices
 后为复权值 ✓。forward 需要 adj_factor 列（补全面板含 adj ✓）。
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `pytest tests/test_forward.py tests/test_run_factor.py tests/test_compute.py -v`
 Expected: PASS（fixture 更新后）。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/factorlab/config.py src/factorlab/engine/forward.py src/factorlab/engine/compute.py tests/test_forward.py tests/test_run_factor.py
 git commit -m "feat: adjust factor view and total-return forward in run_factor"
 ```
+
+**Task 3 实现注记（含审查前置项）：**
+
+1. **forward 先于 view_prices**（计划 Step 3 代码的调用顺序偏差——修正为数学正确）：
+   total_return = raw close×adj；view_prices(qfq/hfq) 已缩放 close 后再乘 adj 会二次复权
+   （比值出现 adj²）。前向收益列在 raw 面板上计算，view_prices 只缩放 OHLC，forward 列不受影响；
+   HFQ/QFQ 收益一致（spec §2.3 等比缩放不变量）。`test_run_factor_qfq_adjustment` 断言
+   forward_return_5d = 13×1.5/10 - 1 作为二次复权回归。
+2. **adj_factor 显式请求**：`cols = formula_cols + ["close", "adj_factor"]`（T1 审查）。
+3. **qfq/pit_qfq null-adj 修复**（T1 审查 Important）：`view_prices` 的 latest/asof 基准
+   `filter(is_not_null).last()`——fill_suspensions 补全的停牌行 adj 为 null，窗口末行 null
+   曾导致整组 None。补测试 test_view_qfq_skips_null_adj_suspension_rows /
+   test_view_pit_qfq_skips_null_adj_asof_row。
+4. **未来公告日不补全**（T2 审查）：在 run_factor 装配层 `cal.filter(cal <= today)`，
+   trading_calendar 保持纯查询（date_end=None 返回全部开市日，含未来公告日到 20261231）。
+5. **processors 表名**：fillna/neutralize 的 `stock_basic_tushare` → `stock_basic`（平台库
+   M3b 表名）；test_process.py fixture 同步；neutralize size 的 daily_basic 查询与
+   'YYYYMMDD' 日期格式处理保持（已对）。
+6. **close 必须引用校验**锚点改为公式列（close 恒加载后 panel 恒含 close）：`if "close"
+   not in formula_cols: raise`（M3a 契约保留，消息不变）。
+7. **RunContext.adjustment** 字段（默认 "qfq"）；`adjustment = getattr(spec, "adjustment",
+   None) or ctx.adjustment`（spec.adjustment 字段 Task 4 加）；未知口径由 view_prices 报错
+   （"未知价格视图 view"），补测试。summary 增加 adjustment 字段。
+8. **align_weekly 移除**：run_factor 不再调用（T5 迁 eval，T7 接评估）；panel 为日频。
+9. fixture 的 daily 用平台库 6 位代码（000001.SZ/600519.SH）——substr(ts_code,1,6) 前缀
+   匹配在 run_factor 链路要求代码为 6 位（1 字符测试代码会空结果）。
 
 ---
 

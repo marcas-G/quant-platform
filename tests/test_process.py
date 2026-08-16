@@ -192,8 +192,8 @@ class FakeCtx:
 
 def build_basic_db(tmp_path):
     db = duckdb.connect(tmp_path / "t.duckdb")
-    db.execute("CREATE TABLE stock_basic_tushare (symbol VARCHAR, industry VARCHAR)")
-    db.execute("INSERT INTO stock_basic_tushare VALUES ('A', '银行'), ('B', '银行'), ('C', '白酒'), ('D', '白酒')")
+    db.execute("CREATE TABLE stock_basic (symbol VARCHAR, industry VARCHAR)")
+    db.execute("INSERT INTO stock_basic VALUES ('A', '银行'), ('B', '银行'), ('C', '白酒'), ('D', '白酒')")
     db.execute("CREATE TABLE daily_basic (trade_date VARCHAR, ts_code VARCHAR, total_mv DOUBLE)")
     db.execute("INSERT INTO daily_basic VALUES ('20240102', '000001.SZ', 100.0), ('20240103', '000001.SZ', 120.0)")
     db.close()
@@ -295,7 +295,7 @@ def test_neutralize_size_missing_mv_raises(tmp_path):
 
 
 def test_neutralize_industry_missing_info(tmp_path):
-    # 股票不在 stock_basic_tushare → 行业缺失 → 报错（不做静默按全截面 demean）
+    # 股票不在 stock_basic → 行业缺失 → 报错（不做静默按全截面 demean）
     db_path = build_basic_db(tmp_path)
     con = duckdb.connect(str(db_path), read_only=True)
     try:

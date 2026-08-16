@@ -112,7 +112,9 @@ def view_prices(
         df = df.sort(["code", "date"])
 
     if view == "qfq":
-        factor = pl.col(adj_col) / pl.col(adj_col).last().over("code")
+        # 停牌补全行的 adj 为 null：latest 跳过 null（窗口末行 null → 全组 None 的回归）
+        latest_adj = pl.col(adj_col).filter(pl.col(adj_col).is_not_null()).last().over("code")
+        factor = pl.col(adj_col) / latest_adj
     elif view == "hfq":
         factor = pl.col(adj_col)
     else:  # pit_qfq
@@ -120,7 +122,7 @@ def view_prices(
             df.filter(pl.col("date") <= asof)
             .sort("date")
             .group_by("code")
-            .agg(pl.col(adj_col).last().alias("_asof_adj"))
+            .agg(pl.col(adj_col).filter(pl.col(adj_col).is_not_null()).last().alias("_asof_adj"))
         )
         df = df.join(base, on="code", how="left")
         factor = pl.col(adj_col) / pl.col("_asof_adj")

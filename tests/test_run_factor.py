@@ -1,4 +1,6 @@
+import datetime
 import json
+from pathlib import Path
 
 import duckdb
 import polars as pl
@@ -7,18 +9,43 @@ import pytest
 from factorlab.engine.compute import RunContext, _formula_columns, run_factor
 from factorlab.spec import load_spec
 
+_DATES = ["20240102", "20240103", "20240104", "20240105", "20240108", "20240109"]
+# 平台库风格代码：ts_code 带后缀（000001.SZ），symbol 为纯数字桥梁
+_A = ("000001", "000001.SZ", 10.0)
+_B = ("600519", "600519.SH", 20.0)
 
-def build_db(tmp_path):
+
+def build_db(tmp_path, ex_date: bool = False):
+    """平台库风格假库：trade_date 'YYYYMMDD'/ts_code 带后缀/vol（参考 test_source.py 模式）；
+    daily/adj_factor/daily_basic/stock_basic/stock_st/trade_cal 齐全。
+    ex_date=True 时 000001 第 3 天（01-04）除权：close 11→8、adj 1.0→1.5。"""
     db = duckdb.connect(tmp_path / "q.duckdb")
-    db.execute("CREATE TABLE daily (date VARCHAR, open DOUBLE, high DOUBLE, low DOUBLE, close DOUBLE, volume DOUBLE, amount DOUBLE, turnover DOUBLE, pct_chg DOUBLE, code VARCHAR)")
-    dates = ["2024-01-02", "2024-01-03", "2024-01-04", "2024-01-05", "2024-01-08", "2024-01-09"]
-    for code, base in (("A", 10.0), ("B", 20.0)):
-        for i, d in enumerate(dates):
-            db.execute("INSERT INTO daily VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
-                       (d, base + i, base + i + 0.5, base + i - 0.5, base + i + 1, 1000.0, 1e6, 0.01, 0.1, code))
+    db.execute("CREATE TABLE daily (ts_code VARCHAR, trade_date VARCHAR, open DOUBLE, high DOUBLE, low DOUBLE, close DOUBLE, pre_close DOUBLE, change DOUBLE, pct_chg DOUBLE, vol DOUBLE, amount DOUBLE)")
+    for symbol, ts_code, base in (_A, _B):
+        closes = [base + i + 1 for i in range(len(_DATES))]
+        if ex_date and symbol == "000001":
+            closes = [10.0, 11.0, 8.0, 9.0, 12.0, 13.0]
+        for i, d in enumerate(_DATES):
+            db.execute("INSERT INTO daily VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                       (ts_code, d, closes[i] - 1.0, closes[i] - 0.5, closes[i] - 1.5,
+                        closes[i], closes[i] - 1.0, 1.0, 0.01, 1000.0, 1e6))
+    db.execute("CREATE TABLE adj_factor (ts_code VARCHAR, trade_date VARCHAR, adj_factor DOUBLE)")
+    for symbol, ts_code, base in (_A, _B):
+        adjs = [1.0] * len(_DATES)
+        if ex_date and symbol == "000001":
+            adjs = [1.0, 1.0, 1.5, 1.5, 1.5, 1.5]
+        for i, d in enumerate(_DATES):
+            db.execute("INSERT INTO adj_factor VALUES (?, ?, ?)", (ts_code, d, adjs[i]))
     db.execute("CREATE TABLE stock_basic (symbol VARCHAR, ts_code VARCHAR, exchange VARCHAR, list_date VARCHAR, industry VARCHAR)")
-    db.execute("INSERT INTO stock_basic VALUES ('A', 'A.SZ', 'SZSE', '19910101', '银行'), ('B', 'B.SH', 'SSE', '20010101', '白酒')")
-    db.execute("CREATE TABLE st_status (code VARCHAR, date DATE, is_st BOOLEAN)")
+    db.execute("INSERT INTO stock_basic VALUES ('000001', '000001.SZ', 'SZSE', '19910101', '银行'), ('600519', '600519.SH', 'SSE', '20010101', '白酒')")
+    db.execute("CREATE TABLE daily_basic (trade_date VARCHAR, ts_code VARCHAR, total_mv DOUBLE)")
+    for d in _DATES:
+        db.execute("INSERT INTO daily_basic VALUES (?, '000001.SZ', 100.0)", (d,))
+        db.execute("INSERT INTO daily_basic VALUES (?, '600519.SH', 200.0)", (d,))
+    db.execute("CREATE TABLE stock_st (ts_code VARCHAR, trade_date VARCHAR)")
+    db.execute("CREATE TABLE trade_cal (cal_date VARCHAR, is_open INT)")
+    for d in _DATES:
+        db.execute("INSERT INTO trade_cal VALUES (?, 1)", (d,))
     db.close()
 
 
@@ -29,7 +56,7 @@ name: demo
 category: custom
 direction: 1
 universe:
-  codes: ["A.SZ", "B.SH"]
+  codes: ["000001.SZ", "600519.SH"]
 date:
   start: "2024-01-02"
   end: "2024-01-09"
@@ -53,6 +80,7 @@ def test_run_factor_end_to_end(tmp_path):
     assert summary["name"] == "demo"
     assert summary["universe_count"] == 2
     assert summary["panel_rows"] == panel.height
+    assert summary["adjustment"] == "qfq"  # 默认复权口径写入摘要
 
 
 def test_run_factor_empty_universe_rejected(tmp_path):
@@ -76,12 +104,12 @@ def test_run_factor_float32_disabled(tmp_path):
 def test_run_factor_universe_override_file(tmp_path):
     build_db(tmp_path)
     pool = tmp_path / "pool_a.yaml"
-    pool.write_text("codes: ['A']", encoding="utf-8")
+    pool.write_text("codes: ['000001']", encoding="utf-8")
     out_dir = tmp_path / "out"
     result = run_factor(_spec(tmp_path), RunContext(
         db_path=tmp_path / "q.duckdb", output_dir=out_dir, universe_override=str(pool)))
     assert result.summary["universe_count"] == 1
-    assert result.panel["code"].unique().to_list() == ["A"]
+    assert result.panel["code"].unique().to_list() == ["000001"]
 
 
 def test_run_factor_empty_process_chain(tmp_path):
@@ -119,7 +147,7 @@ name: multi
 category: custom
 direction: 1
 universe:
-  codes: ["A.SZ", "B.SH"]
+  codes: ["000001.SZ", "600519.SH"]
 factors:
   - name: f1
     formula: signal = close
@@ -131,7 +159,7 @@ combine:
 
 
 def test_run_factor_neutralize_industry(tmp_path):
-    # 回归：process 链 ctx（duckdb 连接）经 run_factor 完整链路可用（行业来自 stock_basic_tushare）
+    # 回归：process 链 ctx（duckdb 连接）经 run_factor 完整链路可用（行业来自平台库 stock_basic）
     build_db(tmp_path)
     spec_path = tmp_path / "spec_n.yaml"
     spec_path.write_text("""
@@ -139,7 +167,7 @@ name: demo_n
 category: custom
 direction: 1
 universe:
-  codes: ["A.SZ", "B.SH"]
+  codes: ["000001.SZ", "600519.SH"]
 date:
   start: "2024-01-02"
   end: "2024-01-09"
@@ -155,21 +183,15 @@ formula: |
 
 def test_run_factor_neutralize_size(tmp_path):
     # 回归：size 分支的日期 join key 必须与面板 date 同 dtype（run_factor 面板为 pl.Date，
-    # 原 cast String 导致 SchemaError）
+    # 原 cast String 导致 SchemaError）；daily_basic 在 build_db fixture 中
     build_db(tmp_path)
-    db = duckdb.connect(tmp_path / "q.duckdb")
-    db.execute("CREATE TABLE daily_basic (trade_date VARCHAR, ts_code VARCHAR, total_mv DOUBLE)")
-    for d in ("20240102", "20240103", "20240104", "20240105", "20240108", "20240109"):
-        db.execute("INSERT INTO daily_basic VALUES (?, 'A.SZ', 100.0)", (d,))
-        db.execute("INSERT INTO daily_basic VALUES (?, 'B.SH', 200.0)", (d,))
-    db.close()
     spec_path = tmp_path / "spec_size.yaml"
     spec_path.write_text("""
 name: demo_size
 category: custom
 direction: 1
 universe:
-  codes: ["A.SZ", "B.SH"]
+  codes: ["000001.SZ", "600519.SH"]
 date:
   start: "2024-01-02"
   end: "2024-01-09"
@@ -205,6 +227,75 @@ def test_run_factor_attribute_call_rejected(tmp_path):
     spec.formula = "signal = np.abs(close)"
     with pytest.raises(ValueError, match="属性调用"):
         run_factor(spec, RunContext(db_path=tmp_path / "q.duckdb", output_dir=tmp_path / "out8"))
+
+
+def test_run_factor_qfq_adjustment(tmp_path):
+    # 除权日（adj 1.0→1.5, close 11→8）：qfq 下因子值连续（用 momentum 类公式验证）
+    build_db(tmp_path, ex_date=True)
+    spec_path = tmp_path / "spec_qfq.yaml"
+    spec_path.write_text("""
+name: demo_qfq
+category: custom
+direction: 1
+universe:
+  codes: ["000001.SZ"]
+date:
+  start: "2024-01-02"
+  end: "2024-01-09"
+process: []
+formula: |
+  from polars_ta.prefix.wq import ts_delay
+  signal = close / ts_delay(close, 1) - 1
+""", encoding="utf-8")
+    result = run_factor(load_spec(spec_path), RunContext(db_path=tmp_path / "q.duckdb", output_dir=tmp_path / "out_qfq"))
+    panel = result.panel.sort(["date"])
+    a = panel.filter(pl.col("code") == "000001")
+    # qfq 除权日收益 = 8×1.5/11 - 1（raw 口径会是 8/11 - 1）
+    day3 = a.filter(pl.col("date") == datetime.date(2024, 1, 4))["signal"][0]
+    assert day3 == pytest.approx(8 * 1.5 / 11 - 1)
+    # 前向收益 total_return（raw close×adj 序列，含分红再投资）：13×1.5/10 - 1
+    day1 = a.filter(pl.col("date") == datetime.date(2024, 1, 2))["forward_return_5d"][0]
+    assert day1 == pytest.approx(13 * 1.5 / 10 - 1)
+    summary = json.loads((tmp_path / "out_qfq" / "summary.json").read_text(encoding="utf-8"))
+    assert summary["adjustment"] == "qfq"
+
+
+def test_run_factor_default_db_is_platform():
+    # RunContext 默认 db_path 指向平台库路径（quant-data 已废弃）
+    ctx = RunContext()
+    assert ctx.db_path == Path("data/factorlab.duckdb")
+    assert ctx.adjustment == "qfq"
+
+
+def test_run_factor_future_calendar_days_not_padded(tmp_path):
+    # trade_cal 含未来公告日（20261231）——run_factor 不应补全未来 null 行
+    build_db(tmp_path)
+    db = duckdb.connect(tmp_path / "q.duckdb")
+    db.execute("INSERT INTO trade_cal VALUES ('20261231', 1)")
+    db.close()
+    spec_path = tmp_path / "spec_future.yaml"
+    spec_path.write_text("""
+name: demo_future
+category: custom
+direction: 1
+universe:
+  codes: ["000001.SZ"]
+date:
+  start: "2024-01-02"
+process: []
+formula: |
+  signal = close
+""", encoding="utf-8")
+    result = run_factor(load_spec(spec_path), RunContext(db_path=tmp_path / "q.duckdb", output_dir=tmp_path / "out_f"))
+    assert datetime.date(2026, 12, 31) not in result.panel["date"]
+    assert result.panel["date"].max() <= datetime.date.today()
+
+
+def test_run_factor_unknown_adjustment_rejected(tmp_path):
+    build_db(tmp_path)
+    with pytest.raises(ValueError, match="view"):
+        run_factor(_spec(tmp_path), RunContext(
+            db_path=tmp_path / "q.duckdb", output_dir=tmp_path / "out_x", adjustment="bogus"))
 
 
 def test_formula_columns_extracts_data_cols_only():
