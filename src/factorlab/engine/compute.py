@@ -3,8 +3,10 @@ from __future__ import annotations
 import ast
 import datetime
 import json
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 import duckdb
 import polars as pl
@@ -19,10 +21,33 @@ from factorlab.data.universe import resolve_codes
 from factorlab.engine.forward import compute_forward_returns
 from factorlab.engine.partitions import reject_future_shifts, validate_partition_calls
 from factorlab.factor.ast_gate import validate_formula
-from factorlab.ops.platform_ops import expand_platform_macros, expand_user_macros, register_platform_ops
+from factorlab.ops.platform_ops import (
+    expand_platform_macros,
+    expand_user_macros,
+    inline_defs,
+    register_platform_ops,
+)
 from factorlab.ops.polars_ta_wrappers import register_polars_ta_ops
 from factorlab.process.registry import run_process_chain
 from factorlab.spec import FactorSpec
+
+
+_PARAM_PATTERN = re.compile(r"\$\{(\w+)\}")
+
+
+def _substitute_params(formula: str, params: dict[str, Any]) -> str:
+    """顶层参数替换：formula 内 ${name} 文本引用 → 字面量（str(params[name])）。
+
+    文本替换（非 AST）：宏体/def 体内的 ${} 同样可见——宏体由调用方对 operators
+    副本替换，def 体在 formula 文本内一并命中。未知参数名 → ValueError。
+    """
+    def _repl(match: re.Match) -> str:
+        name = match.group(1)
+        if name not in params:
+            raise ValueError(f"未知参数: {name}（spec.params 未声明）")
+        return str(params[name])
+
+    return _PARAM_PATTERN.sub(_repl, formula)
 
 
 def compute_formula(
@@ -32,6 +57,7 @@ def compute_formula(
     date: str = "date",
 ) -> pl.DataFrame:
     validate_formula(formula)
+    formula = inline_defs(formula)  # def 内联（幂等：无 def 原样返回）——窗口算子合法化为顶层 ts_ 调用
     formula = expand_platform_macros(formula)  # 薄封装 → ts_ 表达式，保证按 asset 分区
     register_polars_ta_ops()  # 幂等；保证分区校验能识别 ts_/cs_/ta_ 算子
     register_platform_ops()
@@ -102,11 +128,18 @@ def run_factor(spec: FactorSpec, ctx: RunContext) -> FactorResult:
     raw close×adj，必须先于复权视图）→ 复权视图（因子计算口径）→ 因子 → process → 落盘。"""
     if spec.factors is not None:
         raise NotImplementedError("多因子 factors/combine 组合不在平台范围（平台定位单因子计算与评估）")
-    # spec.operators 内联宏先展开（用户宏公式可引用平台薄封装），展开后公式再校验：
-    # 宏公式内的语法/禁止调用错误同样在打开数据库前暴露
-    formula = spec.formula or ""
-    formula = expand_user_macros(formula, spec.operators)
+    # 展开链（打开数据库前全部完成，语法/参数错误先暴露）：
+    # spec.params 顶层参数先替换（宏体经 operators 副本、def 体在 formula 文本内一并命中）
+    # → spec.operators 内联宏展开（用户宏公式可引用平台薄封装与 ${}）
+    # → 校验 → def 内联（窗口算子合法化为顶层 ts_ 调用）→ 平台薄封装展开
+    formula = _substitute_params(spec.formula or "", spec.params)
+    operators = {
+        name: op.model_copy(update={"formula": _substitute_params(op.formula, spec.params)})
+        for name, op in spec.operators.items()
+    }
+    formula = expand_user_macros(formula, operators)
     validate_formula(formula)
+    formula = inline_defs(formula)
     formula = expand_platform_macros(formula)  # 薄封装 → ts_ 表达式（compute_formula 内部再展开幂等无害）
     try:
         con = duckdb.connect(str(ctx.db_path), read_only=True)

@@ -122,3 +122,13 @@ def test_spec_adjustment_explicit(tmp_path):
 def test_spec_adjustment_invalid(tmp_path):
     with pytest.raises(ValueError):
         load_spec(make_spec(tmp_path, adjustment="bogus"))
+
+
+def test_spec_params_default_empty(tmp_path):
+    spec = load_spec(make_spec(tmp_path))
+    assert spec.params == {}
+
+
+def test_spec_params_parse(tmp_path):
+    spec = load_spec(make_spec(tmp_path, params={"win": 200, "gain": 2.0, "name_x": "abc"}))
+    assert spec.params == {"win": 200, "gain": 2.0, "name_x": "abc"}

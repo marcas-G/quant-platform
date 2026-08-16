@@ -386,6 +386,143 @@ formula: |
     assert summary["adjustment"] == "raw"
 
 
+def test_run_factor_params_substitution(tmp_path):
+    # spec.params 顶层参数：formula 内 ${win} 文本引用 → 编译期替换为字面量
+    build_db(tmp_path)
+    spec_path = tmp_path / "spec_param.yaml"
+    spec_path.write_text("""
+name: param_demo
+category: custom
+direction: 1
+universe:
+  codes: ["000001.SZ"]
+date:
+  start: "2024-01-02"
+  end: "2024-01-09"
+params: {win: 3}
+process: []
+formula: |
+  from polars_ta.prefix.wq import ts_mean
+  signal = ts_mean(close, ${win}) - close
+""", encoding="utf-8")
+    result = run_factor(load_spec(spec_path), RunContext(db_path=tmp_path / "q.duckdb", output_dir=tmp_path / "out_param"))
+    assert result.panel.height > 0
+    a = result.panel.filter(pl.col("code") == "000001").sort("date")["signal"]
+    # 替换语义：ts_mean(close, 3) - close——000001 收盘 11..16，第 3 日 = mean(11,12,13) - 13 = 0
+    assert a[2] == pytest.approx((11 + 12 + 13) / 3 - 13)
+    # ts_mean(3) 窗口不足的前 2 日为 null
+    assert a.head(2).null_count() == 2
+
+
+def test_run_factor_params_in_macro_and_def_bodies(tmp_path):
+    # 边界：operators 宏体与 def 体内的 ${} 一并替换（宏体经 operators 副本、def 体在 formula 文本内）；
+    # 同时覆盖 def 调用户宏的展开顺序（params → 用户宏 → def 内联）
+    build_db(tmp_path)
+    spec_path = tmp_path / "spec_param_macro.yaml"
+    spec_path.write_text("""
+name: param_macro
+category: custom
+direction: 1
+universe:
+  codes: ["000001.SZ"]
+date:
+  start: "2024-01-02"
+  end: "2024-01-09"
+params: {k: 2}
+operators:
+  scaled:
+    params: [x]
+    formula: "x * ${k}"
+formula: |
+  def doubled(x):
+      return scaled(x) * ${k}
+
+  signal = doubled(close)
+""", encoding="utf-8")
+    result = run_factor(load_spec(spec_path), RunContext(db_path=tmp_path / "q.duckdb", output_dir=tmp_path / "out_param_macro"))
+    a = result.panel.filter(pl.col("code") == "000001").sort("date")["signal"]
+    # 展开链：${k}→2、scaled(close)→close*2、doubled(close) → (close*2)*2 = close*4
+    assert a[0] == pytest.approx(11 * 4)
+
+
+def test_run_factor_string_param_as_column(tmp_path):
+    # 边界：参数值为字符串（文本替换 → 公式内作列名引用）
+    build_db(tmp_path)
+    spec_path = tmp_path / "spec_param_col.yaml"
+    spec_path.write_text("""
+name: param_col
+category: custom
+direction: 1
+universe:
+  codes: ["000001.SZ"]
+date:
+  start: "2024-01-02"
+  end: "2024-01-09"
+params: {col: volume}
+process: []
+formula: |
+  signal = ${col} * 2
+""", encoding="utf-8")
+    result = run_factor(load_spec(spec_path), RunContext(db_path=tmp_path / "q.duckdb", output_dir=tmp_path / "out_param_col"))
+    a = result.panel.filter(pl.col("code") == "000001").sort("date")["signal"]
+    assert a[0] == pytest.approx(1000.0 * 2)
+
+
+def test_run_factor_unknown_param_rejected(tmp_path):
+    # 错误路径：formula 引用 ${nope} 未在 params 声明 → 报错（数据库打开前暴露）
+    build_db(tmp_path)
+    spec_path = tmp_path / "spec_param_bad.yaml"
+    spec_path.write_text("""
+name: param_bad
+category: custom
+direction: 1
+universe:
+  codes: ["000001.SZ"]
+date:
+  start: "2024-01-02"
+  end: "2024-01-09"
+params: {win: 3}
+formula: |
+  signal = close * ${nope}
+""", encoding="utf-8")
+    with pytest.raises(ValueError, match="param"):
+        run_factor(load_spec(spec_path), RunContext(db_path=tmp_path / "q.duckdb", output_dir=tmp_path / "out_param_bad"))
+
+
+def test_run_factor_def_with_window_ops(tmp_path):
+    # def 内窗口算子合法（内联展开为顶层 ts_ 调用）——窗口按资产分区：每资产首行
+    # ts_delay(close, 1) 为 null，B 首行不得借用 A 末行（无跨资产泄漏）
+    build_db(tmp_path)
+    spec_path = tmp_path / "spec_def.yaml"
+    spec_path.write_text("""
+name: def_demo
+category: custom
+direction: 1
+universe:
+  codes: ["000001.SZ", "600519.SH"]
+date:
+  start: "2024-01-02"
+  end: "2024-01-09"
+process: []
+formula: |
+  from polars_ta.prefix.wq import ts_mean, ts_delay
+
+  def mom(x, n):
+      return ts_mean(x, n) / ts_delay(x, 1) - 1
+
+  signal = mom(close, 3)
+""", encoding="utf-8")
+    result = run_factor(load_spec(spec_path), RunContext(db_path=tmp_path / "q.duckdb", output_dir=tmp_path / "out_def"))
+    panel = result.panel.sort(["code", "date"])
+    a = panel.filter(pl.col("code") == "000001")["signal"]
+    b = panel.filter(pl.col("code") == "600519")["signal"]
+    # 每资产首行 null（若窗口未按资产分区，B 首行会取到 A 末行的值）
+    assert a[0] is None and b[0] is None
+    # 000001 收盘 11..16、600519 21..26：第 3 日 ts_mean(3)=中间值、ts_delay(1)=同值 → 0
+    assert a[2] == pytest.approx(0.0)
+    assert b[2] == pytest.approx(0.0)
+
+
 def test_run_factor_unknown_adjustment_rejected(tmp_path):
     build_db(tmp_path)
     spec = _spec(tmp_path)
