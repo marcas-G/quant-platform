@@ -138,6 +138,8 @@ def run_factor_cli(
         key, _, value = kv.partition("=")
         if not key or not value:
             raise typer.BadParameter(f"--set 格式应为 k=v: {kv}")
+        if not re.fullmatch(r"[A-Za-z0-9_.-]+", value):
+            raise typer.BadParameter(f"--set 值含非法字符（仅字母数字_.-）: {value}")
         overrides[key] = _parse_param_value(value)
     try:
         spec = load_spec(spec_path)
@@ -213,7 +215,8 @@ def list_factors() -> None:
         ev = summary.get("evaluation", {})
         run_at, sort_key = _run_at(summary, summary_path)
         rows.append({
-            "name": summary.get("name", summary_path.parent.name),
+            # 变体目录（name_kv）的 summary.name 是基础名——目录名优先可区分
+            "name": summary_path.parent.name if summary_path.parent.name != summary.get("name") else summary.get("name"),
             "category": summary.get("category", ""),
             "direction": summary.get("direction", ""),
             "ic_mean": ev.get("ic", {}).get("mean"),
