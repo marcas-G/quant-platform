@@ -70,9 +70,10 @@ def decile_bar_figure(groups: list[dict]) -> str:
     return fig.to_json()
 
 
-# 分层档位颜色：sequential blue ramp 10 步（D1 深 → D10 浅，有序语义）
-_LAYERED_BLUE = ["#0d366b", "#104281", "#184f95", "#1c5cab", "#256abf",
-                 "#2a78d6", "#3987e5", "#5598e7", "#6da7ec", "#86b6ef"]
+# 分层档位颜色：categorical 8 色相轮转（相邻档全不同色）+ D9/D10 深色变体
+_LAYERED_COLORS = ["#2a78d6", "#eb6834", "#1baf7a", "#eda100",
+                   "#e87ba4", "#008300", "#4a3aa7", "#e34948",
+                   "#184f95", "#c8531f"]
 
 
 def layered_net_value_figure(net_values: dict[str, list[float]], dates: list[str]) -> str:
@@ -84,10 +85,10 @@ def layered_net_value_figure(net_values: dict[str, list[float]], dates: list[str
     fig = go.Figure()
     for label, values in net_values.items():
         if label == "long_short":
-            color, width = _SERIES_ORANGE, 2.5
+            color, width = _PRIMARY_INK, 3.0  # 黑色粗线最突出
         else:
             idx = int(label[1:]) - 1  # D1 → 0
-            color = _LAYERED_BLUE[idx % len(_LAYERED_BLUE)]
+            color = _LAYERED_COLORS[idx % len(_LAYERED_COLORS)]
             width = 2.0
         fig.add_trace(go.Scatter(
             x=dates, y=values, mode="lines", name=label,
