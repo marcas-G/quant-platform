@@ -115,7 +115,8 @@ def create_app(results_dir: Path) -> FastAPI:
                 ic = _group(ev, "ic")
                 decile = _group(ev, "decile_returns")
                 factors.append({
-                    "name": s.get("name") or summary_path.parent.name,
+                    # 变体目录（name_kv）的 summary.name 是基础名——目录名优先可区分
+                    "name": summary_path.parent.name if summary_path.parent.name != s.get("name") else (s.get("name") or summary_path.parent.name),
                     "category": _display(s.get("category")),
                     "direction": _display(s.get("direction")),
                     "ic_mean": _num(ic.get("mean")),       # None/非数字 → None（模板显示 —）
