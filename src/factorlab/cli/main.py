@@ -8,7 +8,7 @@ from factorlab.config import settings
 from factorlab.data.fetcher import TeaJoinClient
 from factorlab.data.platform_db import PlatformDB
 from factorlab.data.rebuild import RebuildScope, build_final_db, rebuild_all
-from factorlab.data.refresh import refresh
+from factorlab.data.refresh import refresh, refresh_indexes
 from factorlab.data.verify import verify_all
 from factorlab.factor.errors import FactorDSLError
 from factorlab.factor.ast_gate import validate_formula
@@ -119,6 +119,36 @@ def data_refresh() -> None:
         raise typer.Exit(code=1)
     report = refresh(_final_db(), _client())
     console.print(f"refresh 完成: {report}")
+
+
+@data_app.command("update")
+def data_update() -> None:
+    """一键更新：行情增量 + 指数增量 + 自动验证 + 报告（手动触发）。"""
+    if not settings.teajoin_token:
+        console.print("错误: 未配置 FACTORLAB_TEAJOIN_TOKEN（.env）")
+        raise typer.Exit(code=1)
+    report = refresh(_final_db(), _client())
+    index_report = refresh_indexes(_final_db(), _client())
+    verify = verify_all(_final_db())
+    failures = [
+        (t, info["failed"])
+        for t, info in report.get("tables", {}).items()
+        if info.get("failed")
+    ]
+    index_failures = [
+        (t, info["failed"])
+        for t, info in index_report.items()
+        if info.get("failed")
+    ]
+    console.print(f"行情增量: {report['tables']}")
+    console.print(f"指数增量: {index_report}")
+    console.print(f"verify: integrity 规则 "
+                  f"{sum(1 for r in verify['integrity'].values() for x in r.values() if x.get('passed'))}"
+                  f"/{sum(len(r) for r in verify['integrity'].values())} 通过")
+    if failures or index_failures:
+        console.print(f"⚠ 失败项: {failures + index_failures}（下次 update 自动重试）")
+    else:
+        console.print("更新完成，无失败")
 
 
 @data_app.command("verify")

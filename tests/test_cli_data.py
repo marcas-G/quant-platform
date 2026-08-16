@@ -35,3 +35,9 @@ def test_data_verify_missing_db_no_crash(monkeypatch, tmp_path):
     result = runner.invoke(app, ["data", "verify"])
     assert result.exit_code == 0
     assert "integrity" in result.stdout
+
+
+def test_data_update_help_and_missing_token():
+    result = runner.invoke(app, ["data", "update", "--help"])
+    assert result.exit_code == 0
+    assert "更新" in result.stdout or "update" in result.stdout

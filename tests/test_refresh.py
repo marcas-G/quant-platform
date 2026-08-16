@@ -149,3 +149,34 @@ def test_refresh_records_failed(tmp_path, monkeypatch):
     assert "20240104" not in manifest["daily"]["completed"]
     assert report["tables"]["daily"]["failed"] == ["20240104"]
     assert manifest["last_updated"] == "20240104"          # 已处理范围末端，推进避免重复拉
+
+
+def test_refresh_indexes_pulls_new_daily_and_month(tmp_path, monkeypatch):
+    """指数增量：index_daily 从 last_updated 到 today；index_weight 补新月份。"""
+    from factorlab.data.refresh import refresh_indexes
+    db = PlatformDB(tmp_path / "p.duckdb")
+    manifest_path = tmp_path / "manifest.json"
+    save_manifest(manifest_path, {"index_weight": {"completed": ["20260731"], "failed": []},
+                                  "last_updated": "20260814"})
+
+    calls = []
+
+    def responder(api_name, params, fields=None):
+        calls.append((api_name, dict(params)))
+        if api_name == "trade_cal":
+            return pl.DataFrame({"exchange": ["SSE", "SSE"], "cal_date": ["20260814", "20260817"], "is_open": [1, 1]})
+        if api_name == "index_daily":
+            return pl.DataFrame({"trade_date": [params["start_date"]], "ts_code": [params["ts_code"]], "close": [100.0]})
+        if api_name == "index_weight":
+            return pl.DataFrame({"trade_date": [params["trade_date"]], "index_code": [params["index_code"]], "weight": [1.0]})
+        return pl.DataFrame()
+
+    client = TeaJoinClient(token="t", interval=0.0)
+    monkeypatch.setattr(client, "fetch", responder)
+
+    report = refresh_indexes(db, client, manifest_path=manifest_path)
+    assert report["index_daily"]["rows"] > 0
+    assert "index_weight" in report
+    # index_weight 的 completed 应含新月份
+    manifest = load_manifest(manifest_path)
+    assert len(manifest["index_weight"]["completed"]) >= 1
