@@ -10,12 +10,14 @@ factorlab data rebuild [--start YYYYMMDD] [--resume]   # 全量重建（暂存�
 factorlab data update                                   # 一键更新（增量 + 指数 + 验证 + 报告）
 factorlab data refresh                                  # 仅行情 7 表增量（update 的内部步骤）
 factorlab data verify [--compare <ref.duckdb>]          # 完整性自检 + 稀疏摘要 + 抽样对拍
-factorlab run <spec.yaml> [--universe U] [--output-dir D]  # 因子计算 + 周频评估（消费环节）
+factorlab run <spec.yaml> [--universe U] [--output-dir D]  # 因子计算 + 周频评估 + 分层回测（消费环节）
+factorlab list                                          # 已保存因子清单与最近运行摘要
+factorlab show <name>                                   # 查看单因子完整摘要（spec/评估/分层回测）
 ```
 
-数据目录（gitignored）：`data/rebuild_staging.duckdb`（全字段暂存）、`data/factorlab.duckdb`（最终库，稀疏剔除后）、`data/manifest.json`（拉取进度 + 剔除清单 + 失败诊断）。因子计算结果（gitignored）落 `results/<name>/`：`panel.parquet`（日频面板）、`weekly.parquet`（评估输入）、`summary.json`（含 `evaluation` 周频评估摘要）。
+数据目录（gitignored）：`data/rebuild_staging.duckdb`（全字段暂存）、`data/factorlab.duckdb`（最终库，稀疏剔除后）、`data/manifest.json`（拉取进度 + 剔除清单 + 失败诊断）。因子计算结果（gitignored）落 `results/<name>/`（`FACTORLAB_RESULTS_DIR` 可覆盖根目录）：`panel.parquet`（日频面板）、`weekly.parquet`（周频对齐面板）、`summary.json`（含 `evaluation` 周频评估摘要 + `layered_backtest` 分层回测）。
 
-**运维闭环**：`data update`（拉新数据）→ `factorlab run`（计算 + 评估）→ 读 `summary.json` 评估摘要，判断因子有效性（IC/十分位 spread/换手/覆盖，见 §6）。
+**运维闭环**：`data update`（拉新数据）→ `factorlab run`（计算 + 评估 + 分层回测）→ `factorlab list`/`show`（查询因子清单与摘要），判断因子有效性（IC/十分位 spread/换手/覆盖/分层回测，见 §6）。
 
 ## 2. 全量重建经验（2026-08-16 实战）
 
@@ -95,8 +97,23 @@ factorlab run factor/demo.yaml --universe 600519 --output-dir out/run1
 ```
 
 - **数据源**：`settings.platform_db`（`data/factorlab.duckdb`，`FACTORLAB_PLATFORM_DB` 覆盖）——只读消费，不写数据库。
-- **链路**：平台库 daily 加载（含 adj_factor）→ 停牌补全 → total_return 前向收益 → 复权视图（spec `adjustment`，默认 qfq）→ 因子公式 → process 链 → 周频对齐 → `quant_core` 评估。
-- **落盘**：`results/<name>/panel.parquet`、`weekly.parquet`、`summary.json`（run_factor 摘要 + `evaluation` 字段）。
-- **评估摘要字段**（`summary.json.evaluation`）：`n_weeks`、`ic`（mean/std/t_stat/ir）、`decile_returns`（含十分位 spread）、`turnover`、`coverage`（pct_valid/total_rows/valid_rows）。
-- **常用参数**：`--universe U`（覆盖 spec；缺省回落 `FACTORLAB_DEFAULT_UNIVERSE`）、`--max-memory M`（默认 4GB）、`--output-dir DIR`、`--no-float32`。
+- **链路**：平台库 daily 加载（含 adj_factor）→ 停牌补全 → total_return 前向收益 → 复权视图（spec `adjustment`，默认 qfq）→ 因子公式 → process 链 → 周频对齐 → `quant_core` 评估 → **分层回测**（默认）。
+- **落盘**：`results/<name>/panel.parquet`、`weekly.parquet`、`summary.json`（run_factor 摘要 + `evaluation` 字段）。`--output-dir` 缺省 `results/<name>/`（`FACTORLAB_RESULTS_DIR` 覆盖根目录——`list`/`show` 扫描同一目录）。
+- **评估摘要字段**（`summary.json.evaluation`）：`n_weeks`、`ic`（mean/std/t_stat/ir）、`decile_returns`（含十分位 spread）、`turnover`、`coverage`（pct_valid/total_rows/valid_rows）、`layered_backtest`（分层回测：`n_groups`/`periods`/`net_values`/`summary`/`dates`——`periods` = 评估 `n_weeks`，无效周不计）。
+- **分层回测默认产出**：`--backtest`（默认）在评估后追加分层回测；`--no-backtest` 关闭（快速评估，weekly 落盘不受影响）；`--groups N` 调整档数（默认 10）。
+- **常用参数**：`--universe U`（覆盖 spec；缺省回落 `FACTORLAB_DEFAULT_UNIVERSE`）、`--max-memory M`（默认 4GB）、`--output-dir DIR`、`--no-float32`、`--backtest/--no-backtest`、`--groups N`。
 - 失败以非 0 退出并打印原因（spec 不存在、平台库缺失、universe 无有效股票等）；同批次因子固定同一 universe 再比较（同池计算、同池比较）。
+
+### 因子清单查询（list / show）
+
+run 后的查询闭环（同 `results_dir` 锚定，扫描 `*/summary.json`）：
+
+```bash
+factorlab list        # 全部已保存因子：name | category | dir | ic_mean | spread | run_at（按运行时间倒序）
+factorlab show demo   # 单因子完整摘要：spec 原文 / evaluation.ic / 分层回测各档 + long-short 摘要
+```
+
+- 无结果时 `list` 提示「暂无因子结果（先运行 factorlab run）」；`show` 对不存在的
+  因子或损坏的 summary.json 以非 0 退出并打印原因。
+- 判断因子有效性的快速路径：`list` 看 IC/spread 横向比较 → `show` 看分层回测
+  （D1 年化/夏普、long-short 单调性与盈亏）→ 决定是否值得进一步研究。

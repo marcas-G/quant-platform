@@ -1,9 +1,24 @@
-# FactorLab 接口文档（M1–M4a）
+# FactorLab 接口文档（M1–M4b）
 
-本文件描述 M1–M4a 已交付的 CLI、Spec、因子脚本和 Python API。实现与设计文档
+本文件描述 M1–M4b 已交付的 CLI、Spec、因子脚本和 Python API。实现与设计文档
 冲突时以 `docs/superpowers/specs/2026-08-15-factor-dsl-platform-design.md` 为准。
 
-## 0. M4a 汇总：端到端评估链路
+## 0. M4b 汇总：分层回测与因子清单
+
+M4b 在 M4a 评估链路之上补齐单因子评估闭环：
+
+- **分层回测**（`factorlab.eval.layered.layered_backtest`，见 §4）：周频面板按
+  signal 分档（默认十分位）等权组合累计净值 + long-short + 摘要指标；`factorlab run`
+  默认产出并写入 `summary.json.evaluation.layered_backtest`（`--no-backtest` 关闭，
+  `--groups N` 调整档数）。
+- **CLI `list` / `show`**：已保存因子清单与单因子完整摘要（见 §1）。
+- **M4a 遗留接线**：`pit_qfq` 消费（`run_factor` 传 `asof=spec.date.end`）、
+  `weekly.parquet` 周频对齐面板落盘（替代原日频冗余）、`results_dir` 锚定
+  （`--output-dir` 缺省 `results/<name>/`）。
+- 回测期数口径与 quant_core 评估周数一致：signal/forward 全 null 的周（头部窗口
+  未满/尾部无未来收益）不计入，`bt["periods"] == evaluation["n_weeks"]`（实测）。
+
+## 0.1 M4a 汇总：端到端评估链路
 
 M4a 打通「平台库数据 → 因子计算 → 复权视图 → 周频评估」端到端链路：
 
@@ -32,7 +47,9 @@ M4a 打通「平台库数据 → 因子计算 → 复权视图 → 周频评估�
 |------|------|
 | `factorlab version` | 打印包版本 |
 | `factorlab lint <spec.yaml>` | 校验 Spec 与因子脚本 AST，失败时以非 0 退出 |
-| `factorlab run <spec.yaml> [--universe U] [--max-memory M] [--output-dir DIR] [--no-float32]` | 计算因子并周频评估，落盘 `results/<name>/` |
+| `factorlab run <spec.yaml> [--universe U] [--max-memory M] [--output-dir DIR] [--no-float32] [--backtest/--no-backtest] [--groups N]` | 计算因子并周频评估 + 分层回测（默认），落盘 `results/<name>/` |
+| `factorlab list` | 列出已保存因子与最近运行摘要（扫描 `results_dir/*/summary.json`，按运行时间倒序） |
+| `factorlab show <name>` | 查看单因子完整摘要（spec 原文/评估/分层回测） |
 | `factorlab op list` | 列出已注册算子 |
 | `factorlab op doc <name>` | 查看算子名称、类别、版本与 docstring |
 | `factorlab op add <plugin.py> [--force]` | 校验并注册用户插件；同名冲突需 `--force` |
@@ -48,11 +65,15 @@ M4a 打通「平台库数据 → 因子计算 → 复权视图 → 周频评估�
   缺省时回落 `settings.default_universe`（`FACTORLAB_DEFAULT_UNIVERSE`），
   未配置则用 spec 内联 universe。
 - `--max-memory M`：运行期 DuckDB `memory_limit`（默认 `4GB`）。
-- `--output-dir DIR`：落盘目录，默认 `results/<name>/`。
+- `--output-dir DIR`：落盘目录，默认 `settings.results_dir / <spec.name>`
+  （`results/`，`FACTORLAB_RESULTS_DIR` 可覆盖——`list`/`show` 扫描同一目录）。
 - `--no-float32`：关闭 float32 内存护栏。
-- 落盘：`panel.parquet`（run_factor 日频面板）、`weekly.parquet`（评估输入面板）、
-  `summary.json`（run_factor 摘要 + `evaluation` 字段——quant_core 周频评估结果，
-  CLI 层追加后重写）。
+- `--backtest/--no-backtest`：默认产出分层回测并写入 evaluation；`--no-backtest`
+  关闭（快速评估，weekly 落盘不受影响）。
+- `--groups N`：分层档数（默认 10，`N >= 2`）。
+- 落盘：`panel.parquet`（run_factor 日频面板）、`weekly.parquet`（周频对齐面板——
+  评估/回测输入）、`summary.json`（run_factor 摘要 + `evaluation` 字段——quant_core
+  周频评估 + `layered_backtest` 分层回测，CLI 层追加后重写）。
 - 错误路径以非 0 退出并打印原因：spec 不存在、平台库缺失、universe 无有效股票、
   公式/process 校验失败等。
 
@@ -60,6 +81,26 @@ M4a 打通「平台库数据 → 因子计算 → 复权视图 → 周频评估�
 
 ```bash
 factorlab run factor/demo.yaml --universe 600519 --output-dir out/run1
+factorlab run factor/demo.yaml --groups 5          # 5 档分层回测
+factorlab run factor/demo.yaml --no-backtest       # 仅评估，不产分层回测
+```
+
+### `factorlab list` / `factorlab show <name>`
+
+`run` 后的运维闭环（同 `results_dir` 锚定）：
+
+- `factorlab list`：扫描 `results_dir/*/summary.json`（损坏/不可读的跳过），按运行
+  时间倒序展示 `name | category | dir | ic_mean | spread | run_at`；无结果时提示
+  「暂无因子结果（先运行 factorlab run）」。
+- `factorlab show <name>`：读 `results_dir/<name>/summary.json`，展示 spec 原文、
+  `evaluation.ic` 与 `layered_backtest.summary`（各档 + long-short 摘要指标）；
+  因子不存在或读取失败以非 0 退出并打印原因。
+
+示例：
+
+```bash
+factorlab list
+factorlab show demo
 ```
 
 ## 2. Spec 文件
@@ -90,7 +131,8 @@ formula: |
 - `target`：`forward_return_5d | forward_return_20d`，默认 `forward_return_5d`。
 - `process`：可选字符串列表。
 - `adjustment`：复权视图口径 `raw | qfq | hfq | pit_qfq`，默认 `qfq`（`pit_qfq`
-  预留：需 asof 研究日，审计场景消费）。
+  研究日视角防未来：`run_factor` 装配传 `asof=spec.date.end`，date.end 缺省用面板
+  数据末端日期——见 §4 `run_factor`）。
 - `operators`：可选 DSL 宏映射。`name: {params: [p1, p2, ...], formula: "..."}`，
   `formula` 中按位置引用 `params`；公式内 `name(args)` 调用在计算前展开为
   `formula`（参数 AST 绑定替换，展开先于平台薄封装；公式内 `def` 同名函数优先）。
@@ -235,6 +277,11 @@ def tail_ratio(x: pl.Expr, n: int) -> pl.Expr:
 `adjustment`（复权视图口径兜底 `raw|qfq|hfq|pit_qfq`，默认 `qfq`；spec 声明
 `adjustment` 时以 spec 为准——spec 字段默认 qfq，未声明时即用默认值）。
 
+**pit_qfq 消费（M4b）**：spec `adjustment=pit_qfq` 时复权视图调用
+`view_prices(panel, "pit_qfq", asof=spec.date.end)`——研究日视角（asof 之后无信息）；
+`spec.date.end` 缺省时 `asof` 取面板数据末端日期。`spec.date.end` 为字符串，
+装配内转 `datetime.date`（view_prices 的 asof 只接受 date 对象）。
+
 `FactorResult`：`spec`、`panel`（列：`date, code, signal, forward_return_5d, forward_return_20d, close`，
 其中 close 为复权视图价格）、
 `summary`（含 spec 原文、codes、universe_count、panel_rows、signal_null_ratio、process、
@@ -321,6 +368,50 @@ DuckDB 只读加载；SQL-first 过滤；`date` cast `pl.Date`；数值列 float
   而非 polars dtype 错误。
 - `direction` 原样透传为 int（`0` 实测按 `-1` 处理，属 quant_core 内部语义，桥接层
   不校验）。
+
+### `factorlab.eval.layered.layered_backtest(panel, direction, n_groups=10, cost=0.0) -> dict`
+
+分层回测：每期按 signal 分档，各档 forward 等权平均累积净值；long-short = 最佳档 −
+最差档净值差。输入**周频面板**（date/code/signal/forward_return_5d，即
+`align_weekly` 输出）；`cost` 参数预留（当前不建模调仓成本）。
+
+语义：
+
+- **方向感知**：`direction=1` 时 D1 = signal 最高档，`direction=-1` 时 D1 = signal
+  最低档（rank 降序/升序控制，两者都是"最佳档"）；分档边界 `(rank-1)*n_groups//n`
+  自然处理（n 不整除时末档更小）。
+- **期数口径**：signal/forward 为 null 的行不参与分档与收益（周内部分行 null 的周
+  仍计入，组内等权平均忽略 null）；某周**全部**行无效（头部 ts 窗口未满/尾部无未来
+  收益）则该周不计入 `periods`——与 `evaluate_factor_weekly` 的 `n_weeks` 口径一致
+  （`bt["periods"] == evaluation["n_weeks"]`）。
+- **档空期**：某期某档无股票 → 该档收益记 0（fill_null(0)，净值保持前值，不跳变）。
+- 年化：周收益均值 × 52；年化波动：std × √52；夏普 = 年化收益/年化波动（vol=0 时
+  记 0.0 退化）；最大回撤 = 净值峰值到谷值最大跌幅；胜率 = 周收益 > 0 比例。
+
+返回结构：
+
+```python
+{
+  "n_groups": 10,
+  "periods": 98,                      # 回测期数 = 有效周数（= 评估 n_weeks）
+  "net_values": {                     # 各档净值序列 + long_short（每期一点，长度 = periods）
+    "D1": [1.0, 1.01, ...], ..., "D10": [...],
+    "long_short": [1.0, 1.02, ...],   # D1 − D10 净值差（非组合净值）
+  },
+  "summary": {                        # 每档 + long_short 的摘要指标
+    "D1": {"annual_return": ..., "annual_vol": ..., "sharpe": ...,
+           "max_drawdown": ..., "win_rate": ...},
+    "long_short": {...},
+  },
+  "dates": ["2024-01-05", ...],       # 净值序列对应日期
+}
+```
+
+边界：空面板或过滤后无有效行（signal 全 null）→ `periods=0`、`net_values={}`、
+`summary={}`（不崩溃、不产出平值假净值）；单期面板正常返回（各序列长度 1）。
+
+CLI 消费：`factorlab run` 默认调用并把结果写入
+`summary.json.evaluation.layered_backtest`（`--no-backtest` 关闭、`--groups` 调档数）。
 
 ### `factorlab.data.adjust.view_prices / total_return`
 
@@ -458,7 +549,11 @@ python -m pytest
 当前覆盖 Spec 校验、AST 白名单、算子插件生命周期、最小计算路径、polars_ta 算子族、
 平台薄封装、分区校验与防未来函数、CLI smoke、数据平台单元
 （fetcher/platform_db/rebuild/sparsity/verify/refresh/adjust/audit）与 CLI data
-命令，以及 teajoin 集成测试（token 配置时真实拉取，`tests/test_e2e_data.py`）。
+命令、分层回测（`tests/test_layered.py`：分档/方向翻转/净值数学/long-short/摘要/
+无效周排除/全 null 空回测）、run 参数与 list/show（`tests/test_cli_run.py`、
+`tests/test_cli_list_show.py`）、真实平台库集成（`tests/test_e2e_m4.py`：
+run → 周频评估 + 分层回测，回测期数 = 评估周数），以及 teajoin 集成测试
+（token 配置时真实拉取，`tests/test_e2e_data.py`）。
 
 ## 6. 数据平台（M3b）
 
