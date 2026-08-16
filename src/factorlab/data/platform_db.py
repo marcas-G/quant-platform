@@ -136,11 +136,13 @@ class PlatformDB:
         return report
 
     def _check_calendar_gaps(self, entry: dict) -> None:
-        """日历缺日：trade_cal 开盘日不在 daily 的日期即为缺日。"""
+        """日历缺日：trade_cal 开盘日不在 daily 的日期即为缺日（排除未来公告日）。"""
         with self._connect(read_only=True) as con:
             rows = con.execute("""
                 SELECT DISTINCT c.cal_date FROM trade_cal c
-                WHERE c.is_open = 1 AND c.cal_date NOT IN (SELECT DISTINCT trade_date FROM daily)
+                WHERE c.is_open = 1
+                  AND c.cal_date <= strftime(CURRENT_DATE, '%Y%m%d')
+                  AND c.cal_date NOT IN (SELECT DISTINCT trade_date FROM daily)
             """).fetchall()
         entry["failed"] = len(rows)
         entry["passed"] = len(rows) == 0
