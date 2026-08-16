@@ -105,10 +105,15 @@ def layered_backtest(
             rets = pl.Series(returns_by_group[label])
         summary[label] = _summary_metrics(nv, rets)
 
+    empty_groups = [
+        label for label in (f"D{i}" for i in range(1, n_groups + 1))
+        if all(v == 1.0 for v in net_values[label])
+    ]
     return {
         "n_groups": n_groups,
         "periods": len(dates),
         "net_values": net_values,
         "summary": summary,
         "dates": [str(d) for d in dates],
+        "empty_groups": empty_groups,
     }

@@ -132,13 +132,16 @@ def run_factor_cli(
     settings.default_max_memory = max_memory
     try:
         if spec.target != "forward_return_5d":
-            console.print(f"提示: quant_core 当前固定评估 forward_return_5d（spec.target={spec.target} 暂未接线，M4b 处理）")
+            console.print(f"提示: quant_core 当前固定评估 forward_return_5d（spec.target={spec.target} 暂未接线，后续里程碑处理）")
         result = run_impl(spec, ctx)
         # 周频对齐面板：评估与分层回测的实际输入（evaluate_factor_weekly 内部重复对齐——YAGNI 不优化）
         weekly = align_weekly(result.panel)
         evaluation = evaluate_factor_weekly(result.panel, spec.name, spec.direction)
         if backtest:
-            evaluation["layered_backtest"] = layered_backtest(weekly, spec.direction, n_groups=groups)
+            bt = layered_backtest(weekly, spec.direction, n_groups=groups)
+            evaluation["layered_backtest"] = bt
+            if bt.get("empty_groups"):
+                console.print(f"提示: 档位 {bt['empty_groups']} 全期无股票——universe 过小或 --groups 过大")
     except (ValueError, FileNotFoundError, FactorDSLError) as exc:
         console.print(f"错误: {exc}")
         raise typer.Exit(code=1) from exc
@@ -213,6 +216,13 @@ def show_factor(name: str) -> None:
         raise typer.Exit(code=1) from exc
     console.print(f"=== {name} ===")
     console.print(f"spec: {summary.get('spec_yaml', '')}")
+    console.print(f"universe: {summary.get('universe_count')} 只 | "
+                  f"{summary.get('date_start')} ~ {summary.get('date_end')} | "
+                  f"rows={summary.get('panel_rows')} | null_ratio={summary.get('signal_null_ratio')}")
+    ev = summary.get('evaluation', {})
+    console.print(f"IC: {ev.get('ic')}")
+    console.print(f"十分位 spread: {ev.get('decile_returns', {}).get('spread')}")
+    console.print(f"换手: {ev.get('turnover')} | 覆盖: {ev.get('coverage')}")
     console.print(f"评估: ic={summary.get('evaluation', {}).get('ic')}")
     console.print(f"分层回测: {summary.get('evaluation', {}).get('layered_backtest', {}).get('summary', '无')}")
 
