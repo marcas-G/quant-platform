@@ -30,7 +30,7 @@ def test_web_index_lists_real_factors(real_results_dir):
     # 列表页：真实 3 个因子全部展示（含 IC 摘要列）
     resp = TestClient(create_app(real_results_dir)).get("/")
     assert resp.status_code == 200
-    for name in ("m4b_smoke", "acceptance_vol_skew", "demo_vol_skew"):
+    for name in ("m4b_smoke", "demo_vol_skew", "momentum_20d"):  # 目录名与 summary.name 一致的可稳定断言
         assert name in resp.text
 
 
