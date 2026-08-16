@@ -165,19 +165,6 @@ def expand_user_macros(source: str, operators: dict[str, "OperatorMacro"]) -> st
         raise FactorDSLError(f"语法错误: {exc.msg}", exc.lineno, exc.offset) from exc
     defined = {n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
 
-    def _bind_names(node: ast.AST, binding: dict[str, ast.expr]) -> ast.AST:
-        """深度替换表达式树中的参数名 Name 为调用实参（每处实参深拷贝）。"""
-        for field, value in ast.iter_fields(node):
-            if isinstance(value, ast.AST):
-                setattr(node, field, _bind_names(value, binding))
-            elif isinstance(value, list):
-                for i, item in enumerate(value):
-                    if isinstance(item, ast.AST):
-                        value[i] = _bind_names(item, binding)
-        if isinstance(node, ast.Name) and node.id in binding:
-            return copy.deepcopy(binding[node.id])
-        return node
-
     class _UserMacroExpander(ast.NodeTransformer):
         def visit_Call(self, node: ast.Call) -> ast.expr:
             node = self.generic_visit(node)
@@ -207,3 +194,158 @@ def expand_user_macros(source: str, operators: dict[str, "OperatorMacro"]) -> st
             return expanded
 
     return ast.unparse(_UserMacroExpander().visit(tree))
+
+
+def _bind_names(node: ast.AST, binding: dict[str, ast.expr]) -> ast.AST:
+    """深度替换表达式树中的参数名 Name 为绑定表达式（返回副本，不修改入参）。
+
+    每处实参深拷贝——同一表达式可被重复绑定而不互相污染。
+    """
+    node = copy.deepcopy(node)
+    for field, value in ast.iter_fields(node):
+        if isinstance(value, ast.AST):
+            setattr(node, field, _bind_names(value, binding))
+        elif isinstance(value, list):
+            for i, item in enumerate(value):
+                if isinstance(item, ast.AST):
+                    value[i] = _bind_names(item, binding)
+    if isinstance(node, ast.Name) and node.id in binding:
+        return copy.deepcopy(binding[node.id])
+    return node
+
+
+def _rename_names(node: ast.AST, mapping: dict[str, str]) -> ast.AST:
+    """深度替换表达式树中的 Name 为映射后的新名（返回副本，不修改入参）。"""
+    node = copy.deepcopy(node)
+    for field, value in ast.iter_fields(node):
+        if isinstance(value, ast.AST):
+            setattr(node, field, _rename_names(value, mapping))
+        elif isinstance(value, list):
+            for i, item in enumerate(value):
+                if isinstance(item, ast.AST):
+                    value[i] = _rename_names(item, mapping)
+    if isinstance(node, ast.Name) and node.id in mapping:
+        node.id = mapping[node.id]
+    return node
+
+
+# ---------------------------------------------------------------------------
+# def 内联展开：formula 自由代码（def 自定义算子，含窗口算子）——函数体经参数
+# 绑定后提升到顶层，窗口算子成为顶层 ts_* 调用，expr_codegen 分区/防未来自动
+# 正确（def 被当作黑盒时窗口语义会在全表泄漏）。
+# ---------------------------------------------------------------------------
+
+
+def inline_defs(source: str) -> str:
+    """公式内 def 内联展开：窗口算子合法（提升到顶层）、多语句函数体、
+    def 调 def 递归展开、递归 def 拒绝。展开后删除所有 def 节点。
+
+    每次调用独立实例化：函数体中间变量以唯一名 `_inline_<def>_<调用序>_<语句序>`
+    提升到顶层，多次调用之间变量/参数不串扰；def 调 def 自底向上递归展开
+    （不依赖源码定义顺序）。边界：def 名以下划线开头（中间变量约定）、递归
+    （含间接递归 a→b→a）拒绝；函数体仅支持单目标 Name 赋值与单个带返回值的
+    return；参数支持位置缺省值，*args/**kwargs 与关键字调用拒绝。
+    """
+    try:
+        tree = ast.parse(source)
+    except SyntaxError as exc:
+        raise FactorDSLError(f"语法错误: {exc.msg}", exc.lineno, exc.offset) from exc
+    defs = {n.name: n for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
+    if not defs:
+        return source
+    for name, fn in defs.items():
+        if name.startswith("_"):
+            raise FactorDSLError(
+                f"def 名不能以下划线开头: {name}（_ 前缀为中间变量约定）",
+                fn.lineno,
+                fn.col_offset,
+            )
+    for name, fn in defs.items():
+        body_names = {n.id for n in ast.walk(fn) if isinstance(n, ast.Name)}
+        if name in body_names:
+            raise FactorDSLError(f"递归 def 不支持内联: {name}", fn.lineno, fn.col_offset)
+
+    hoists: list[ast.stmt] = []
+    counter = {"n": 0}
+    expanding: set[str] = set()  # 当前展开链——间接递归检测
+
+    def _expand_calls(node: ast.AST) -> ast.AST:
+        """展开子树中的 def 调用（自底向上：先展开嵌套调用，再展开外层）。"""
+        for field, value in ast.iter_fields(node):
+            if isinstance(value, ast.AST):
+                setattr(node, field, _expand_calls(value))
+            elif isinstance(value, list):
+                for i, item in enumerate(value):
+                    if isinstance(item, ast.AST):
+                        value[i] = _expand_calls(item)
+        if isinstance(node, ast.Call) and isinstance(node.func, ast.Name) and node.func.id in defs:
+            return _inline_call(node)
+        return node
+
+    def _inline_call(node: ast.Call) -> ast.expr:
+        """展开一次 def 调用：参数绑定（含位置缺省值）后展开函数体，替换调用点。"""
+        fn = defs[node.func.id]
+        if fn.name in expanding:
+            raise FactorDSLError(f"递归 def 不支持内联: {fn.name}", fn.lineno, fn.col_offset)
+        if fn.args.vararg or fn.args.kwarg or fn.args.kwonlyargs:
+            raise FactorDSLError(
+                f"def {fn.name} 不支持 *args/**kwargs 参数", fn.lineno, fn.col_offset)
+        if node.keywords:
+            raise FactorDSLError(
+                f"def {fn.name} 调用不支持关键字参数", node.lineno, node.col_offset)
+        params = [a.arg for a in fn.args.args]
+        defaults = fn.args.defaults
+        n_required = len(params) - len(defaults)
+        if not n_required <= len(node.args) <= len(params):
+            raise FactorDSLError(
+                f"def {fn.name} 需要 {len(params)} 个参数，实际 {len(node.args)} 个",
+                node.lineno,
+                node.col_offset,
+            )
+        args = list(node.args)
+        for i in range(len(args), len(params)):
+            args.append(copy.deepcopy(defaults[i - n_required]))
+        counter["n"] += 1
+        suffix = counter["n"]
+        expanding.add(fn.name)
+        try:
+            return _expand_body(
+                fn, dict(zip(params, args)), suffix, node.lineno, node.col_offset)
+        finally:
+            expanding.remove(fn.name)
+
+    def _expand_body(fn: ast.FunctionDef, binding: dict[str, ast.expr], suffix: int,
+                     lineno: int, col_offset: int) -> ast.expr:
+        """展开函数体：中间变量赋值提升（唯一命名），return 表达式替换调用点。"""
+        body = [s for s in fn.body if not isinstance(s, ast.Return)]
+        rets = [s for s in fn.body if isinstance(s, ast.Return)]
+        if not rets or len(rets) > 1 or any(r.value is None for r in rets):
+            raise FactorDSLError(
+                f"def {fn.name} 必须恰有一个带返回值的 return", fn.lineno, fn.col_offset)
+        mapping: dict[str, str] = {}
+        for i, stmt in enumerate(body):
+            if not (isinstance(stmt, ast.Assign) and len(stmt.targets) == 1
+                    and isinstance(stmt.targets[0], ast.Name)):
+                raise FactorDSLError(
+                    f"def {fn.name} 内仅支持赋值与 return", fn.lineno, stmt.lineno)
+            name = stmt.targets[0].id
+            new_name = f"_inline_{fn.name}_{suffix}_{i}"
+            bound = _bind_names(stmt.value, binding)   # 参数绑定
+            bound = _rename_names(bound, mapping)      # 体内引用先前中间变量
+            bound = _expand_calls(bound)               # def 调 def（体内嵌套调用）
+            hoists.append(ast.fix_missing_locations(ast.Assign(
+                targets=[ast.Name(id=new_name, ctx=ast.Store())], value=bound)))
+            mapping[name] = new_name
+        expr = _bind_names(rets[0].value, binding)
+        expr = _rename_names(expr, mapping)
+        expr = _expand_calls(expr)
+        expr = ast.fix_missing_locations(expr)
+        expr.lineno, expr.col_offset = lineno, col_offset
+        return expr
+
+    for stmt in tree.body:
+        if isinstance(stmt, ast.FunctionDef):
+            continue
+        _expand_calls(stmt)
+    tree.body = hoists + [s for s in tree.body if not isinstance(s, ast.FunctionDef)]
+    return ast.unparse(tree)
