@@ -1,3 +1,4 @@
+import datetime
 import json
 from pathlib import Path
 
@@ -151,6 +152,69 @@ def run_factor_cli(
     ic = evaluation.get("ic", {})
     console.print(f"{spec.name}: n_weeks={evaluation.get('n_weeks')} "
                   f"ic_mean={ic.get('mean')} spread={evaluation.get('decile_returns', {}).get('spread', {}).get('ret')}")
+
+
+def _run_at(summary: dict, summary_path: Path) -> tuple[str, float]:
+    """summary 运行时间的 (展示值, 排序键)：timestamp 字段优先；
+    缺失/不可解析时回退 summary.json 文件 mtime（M4a run 落盘无 timestamp）。"""
+    ts = summary.get("timestamp")
+    if ts:
+        try:
+            return str(ts), datetime.datetime.fromisoformat(str(ts)).timestamp()
+        except ValueError:
+            pass
+    mtime = summary_path.stat().st_mtime
+    return datetime.datetime.fromtimestamp(mtime).isoformat(timespec="seconds"), mtime
+
+
+@app.command("list")
+def list_factors() -> None:
+    """列出已保存因子与最近运行摘要（results_dir/*/summary.json）。"""
+    results_dir = settings.results_dir
+    if not results_dir.is_dir():
+        console.print("暂无因子结果（先运行 factorlab run）")
+        return
+    rows = []
+    for summary_path in sorted(results_dir.glob("*/summary.json")):
+        try:
+            summary = json.loads(summary_path.read_text(encoding="utf-8"))
+        except (json.JSONDecodeError, OSError):
+            continue  # 损坏/不可读的 summary 跳过
+        ev = summary.get("evaluation", {})
+        run_at, sort_key = _run_at(summary, summary_path)
+        rows.append({
+            "name": summary.get("name", summary_path.parent.name),
+            "category": summary.get("category", ""),
+            "direction": summary.get("direction", ""),
+            "ic_mean": ev.get("ic", {}).get("mean"),
+            "spread": ev.get("decile_returns", {}).get("spread", {}).get("ret"),
+            "run_at": run_at,
+            "_sort": sort_key,
+        })
+    if not rows:
+        console.print("暂无因子结果（先运行 factorlab run）")
+        return
+    for row in sorted(rows, key=lambda r: r["_sort"], reverse=True):
+        console.print(f"{row['name']} | {row['category']} | dir={row['direction']} "
+                      f"| ic={row['ic_mean']} | spread={row['spread']} | {row['run_at']}")
+
+
+@app.command("show")
+def show_factor(name: str) -> None:
+    """查看单因子完整摘要（spec 原文/评估/分层回测）。"""
+    summary_path = settings.results_dir / name / "summary.json"
+    if not summary_path.exists():
+        console.print(f"错误: 因子 {name} 不存在（{settings.results_dir / name}）")
+        raise typer.Exit(code=1)
+    try:
+        summary = json.loads(summary_path.read_text(encoding="utf-8"))
+    except (json.JSONDecodeError, OSError) as exc:
+        console.print(f"错误: 因子 {name} 的 summary.json 读取失败: {exc}")
+        raise typer.Exit(code=1) from exc
+    console.print(f"=== {name} ===")
+    console.print(f"spec: {summary.get('spec_yaml', '')}")
+    console.print(f"评估: ic={summary.get('evaluation', {}).get('ic')}")
+    console.print(f"分层回测: {summary.get('evaluation', {}).get('layered_backtest', {}).get('summary', '无')}")
 
 
 @data_app.command("rebuild")
