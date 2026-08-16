@@ -40,5 +40,5 @@ where = ["src"]
 testpaths = ["tests"]
 pythonpath = ["src"]
 markers = [
-    "integration: 依赖真实 quant.duckdb 的集成测试（库缺失时跳过）",
+    "integration: 依赖真实平台库 factorlab.duckdb 的集成测试（库缺失时跳过）",
 ]

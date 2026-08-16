@@ -1,3 +1,4 @@
+import json
 from pathlib import Path
 
 import typer
@@ -95,6 +96,50 @@ def _final_db() -> PlatformDB:
 
 def _client() -> TeaJoinClient:
     return TeaJoinClient(token=settings.teajoin_token, base_url=settings.teajoin_base_url)
+
+
+@app.command("run")
+def run_factor_cli(
+    spec_path: Path,
+    universe: str | None = None,
+    max_memory: str = "4GB",
+    output_dir: Path | None = None,
+    float32: bool = True,
+) -> None:
+    """计算因子并评估（平台库）。--universe 默认 FACTORLAB_DEFAULT_UNIVERSE。"""
+    from factorlab.engine.compute import RunContext, run_factor as run_impl
+    from factorlab.eval.rust_ic import evaluate_factor_weekly
+
+    try:
+        spec = load_spec(spec_path)
+    except FileNotFoundError as exc:
+        console.print(f"错误: {exc}")
+        raise typer.Exit(code=1) from exc
+    ctx = RunContext(
+        db_path=settings.platform_db,
+        output_dir=output_dir or (Path("results") / spec.name),
+        universe_override=universe or settings.default_universe,
+        float32=float32,
+    )
+    # load_daily 在调用时读取 settings.default_max_memory——临时覆盖并在结束后恢复
+    original_memory = settings.default_max_memory
+    settings.default_max_memory = max_memory
+    try:
+        result = run_impl(spec, ctx)
+        evaluation = evaluate_factor_weekly(result.panel, spec.name, spec.direction)
+    except (ValueError, FileNotFoundError, FactorDSLError) as exc:
+        console.print(f"错误: {exc}")
+        raise typer.Exit(code=1) from exc
+    finally:
+        settings.default_max_memory = original_memory
+    # run_factor 已落盘 panel.parquet/summary.json（无 evaluation）；CLI 追加评估结果并重写
+    result.summary["evaluation"] = evaluation
+    result.panel.write_parquet(ctx.output_dir / "weekly.parquet")  # 评估输入面板
+    (ctx.output_dir / "summary.json").write_text(
+        json.dumps(result.summary, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
+    ic = evaluation.get("ic", {})
+    console.print(f"{spec.name}: n_weeks={evaluation.get('n_weeks')} "
+                  f"ic_mean={ic.get('mean')} spread={evaluation.get('decile_returns', {}).get('spread', {}).get('ret')}")
 
 
 @data_app.command("rebuild")

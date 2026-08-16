@@ -11,10 +11,35 @@
 |------|------|
 | `factorlab version` | 打印包版本 |
 | `factorlab lint <spec.yaml>` | 校验 Spec 与因子脚本 AST，失败时以非 0 退出 |
+| `factorlab run <spec.yaml> [--universe U] [--max-memory M] [--output-dir DIR] [--no-float32]` | 计算因子并周频评估，落盘 `results/<name>/` |
 | `factorlab op list` | 列出已注册算子 |
 | `factorlab op doc <name>` | 查看算子名称、类别、版本与 docstring |
 | `factorlab op add <plugin.py> [--force]` | 校验并注册用户插件；同名冲突需 `--force` |
 | `factorlab op remove <name>` | 禁用用户插件，保留已计算历史结果 |
+
+### `factorlab run <spec.yaml>`
+
+计算因子并评估的端到端命令（平台库数据源）：
+
+- 数据源：`settings.platform_db`（`data/factorlab.duckdb`，可用 `FACTORLAB_PLATFORM_DB`
+  环境变量覆盖）。
+- `--universe U`：覆盖 spec 的 universe（6 位代码或 universe 引用名/文件路径）；
+  缺省时回落 `settings.default_universe`（`FACTORLAB_DEFAULT_UNIVERSE`），
+  未配置则用 spec 内联 universe。
+- `--max-memory M`：运行期 DuckDB `memory_limit`（默认 `4GB`）。
+- `--output-dir DIR`：落盘目录，默认 `results/<name>/`。
+- `--no-float32`：关闭 float32 内存护栏。
+- 落盘：`panel.parquet`（run_factor 日频面板）、`weekly.parquet`（评估输入面板）、
+  `summary.json`（run_factor 摘要 + `evaluation` 字段——quant_core 周频评估结果，
+  CLI 层追加后重写）。
+- 错误路径以非 0 退出并打印原因：spec 不存在、平台库缺失、universe 无有效股票、
+  公式/process 校验失败等。
+
+示例：
+
+```bash
+factorlab run factor/demo.yaml --universe 600519 --output-dir out/run1
+```
 
 ## 2. Spec 文件
 
@@ -198,11 +223,23 @@ adjustment、float32）。
 
 `factors`/`combine` 多因子组合暂不支持（NotImplementedError，M4 实现）。
 
+### `factorlab.eval.rust_ic.evaluate_factor_weekly(panel, factor_name, direction, target="forward_return_5d") -> dict`
+
+日频面板 → 周频对齐（ISO 周最后交易日）→ Rust `quant_core.evaluate_factor`
+评估。输入须含 `date/code/signal/target` 列，缺列抛 `ValueError`；`signal`/`target`
+为 null 的行在桥接层过滤（停牌补全行、尾部无未来收益行不进入评估）。
+
+返回 dict：`factor`、`target`、`n_weeks`、`ic`（mean/std/t_stat/ir 等）、
+`decile_returns`（含 spread）、`turnover`、`coverage`（pct_valid/total_rows/valid_rows）。
+空面板（列齐全）不崩溃，返回全 nan 结构（`n_weeks=0`）。`direction` 透传
+`1/-1`（翻转信号方向）。
+
 ### `factorlab.data.universe.resolve_codes(spec, db, override=None, settings=settings) -> list[str]`
 
 universe 解析优先级：`override` > spec 内联（`ref` 命名引用 / `codes` / `rules`）。
 返回纯数字代码列表（`daily.code` 格式）。命名引用查 `~/.factorlab/universes/<name>.yaml`
-（或直接给文件路径）。`default_universe`（`FACTORLAB_DEFAULT_UNIVERSE`）为 M4 CLI 预留，尚未接线。
+（或直接给文件路径）。`default_universe`（`FACTORLAB_DEFAULT_UNIVERSE`）由
+`factorlab run --universe` 缺省时消费（M4a 已接线）。
 
 **挖掘约定**：同批次因子固定同一 universe（`--universe` 或共享 spec 引用），同池计算、同池比较。
 

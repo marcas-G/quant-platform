@@ -10,41 +10,47 @@ from factorlab.engine.compute import RunContext, _formula_columns, run_factor
 from factorlab.spec import load_spec
 
 _DATES = ["20240102", "20240103", "20240104", "20240105", "20240108", "20240109"]
+# 扩展交易日（>6 天场景：周频评估需要信号与 forward 同时有效的行，如 CLI run 测试）
+_EXTRA_DATES = ["20240110", "20240111", "20240112", "20240115", "20240116", "20240117"]
 # 平台库风格代码：ts_code 带后缀（000001.SZ），symbol 为纯数字桥梁
 _A = ("000001", "000001.SZ", 10.0)
 _B = ("600519", "600519.SH", 20.0)
 
 
-def build_db(tmp_path, ex_date: bool = False):
+def build_db(tmp_path, ex_date: bool = False, n_days: int = 6):
     """平台库风格假库：trade_date 'YYYYMMDD'/ts_code 带后缀/vol（参考 test_source.py 模式）；
     daily/adj_factor/daily_basic/stock_basic/stock_st/trade_cal 齐全。
-    ex_date=True 时 000001 第 3 天（01-04）除权：close 11→8、adj 1.0→1.5。"""
+    ex_date=True 时 000001 第 3 天（01-04）除权：close 11→8、adj 1.0→1.5。
+    n_days 可扩展到 _DATES+_EXTRA_DATES 前缀（ex_date 固定 6 天）。"""
+    if ex_date and n_days != 6:
+        raise ValueError("ex_date 除权序列固定为 6 天")
+    dates = (_DATES + _EXTRA_DATES)[:n_days]
     db = duckdb.connect(tmp_path / "q.duckdb")
     db.execute("CREATE TABLE daily (ts_code VARCHAR, trade_date VARCHAR, open DOUBLE, high DOUBLE, low DOUBLE, close DOUBLE, pre_close DOUBLE, change DOUBLE, pct_chg DOUBLE, vol DOUBLE, amount DOUBLE)")
     for symbol, ts_code, base in (_A, _B):
-        closes = [base + i + 1 for i in range(len(_DATES))]
+        closes = [base + i + 1 for i in range(len(dates))]
         if ex_date and symbol == "000001":
             closes = [10.0, 11.0, 8.0, 9.0, 12.0, 13.0]
-        for i, d in enumerate(_DATES):
+        for i, d in enumerate(dates):
             db.execute("INSERT INTO daily VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                        (ts_code, d, closes[i] - 1.0, closes[i] - 0.5, closes[i] - 1.5,
                         closes[i], closes[i] - 1.0, 1.0, 0.01, 1000.0, 1e6))
     db.execute("CREATE TABLE adj_factor (ts_code VARCHAR, trade_date VARCHAR, adj_factor DOUBLE)")
     for symbol, ts_code, base in (_A, _B):
-        adjs = [1.0] * len(_DATES)
+        adjs = [1.0] * len(dates)
         if ex_date and symbol == "000001":
             adjs = [1.0, 1.0, 1.5, 1.5, 1.5, 1.5]
-        for i, d in enumerate(_DATES):
+        for i, d in enumerate(dates):
             db.execute("INSERT INTO adj_factor VALUES (?, ?, ?)", (ts_code, d, adjs[i]))
     db.execute("CREATE TABLE stock_basic (symbol VARCHAR, ts_code VARCHAR, exchange VARCHAR, list_date VARCHAR, industry VARCHAR)")
     db.execute("INSERT INTO stock_basic VALUES ('000001', '000001.SZ', 'SZSE', '19910101', '银行'), ('600519', '600519.SH', 'SSE', '20010101', '白酒')")
     db.execute("CREATE TABLE daily_basic (trade_date VARCHAR, ts_code VARCHAR, total_mv DOUBLE)")
-    for d in _DATES:
+    for d in dates:
         db.execute("INSERT INTO daily_basic VALUES (?, '000001.SZ', 100.0)", (d,))
         db.execute("INSERT INTO daily_basic VALUES (?, '600519.SH', 200.0)", (d,))
     db.execute("CREATE TABLE stock_st (ts_code VARCHAR, trade_date VARCHAR)")
     db.execute("CREATE TABLE trade_cal (cal_date VARCHAR, is_open INT)")
-    for d in _DATES:
+    for d in dates:
         db.execute("INSERT INTO trade_cal VALUES (?, 1)", (d,))
     db.close()
 

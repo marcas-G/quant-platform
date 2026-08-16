@@ -715,7 +715,7 @@ git commit -m "feat: bridge quant_core evaluation with weekly alignment"
 - Modify: `src/factorlab/cli/main.py`
 - Test: `tests/test_cli_run.py`、`tests/test_e2e_m4.py`
 
-- [ ] **Step 1: 测试**
+- [x] **Step 1: 测试**
 
 ```python
 def test_run_help():
@@ -749,11 +749,11 @@ def test_e2e_real_factor_run():
     assert summary["evaluation"]["coverage"]["pct_valid"] > 0.5
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Expected: FAIL — run 命令不存在。
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 `src/factorlab/cli/main.py`：
 
@@ -787,12 +787,12 @@ def run_factor_cli(spec_path: Path, universe: str | None = None,
 （注意 `run_factor` 落盘逻辑（M3a 的 panel.parquet/summary.json）保留；CLI 追加 weekly.parquet
 与 evaluation 字段。落盘路径 `results/<name>/`。）
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `pytest tests/test_cli_run.py -v`
 Expected: PASS。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
 git add src/factorlab/cli/main.py tests/test_cli_run.py tests/test_e2e_m4.py
