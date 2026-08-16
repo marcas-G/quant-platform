@@ -101,7 +101,7 @@ def run_factor(spec: FactorSpec, ctx: RunContext) -> FactorResult:
     """装配链路：universe → 加载（含 adj_factor）→ 停牌补全 → 前向收益（total_return，
     raw close×adj，必须先于复权视图）→ 复权视图（因子计算口径）→ 因子 → process → 落盘。"""
     if spec.factors is not None:
-        raise NotImplementedError("多因子 factors/combine 组合尚未支持（M3a 仅支持单公式因子）")
+        raise NotImplementedError("多因子 factors/combine 组合不在平台范围（平台定位单因子计算与评估）")
     # spec.operators 内联宏先展开（用户宏公式可引用平台薄封装），展开后公式再校验：
     # 宏公式内的语法/禁止调用错误同样在打开数据库前暴露
     formula = spec.formula or ""

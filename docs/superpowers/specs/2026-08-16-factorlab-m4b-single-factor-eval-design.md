@@ -123,9 +123,11 @@ factorlab run <spec> [--backtest/--no-backtest] [--groups 10] ...
 - **集成**（真实平台库）：run → layered_backtest 产出合理（净值序列长度 = 周数、
   摘要指标有限值）。
 
-## 6. 明确不做（M4b）
+## 6. 明确不做（平台范围外）
 
-- 多因子：compare（因子对比）、composite（组合合成）、spec 内 factors/combine。
+- **多因子不在平台范围**（用户决策 2026-08-16）：compare（因子对比）、composite（组合合成）、
+  spec 内 factors/combine——平台定位为单因子计算与评估；spec 内 factors/combine 语法
+  保留校验但执行时明确拒绝（NotImplementedError）。
 - 调仓成本建模（cost 参数预留，默认 0）。
 - Web 可视化（M5）。
 - 指数基准对比/超额收益（净值相对指标已够，基准留 M5 可视化）。

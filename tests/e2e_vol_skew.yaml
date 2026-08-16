@@ -1,0 +1,19 @@
+
+name: demo_vol_skew
+category: custom
+direction: 1
+universe:
+  codes: ["000001.SZ", "600519.SH", "000002.SZ", "600036.SH", "601318.SH"]
+date:
+  start: "2024-01-01"
+  end: "2025-12-31"
+process:
+  - winsorize(quantile=0.99)
+  - standardize()
+  - neutralize(by=market)
+formula: |
+  from polars_ta.prefix.wq import ts_mean, ts_std_dev, ts_delay
+  _ret = ts_delay(close, 1)
+  _vol = ts_std_dev(_ret, 20)
+  _mom = ts_mean(close, 20)
+  signal = -_vol + ts_delay(_mom, 1)

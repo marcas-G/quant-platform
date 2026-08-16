@@ -288,9 +288,8 @@ formula: |
   signal = rank(momentum(close, 5) - zscore(_vol)) - 0.5
 ```
 
-多因子组合时，`formula` 可替换为 `factors:` 列表，每个元素含 `name`、`formula`、
-可选 `process`；配合 `combine: { method: ic_weight | equal_weight | weight_sum, weights: [...] }`
-生成复合因子并评估。
+> **多因子组合（factors/combine）不在平台范围**（2026-08-16 决策）：平台定位单因子
+> 计算与评估；`factors:` 语法保留校验但执行时明确拒绝（NotImplementedError）。
 
 字段约束：
 
@@ -426,8 +425,8 @@ v1 指标：
 - `turnover`：月度/季度换手率。
 - `coverage`：本地计算（有效行占比、股票覆盖数）。
 - `layered_backtest`：分层组合累计净值曲线（等权，含 long-short）。
-- `factor_compare`：多个因子 IC 相关矩阵与两两对比报告。
-- `composite`：IC 加权/等权合成复合因子并评估。
+- ~~`factor_compare`：多个因子 IC 相关矩阵与两两对比报告。~~（多因子不在平台范围）
+- ~~`composite`：IC 加权/等权合成复合因子并评估。~~（多因子不在平台范围）
 
 指标经注册表按 name 调用；后续信息增益率、残差分析等作为新 Metric 挂入，不改主流程。
 评估目标（前向收益）来源：v1 从本地 `daily` 的 close 自行计算并周频对齐；
@@ -443,7 +442,7 @@ v1 指标：
 | `factorlab lint <spec>` | 预检 YAML/AST/算子，报告源码位置与相似名称建议 |
 | `factorlab list` | 列出已保存因子与最近运行 |
 | `factorlab show <name>` | 查看某因子摘要与指标 |
-| `factorlab compare <name...>` | 多因子对比报告与相关矩阵 |
+| ~~`factorlab compare <name...>`~~ | ~~多因子对比报告与相关矩阵~~（多因子不在平台范围） |
 | `factorlab serve [--port]` | 启动 Web 可视化 |
 | `factorlab data refresh [--start] [--end]` | teajoin 增量补数据到平台缓存库 |
 | `factorlab op list` | 列出注册算子 |
@@ -511,7 +510,7 @@ v1 指标：
 1. M1：项目骨架 + YAML Spec 模型 + AST 白名单校验 + `expr_codegen` 接入 + 算子注册表。
 2. M2：`polars_ta` 算子适配/别名 + TS/CS/GP 分区验证 + 防未来函数。
 3. M3：数据层（DuckDB 只读 + teajoin 增量）+ 前向收益 + 处理管线。
-4. M4：评估指标 + 分层回测 + 因子对比 + 组合合成 + CLI 全命令。
+4. M4：评估指标 + 分层回测 + CLI 全命令（多因子对比/组合合成不在平台范围）。
 5. M5：Web 可视化。
 6. M6：Alpha101/191 与 Vibe-Trading Alpha Zoo 语料对拍 + TA 对拍 + 文档。
 

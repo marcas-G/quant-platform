@@ -289,7 +289,7 @@ adjustment、float32）。
 
 补全面板按交易日历截断到今天（trade_cal 含未来公告日，不产生未来 null 行）。
 
-`factors`/`combine` 多因子组合暂不支持（NotImplementedError，M4 实现）。
+`factors`/`combine` 多因子组合不在平台范围（平台定位单因子计算与评估；语法保留校验但执行时明确拒绝）。
 
 ### `factorlab.eval.rust_ic.evaluate_factor_weekly(panel, factor_name, direction, target="forward_return_5d") -> dict`
 
