@@ -92,6 +92,14 @@ def create_app(results_dir: Path) -> FastAPI:
     """构建只读 Web 可视化应用（因子列表 + 详情）。results_dir 显式传入（可测性）。"""
     app = FastAPI(title="FactorLab")
     templates = Jinja2Templates(directory=str(_TEMPLATES_DIR))
+
+    @app.middleware("http")
+    async def no_cache(request, call_next):
+        """页面与图表数据不缓存（因子结果会更新）。"""
+        from starlette.responses import Response
+        response = await call_next(request)
+        response.headers["Cache-Control"] = "no-store"
+        return response
     app.mount("/static", StaticFiles(directory=str(Path(__file__).parent / "static")), name="static")
 
     @app.get("/", response_class=HTMLResponse)
