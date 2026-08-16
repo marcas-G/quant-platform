@@ -385,7 +385,11 @@ token 来自 `FACTORLAB_TEAJOIN_TOKEN`；端点 `FACTORLAB_TEAJOIN_BASE_URL`
 （默认 `https://teajoin.com`，根路径）。构造 `TeaJoinClient(token="")` 不报错，
 缺 token 由调用方（`rebuild_all` 抛 `ValueError`、CLI 打印错误并退出）处理。
 
-### CLI：`factorlab data rebuild|refresh|verify`
+### CLI：`factorlab data rebuild|update|refresh|verify`
+
+`data update`：一键更新链路（手动触发）——行情 7 表增量 + 指数增量
+（`refresh_indexes`：index_daily 到最新交易日、index_weight 补新月份）+ 自动 verify
++ 失败报告。操作经验与故障排查见 `docs/data-ops-playbook.md`。
 
 | 命令 | 说明 |
 |------|------|
