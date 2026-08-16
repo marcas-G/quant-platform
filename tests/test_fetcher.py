@@ -266,3 +266,31 @@ def test_fetch_keeps_real_string_columns(monkeypatch):
     assert df.schema["name"] == pl.String
     assert df["name"].to_list() == ["平安银行", "万科A"]
     assert df["industry"].to_list() == ["银行", None]
+
+
+def test_fetch_all_empty_string_column_stays_string(monkeypatch):
+    """全空串列不得被 cast 数值（如 suspend_timing 早期全空、后期为字符串）。"""
+    items = [["000001.SZ", "20240102", ""], ["000002.SZ", "20240102", ""]]
+    fields = ["ts_code", "trade_date", "suspend_timing"]
+
+    def responder(url, json=None, timeout=30):
+        return _ok_response(items=items, fields=fields)
+
+    client = _client(monkeypatch, responder)
+    df = client.fetch("suspend_d", {"trade_date": "20240102"})
+    assert df.schema["suspend_timing"] == pl.String
+    assert df["suspend_timing"].null_count() == 2  # 空串 → null，类型保持 String
+
+
+def test_fetch_mixed_numeric_and_empty_strings_cast_to_float(monkeypatch):
+    """数值与空串混合列：非空值全数值 → cast Float64（空串转 null）。"""
+    items = [["000001.SZ", "20240102", "10.5"], ["000002.SZ", "20240102", ""]]
+    fields = ["ts_code", "trade_date", "amount"]
+
+    def responder(url, json=None, timeout=30):
+        return _ok_response(items=items, fields=fields)
+
+    client = _client(monkeypatch, responder)
+    df = client.fetch("daily", {"trade_date": "20240102"})
+    assert df.schema["amount"] == pl.Float64
+    assert df["amount"].to_list() == [10.5, None]

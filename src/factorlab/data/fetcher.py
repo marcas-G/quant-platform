@@ -92,11 +92,11 @@ class TeaJoinClient:
                     replaced = frame[c].replace("", None)
                     if replaced.null_count() == frame[c].null_count():
                         continue  # 无空串，原样保留（避免把 trade_date/symbol 等标识列转成数值）
-                    casted = replaced.cast(pl.Float64, strict=False)
-                    if casted.null_count() == replaced.null_count():
-                        frame = frame.with_columns(casted.alias(c))  # 全数值列 → Float64
+                    non_null = replaced.drop_nulls()
+                    if non_null.len() > 0 and non_null.cast(pl.Float64, strict=False).null_count() == 0:
+                        frame = frame.with_columns(replaced.cast(pl.Float64).alias(c))  # 非空值全数值 → Float64
                     else:
-                        frame = frame.with_columns(replaced.alias(c))  # 真字符串 → 空串转 null
+                        frame = frame.with_columns(replaced.alias(c))  # 真字符串/全空串 → 保留 String（空串转 null）
             return frame
         raise TeaJoinError(api_name, f"重试 {self.max_retries} 次仍失败: {last_exc}")
 
