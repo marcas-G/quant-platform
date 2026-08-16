@@ -83,6 +83,54 @@ def test_layered_backtest_empty_panel():
     assert result["summary"] == {}
 
 
+def test_layered_backtest_dead_week_excluded():
+    # signal/forward 全 null 的周（头部窗口未满/尾部无未来收益）不计入回测期数
+    # ——与 quant_core 周频评估的 n_weeks 口径一致（有效周才计）
+    panel = _weekly_panel(weeks=3)  # 3 周有效
+    dead = pl.DataFrame({
+        "date": [datetime.date(2024, 2, 2), datetime.date(2024, 2, 2)],
+        "code": ["000001", "000002"],
+        "signal": [None, None],
+        "forward_return_5d": [None, None],
+    })
+    result = layered_backtest(pl.concat([panel, dead]), direction=1)
+    assert result["periods"] == 3
+    assert len(result["dates"]) == 3
+    assert all(len(v) == 3 for v in result["net_values"].values())
+
+
+def test_layered_backtest_tail_week_with_partial_null_kept():
+    # 周内部分行 signal/forward 为 null（尾部停牌/无未来收益）——该周仍计入期数
+    # （组内其余股票 forward 等权平均；全 null 的档该周收益记 0、净值保持）
+    panel = _weekly_panel(weeks=2, stocks=2)
+    panel = pl.concat([
+        panel,
+        pl.DataFrame({
+            "date": [datetime.date(2024, 1, 5)],
+            "code": ["000099"],
+            "signal": [0.5],
+            "forward_return_5d": [None],  # 尾行无未来收益
+        }),
+    ])
+    result = layered_backtest(panel, direction=1, n_groups=2)
+    assert result["periods"] == 2
+    assert len(result["net_values"]["D1"]) == 2
+
+
+def test_layered_backtest_all_null_signal_empty():
+    # 设计 §2.3：signal 全 null → 空回测（过滤后无有效行，不产出平值 1.0 假净值）
+    panel = pl.DataFrame({
+        "date": [datetime.date(2024, 1, 5), datetime.date(2024, 1, 5)],
+        "code": ["000001", "000002"],
+        "signal": [None, None],
+        "forward_return_5d": [0.02, 0.01],
+    })
+    result = layered_backtest(panel, direction=1)
+    assert result["periods"] == 0
+    assert result["net_values"] == {}
+    assert result["summary"] == {}
+
+
 def test_layered_backtest_single_week():
     result = layered_backtest(_weekly_panel(weeks=1), direction=1)
     assert result["periods"] == 1

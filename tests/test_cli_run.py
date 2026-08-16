@@ -126,7 +126,9 @@ formula: |
 
 def test_run_backtest_flag(tmp_path, monkeypatch):
     # --backtest（默认）：summary.evaluation 含 layered_backtest；--output-dir 缺省 results_dir/<name>
-    build_db(tmp_path)
+    # 9 个交易日：第 1 个 ISO 周（01-05）的 forward 在面板内 → 1 个有效周，
+    # 回测期数 = 评估周数（无效周不计，M4b 期数口径）
+    build_db(tmp_path, n_days=9)
     spec_path = tmp_path / "demo.yaml"
     spec_path.write_text("""
 name: demo
@@ -136,7 +138,7 @@ universe:
   codes: ["000001.SZ", "600519.SH"]
 date:
   start: "2024-01-02"
-  end: "2024-01-09"
+  end: "2024-01-12"
 formula: |
   signal = close / open - 1
 """, encoding="utf-8")
@@ -147,7 +149,7 @@ formula: |
     summary = json.loads((tmp_path / "results" / "demo" / "summary.json").read_text(encoding="utf-8"))
     assert "layered_backtest" in summary["evaluation"]
     assert summary["evaluation"]["layered_backtest"]["n_groups"] == 10
-    assert summary["evaluation"]["layered_backtest"]["periods"] >= 1
+    assert summary["evaluation"]["layered_backtest"]["periods"] == summary["evaluation"]["n_weeks"] == 1
 
 
 def test_run_no_backtest_flag(tmp_path, monkeypatch):

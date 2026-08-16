@@ -61,18 +61,24 @@ def layered_backtest(
     - direction=1 时 D1 = signal 最高档，direction=-1 时 D1 = signal 最低档（rank 方向控制）。
     - 档收益 = 当周该档 forward_return_5d 等权平均（忽略 null）；档空期 fill_null(0)，
       净值保持前值。净值 = (1+ret) 连乘。long_short 为 D1-D10 差值序列。
-    - 空面板（height=0）返回空结构，不崩溃。
+    - signal/forward_return_5d 为 null 的行不参与分档与收益（周内部分行 null 的周仍
+      计入期数）；某周**全部**行无效（头部窗口未满/尾部无未来收益）则该周不计入期数
+      ——与 quant_core 周频评估 n_weeks 口径一致（`bt["periods"] == evaluation["n_weeks"]`）。
+    - 空面板或过滤后无有效行（signal 全 null）返回空结构，不崩溃。
     """
-    if panel.height == 0:
+    df = panel.filter(
+        pl.col("signal").is_not_null() & pl.col("forward_return_5d").is_not_null()
+    )
+    if df.height == 0:
         return {"n_groups": n_groups, "periods": 0, "net_values": {}, "summary": {}, "dates": []}
 
-    df = _group_assign(panel, n_groups, direction)
+    df = _group_assign(df, n_groups, direction)
     # 每期每档收益（forward 等权平均，忽略 null）
     group_ret = df.group_by(["date", "_group"]).agg(
         pl.col("forward_return_5d").mean().alias("_ret")
     ).sort(["date", "_group"])
 
-    dates = sorted(panel["date"].unique().to_list())
+    dates = sorted(df["date"].unique().to_list())
     net_values: dict[str, list[float]] = {}
     returns_by_group: dict[str, list[float]] = {}
     for g in range(n_groups):

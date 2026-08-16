@@ -23,6 +23,10 @@ def layered_backtest(panel: pl.DataFrame, direction: int,
 ```
 
 - 输入：**周频面板**（date/code/signal/forward_return_5d——M4a 评估输入同源）。
+- **期数口径**：signal/forward_return_5d 为 null 的行不参与分档与收益；某周**全部**行
+  无效（头部 ts 窗口未满/尾部无未来收益）则该周不计入 `periods`——与 quant_core 周频
+  评估的 `n_weeks` 一致（集成断言 `bt["periods"] == evaluation["n_weeks"]`，实测 2 年
+  104 个对齐周中 98 个有效周）。周内部分行 null 仍计入（组内等权平均忽略 null）。
 - 每期（周）按 signal 排序分 `n_groups` 档（默认十分位）。
 - **方向感知**：`direction=1`（越高越好）时 D1 = signal 最高档；`direction=-1` 时
   D1 = signal 最低档（两者都是"最佳档"）。排序后按方向映射档位编号。
@@ -59,7 +63,8 @@ def layered_backtest(panel: pl.DataFrame, direction: int,
 
 - 面板为空/单期 → 返回空结构与 0 指标（不崩溃）。
 - 某期某档无股票 → 该期该档收益 null（净值保持前值，不跳变）。
-- signal 全 null → 空回测。
+- signal 全 null（或过滤后无有效行）→ 空回测（`periods=0`、`net_values={}`，不产出
+  平值 1.0 假净值）。
 - n_groups 超过股票数 → 每档可能空（null 处理同上）。
 
 ## 3. run 命令扩展与 M4a 遗留

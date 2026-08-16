@@ -510,32 +510,42 @@ git commit -m "feat: add factorlab list and show commands"
 - Modify: `docs/interface.md`、`docs/data-ops-playbook.md`
 - Test: 全量验证
 
-- [ ] **Step 1: 集成测试扩展**
+- [x] **Step 1: 集成测试扩展**
 
 `tests/test_e2e_m4.py` 的 `test_e2e_real_factor_run` 增加：
 
 ```python
-    evaluation = evaluate_factor_weekly(result.panel, "e2e_vol_skew_m4", 1)
     weekly = align_weekly(result.panel)
     bt = layered_backtest(weekly, 1)
     assert bt["periods"] == evaluation["n_weeks"]  # 回测期数 = 评估周数
     assert bt["summary"]["long_short"]["sharpe"] == bt["summary"]["long_short"]["sharpe"]  # 非 nan
+    assert len(bt["net_values"]["D1"]) == bt["periods"]  # 净值序列逐期一点
 ```
 
-（或通过 CLI run 端到端：`runner.invoke(app, ["run", spec])` → summary 含 layered_backtest。）
+另加 CLI 级端到端 `test_e2e_cli_run_layered_backtest`（真实平台库 `runner.invoke run` →
+summary.evaluation.layered_backtest 期数 = n_weeks）。
 
-- [ ] **Step 2: 文档更新**
+**集成验证发现的设计缺口（已修复，T4 内补 T1 单测）**：真实数据 2 年 5 只跑出
+`bt["periods"]=104 ≠ evaluation["n_weeks"]=98`——layered 把 signal/forward 全 null 的周
+（头部 ts 窗口未满 4 周 + 尾部无未来收益 2 周）也计入期数（fill_null(0) 平值假净值），
+quant_core 只计有效周。设计 spec 示例（`periods: 98`）与 §2.3「signal 全 null → 空回测」
+表明设计意图为期数 = 有效周数。修复：`layered_backtest` 先过滤
+`signal/forward_return_5d` 非 null 行再分档计期（周内部分 null 仍计入）；新增单测
+`test_layered_backtest_dead_week_excluded` / `test_layered_backtest_all_null_signal_empty` /
+`test_layered_backtest_tail_week_with_partial_null_kept`。修复后 104→98，断言成立。
+
+- [x] **Step 2: 文档更新**
 
 `docs/interface.md`：layered_backtest API、run 参数（--backtest/--groups）、list/show 命令、
 results_dir、pit_qfq 消费说明。
 `docs/data-ops-playbook.md`：§6 更新（run 默认产出分层回测；list/show 加入闭环）。
 
-- [ ] **Step 3: 全量验证**
+- [x] **Step 3: 全量验证**
 
 Run: `python -m pytest -q`
 Expected: 全部 PASS（含集成——真实平台库 run + 分层回测）。
 
-- [ ] **Step 4: Commit**
+- [x] **Step 4: Commit**
 
 ```bash
 git add tests/test_e2e_m4.py docs/interface.md docs/data-ops-playbook.md
