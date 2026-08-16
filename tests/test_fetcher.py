@@ -294,3 +294,17 @@ def test_fetch_mixed_numeric_and_empty_strings_cast_to_float(monkeypatch):
     df = client.fetch("daily", {"trade_date": "20240102"})
     assert df.schema["amount"] == pl.Float64
     assert df["amount"].to_list() == [10.5, None]
+
+
+def test_fetch_all_null_column_cast_to_string(monkeypatch):
+    """JSON null 列（polars Null 类型）必须 cast String——duckdb 对全 null 列建表默认
+    INTEGER，后续日期出现字符串值时 INSERT 崩溃（suspend_timing 根因）。"""
+    items = [["000001.SZ", "20000104", None], ["000002.SZ", "20000104", None]]
+    fields = ["ts_code", "trade_date", "suspend_timing"]
+
+    def responder(url, json=None, timeout=30):
+        return _ok_response(items=items, fields=fields)
+
+    client = _client(monkeypatch, responder)
+    df = client.fetch("suspend_d", {"trade_date": "20000104"})
+    assert df.schema["suspend_timing"] == pl.String  # 不是 Null 类型

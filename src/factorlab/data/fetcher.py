@@ -87,6 +87,10 @@ class TeaJoinClient:
                 raise TeaJoinError(api_name, f"返回数据与字段不匹配: {exc}") from exc
             if frame.height:
                 for c in frame.columns:
+                    if frame.schema[c] == pl.Null:
+                        # JSON null 全列：duckdb 建表默认推断 INTEGER，后续字符串值 INSERT 崩溃
+                        frame = frame.with_columns(frame[c].cast(pl.String).alias(c))
+                        continue
                     if frame.schema[c] != pl.String:
                         continue
                     replaced = frame[c].replace("", None)
