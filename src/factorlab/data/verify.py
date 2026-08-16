@@ -21,13 +21,13 @@ def _ref_query_sql(ref_cols: set[str]) -> tuple[str, str, str]:
     """参考库 daily 列映射 → (SELECT 日期表达式, 代码条件, 日期条件)。
 
     参数顺序恒为 [code, start, end]：先代码后日期范围。平台库风格
-    （trade_date/ts_code）原列直用；quant-data 风格（date/code，日期
-    '2024-01-02'、代码纯数字）映射：date 转 'YYYYMMDD' 对齐 primary，
+    （trade_date/ts_code）原列直用；date/code 风格（日期 '2024-01-02'、
+    代码纯数字，旧只读库布局）映射：date 转 'YYYYMMDD' 对齐 primary，
     code 取 ts_code 前 6 位。
     """
     if "trade_date" in ref_cols and "ts_code" in ref_cols:
         return "trade_date", "ts_code = ?", "trade_date BETWEEN ? AND ?"
-    # quant-data 风格：date VARCHAR '2024-01-02'（或 DATE）、code 纯数字
+    # date/code 风格（旧只读库布局）：date VARCHAR '2024-01-02'（或 DATE）、code 纯数字
     # 显式 CAST(date AS DATE)：DuckDB 禁止 VARCHAR 与 TIMESTAMP 混用 BETWEEN，
     # 且 strftime 对 VARCHAR 无候选函数（DATE/VARCHAR 列统一先转 DATE 再格式化）
     return (
@@ -73,8 +73,8 @@ def compare_sample(
 
     参考库（ref_path，PlatformDB 或路径）仅作参考：行数不一致、差异、参考库缺
     daily 表等均不抛错，计入报告。参考库 daily 列结构自动检测映射：
-    平台库风格（trade_date/ts_code）原列直用；quant-data 风格（date/code，
-    日期 '2024-01-02'、代码纯数字）按 date 转 'YYYYMMDD'、ts_code 前 6 位映射。
+    平台库风格（trade_date/ts_code）原列直用；date/code 风格（日期
+    '2024-01-02'、代码纯数字，旧只读库布局）按 date 转 'YYYYMMDD'、ts_code 前 6 位映射。
     差异逐条进 details（最多 50 条）。返回
     {"compared_rows", "mismatches", "details", "sampled_stocks"}。
     """

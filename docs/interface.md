@@ -1,7 +1,28 @@
-# FactorLab M1 接口文档
+# FactorLab 接口文档（M1–M4a）
 
-本文件描述 M1 已交付的 CLI、Spec、因子脚本和 Python API。实现与设计文档冲突时以
-`docs/superpowers/specs/2026-08-15-factor-dsl-platform-design.md` 为准。
+本文件描述 M1–M4a 已交付的 CLI、Spec、因子脚本和 Python API。实现与设计文档
+冲突时以 `docs/superpowers/specs/2026-08-15-factor-dsl-platform-design.md` 为准。
+
+## 0. M4a 汇总：端到端评估链路
+
+M4a 打通「平台库数据 → 因子计算 → 复权视图 → 周频评估」端到端链路：
+
+- **数据源切换**：平台库 `data/factorlab.duckdb`（`settings.platform_db`，
+  `FACTORLAB_PLATFORM_DB` 覆盖）为**唯一数据源**，项目自包含；外部只读库路径
+  已从代码彻底移除。`load_daily` 加载平台库 `daily`（`trade_date/ts_code` →
+  `date/code` 映射、`adj_factor` 恒 join，见 §4）。
+- **`factorlab run <spec.yaml>`**：计算 + 评估端到端命令（见 §1）：run_factor 日频
+  面板 → 周频对齐 → `quant_core` 评估 → `summary.json` 追加 `evaluation` 字段，
+  另落盘 `weekly.parquet`（评估输入面板）。
+- **复权视图（adjustment）**：spec `adjustment` 字段（`raw|qfq|hfq|pit_qfq`，
+  默认 `qfq`）决定因子计算所用价格口径（`view_prices`，见 §4）；前向收益恒用
+  **total_return 口径**（raw close×adj，先于复权视图计算、避免二次复权）。
+- **eval 包**（`factorlab.eval`）：`alignment.align_weekly`（ISO 周最后交易日
+  对齐）、`metrics.coverage_report`（覆盖率）、`rust_ic.evaluate_factor_weekly`
+  （`quant_core` 周频评估桥接，见 §4）。
+- **`default_universe` 接线**：`factorlab run` 缺省 `--universe` 时回落
+  `settings.default_universe`（`FACTORLAB_DEFAULT_UNIVERSE`），未配置再用 spec
+  内联 universe（见 §4 `resolve_codes`）。
 
 ## 1. CLI
 
@@ -405,7 +426,7 @@ M3b+ 按 ts_code 分批）、`INDEX_CODES`（4 指数）。
   完整性自检 + 稀疏摘要 + 可选抽样对拍。返回
   `{"integrity": {table: {rule: ...}}, "sparse_summary": {table: {col: ...}}, "compare": dict | None}`。
   ref_db（PlatformDB 或路径）给定且文件存在时执行对拍（参考库仅作参考，差异不
-  阻塞，quant-data 清理流程以 verify 报告 + 用户显式确认为准）；参考库缺失时
+  阻塞，旧参考库清理流程以 verify 报告 + 用户显式确认为准）；参考库缺失时
   `compare` 为 None。空库不抛错：完整性规则逐条 skipped，稀疏摘要为空。
 - `compare_sample(primary, ref_path, n_stocks=30, segments=None, tol=1e-4, seed=42) -> dict`
   随机抽样 n_stocks 只股票 × 日期段，对比 primary 与参考库 daily.close（相对误差
@@ -415,8 +436,8 @@ M3b+ 按 ts_code 分批）、`INDEX_CODES`（4 指数）。
   `details`（最多 50 条）。返回
   `{"compared_rows", "mismatches", "details", "sampled_stocks"}`。
   **参考库列结构自动检测映射**（`_ref_query_sql(ref_cols)`）：`DESCRIBE daily` 后
-  有 `trade_date/ts_code` 用原列；quant-data 风格（`date/code`，日期 `2024-01-02`
-  VARCHAR 或 DATE、代码纯数字）映射为 `strftime(CAST(date AS DATE), '%Y%m%d')
+  有 `trade_date/ts_code` 用原列；date/code 风格（`date/code`，日期 `2024-01-02`
+  VARCHAR 或 DATE、代码纯数字，旧只读库布局）映射为 `strftime(CAST(date AS DATE), '%Y%m%d')
   AS trade_date`（对齐 primary 的 YYYYMMDD）、`code = substr(?, 1, 6)`（ts_code
   前 6 位）、日期 `CAST(date AS DATE) BETWEEN CAST(strptime(?, '%Y%m%d') AS DATE) ...`
   （显式 CAST：DuckDB 禁止 VARCHAR 与 TIMESTAMP 混用 BETWEEN）。join 只取

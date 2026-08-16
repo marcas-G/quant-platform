@@ -1,7 +1,7 @@
 # FactorLab 项目指南
 
 个人因子 DSL 计算平台（`expr_codegen` + `polars_ta` 内核，Rust `quant_core` 评估，
-本地 DuckDB 只读数据层）。工作流与技能约定见 `AGENTS.md`（Superpowers 框架）。
+平台自有 DuckDB 数据层）。工作流与技能约定见 `AGENTS.md`（Superpowers 框架）。
 
 ## 硬性要求
 
@@ -30,7 +30,9 @@
 
 - Python 3.13；editable 安装指向当前工作树（切换分支/工作树后需
   `python -m pip install -e .` 重新指向）。
-- `C:\Users\ThinkPad\quant-data`（quant.duckdb 等）为只读数据源，**禁止修改**。
+- 平台库 `data/factorlab.duckdb`（`settings.platform_db`，`FACTORLAB_PLATFORM_DB`
+  可覆盖）为**唯一数据源**：因子计算只读消费；写入仅经
+  `factorlab data rebuild/update/refresh`。
 - `daily.code` 为纯数字（`000001`），`stock_basic_tushare.ts_code` 带后缀
   （`000001.SZ`）；`symbol` 列是两者桥梁。
 - 目标机器约 16GB 内存且无页面文件：SQL-first、float32、DuckDB `memory_limit`

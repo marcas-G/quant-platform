@@ -3,7 +3,7 @@ import os
 import pytest
 
 # 平台库（main 工作树 data/factorlab.duckdb，只读引用——M4a 起唯一数据源；
-# quant-data 旧库已废弃：无 stock_basic/adj_factor 等平台表）
+# 旧只读库（date/code 列）已废弃：无 stock_basic/adj_factor 等平台表）
 REAL_DB = "C:/Users/ThinkPad/quant-platform/data/factorlab.duckdb"
 
 

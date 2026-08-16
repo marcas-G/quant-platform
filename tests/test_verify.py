@@ -18,8 +18,8 @@ def _mk_db(path, close_values=None):
 
 
 def _mk_quant_style_ref(path, close_values=None, date_type="str"):
-    """quant-data 风格参考库：date '2024-01-02'（或 DATE 类型）、code 纯数字；
-    daily 另有 date/code 之外列（对拍只取 close）。"""
+    """date/code 风格参考库（旧只读库布局）：date '2024-01-02'（或 DATE 类型）、
+    code 纯数字；daily 另有 date/code 之外列（对拍只取 close）。"""
     dates = ["2024-01-02", "2024-01-03", "2024-01-02", "2024-01-03"]
     if date_type == "date":
         import datetime
@@ -68,7 +68,7 @@ def test_compare_sample_detects_mismatch(tmp_path):
 
 
 def test_compare_sample_ref_quant_style_maps_columns(tmp_path):
-    """参考库为 quant-data 风格（date '2024-01-02' VARCHAR、code 纯数字）：
+    """参考库为 date/code 风格（date '2024-01-02' VARCHAR、code 纯数字）：
     自动映射列结构，对拍正常匹配行数 > 0（修复前 BinderException 被吞、静默比 0 行）。"""
     primary = _mk_platform_primary(tmp_path / "p.duckdb")
     ref = _mk_quant_style_ref(tmp_path / "r.duckdb")
@@ -78,7 +78,7 @@ def test_compare_sample_ref_quant_style_maps_columns(tmp_path):
 
 
 def test_compare_sample_ref_quant_style_date_type(tmp_path):
-    """quant-data 风格 date 为 DATE 类型时同样映射（strptime 比较 + strftime 转换）。"""
+    """date/code 风格 date 为 DATE 类型时同样映射（strptime 比较 + strftime 转换）。"""
     primary = _mk_platform_primary(tmp_path / "p.duckdb")
     ref = _mk_quant_style_ref(tmp_path / "r.duckdb", date_type="date")
     report = compare_sample(primary, ref, n_stocks=2, segments=[("20240102", "20240103")], tol=1e-6)
@@ -87,7 +87,7 @@ def test_compare_sample_ref_quant_style_date_type(tmp_path):
 
 
 def test_compare_sample_ref_quant_style_detects_mismatch(tmp_path):
-    """quant-data 风格参考库下 mismatch 检测仍生效。"""
+    """date/code 风格参考库下 mismatch 检测仍生效。"""
     primary = _mk_platform_primary(tmp_path / "p.duckdb")
     ref = _mk_quant_style_ref(tmp_path / "r.duckdb", close_values=[10.0, 99.0, 20.0, 21.0])
     report = compare_sample(primary, ref, n_stocks=2, segments=[("20240102", "20240103")], tol=1e-6)

@@ -10,9 +10,12 @@ factorlab data rebuild [--start YYYYMMDD] [--resume]   # 全量重建（暂存�
 factorlab data update                                   # 一键更新（增量 + 指数 + 验证 + 报告）
 factorlab data refresh                                  # 仅行情 7 表增量（update 的内部步骤）
 factorlab data verify [--compare <ref.duckdb>]          # 完整性自检 + 稀疏摘要 + 抽样对拍
+factorlab run <spec.yaml> [--universe U] [--output-dir D]  # 因子计算 + 周频评估（消费环节）
 ```
 
-数据目录（gitignored）：`data/rebuild_staging.duckdb`（全字段暂存）、`data/factorlab.duckdb`（最终库，稀疏剔除后）、`data/manifest.json`（拉取进度 + 剔除清单 + 失败诊断）。
+数据目录（gitignored）：`data/rebuild_staging.duckdb`（全字段暂存）、`data/factorlab.duckdb`（最终库，稀疏剔除后）、`data/manifest.json`（拉取进度 + 剔除清单 + 失败诊断）。因子计算结果（gitignored）落 `results/<name>/`：`panel.parquet`（日频面板）、`weekly.parquet`（评估输入）、`summary.json`（含 `evaluation` 周频评估摘要）。
+
+**运维闭环**：`data update`（拉新数据）→ `factorlab run`（计算 + 评估）→ 读 `summary.json` 评估摘要，判断因子有效性（IC/十分位 spread/换手/覆盖，见 §6）。
 
 ## 2. 全量重建经验（2026-08-16 实战）
 
@@ -80,3 +83,20 @@ factorlab data update
 | refresh 死锁（无新日期） | 确认 manifest.last_updated 是最近交易日（非未来公告日） |
 | verify 对拍 0 行 | 参考库列结构不兼容——检查自动映射是否生效（见 §4） |
 | 数据更新后行数不增 | refresh 的 upsert 列过滤——最终库稀疏剔除后全字段 df 自动裁剪 |
+| `run` 报「平台库缺失」 | 检查 cwd 下 `data/factorlab.duckdb` 是否存在（或 `FACTORLAB_PLATFORM_DB` 指向） |
+| `run` 报 universe 无有效股票 | 核对代码格式（`daily.code` 纯数字，spec 可用 `.SZ/.SH` 后缀）与库内代码 |
+
+## 6. 因子计算与评估（factorlab run）
+
+数据就绪后跑因子：
+
+```bash
+factorlab run factor/demo.yaml --universe 600519 --output-dir out/run1
+```
+
+- **数据源**：`settings.platform_db`（`data/factorlab.duckdb`，`FACTORLAB_PLATFORM_DB` 覆盖）——只读消费，不写数据库。
+- **链路**：平台库 daily 加载（含 adj_factor）→ 停牌补全 → total_return 前向收益 → 复权视图（spec `adjustment`，默认 qfq）→ 因子公式 → process 链 → 周频对齐 → `quant_core` 评估。
+- **落盘**：`results/<name>/panel.parquet`、`weekly.parquet`、`summary.json`（run_factor 摘要 + `evaluation` 字段）。
+- **评估摘要字段**（`summary.json.evaluation`）：`n_weeks`、`ic`（mean/std/t_stat/ir）、`decile_returns`（含十分位 spread）、`turnover`、`coverage`（pct_valid/total_rows/valid_rows）。
+- **常用参数**：`--universe U`（覆盖 spec；缺省回落 `FACTORLAB_DEFAULT_UNIVERSE`）、`--max-memory M`（默认 4GB）、`--output-dir DIR`、`--no-float32`。
+- 失败以非 0 退出并打印原因（spec 不存在、平台库缺失、universe 无有效股票等）；同批次因子固定同一 universe 再比较（同池计算、同池比较）。

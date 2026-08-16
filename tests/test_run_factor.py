@@ -267,7 +267,7 @@ formula: |
 
 
 def test_run_factor_default_db_is_platform():
-    # RunContext 默认 db_path 指向平台库路径（quant-data 已废弃）
+    # RunContext 默认 db_path 指向平台库路径（旧只读库已废弃，平台库为唯一数据源）
     ctx = RunContext()
     assert ctx.db_path == Path("data/factorlab.duckdb")
     assert ctx.adjustment == "qfq"
