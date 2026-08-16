@@ -5,6 +5,7 @@ import copy
 
 import polars as pl
 
+from factorlab.factor.ast_gate import ALLOWED_EXPR_METHODS
 from factorlab.factor.errors import FactorDSLError
 from factorlab.ops.registry import factor_op
 
@@ -349,3 +350,27 @@ def inline_defs(source: str) -> str:
         _expand_calls(stmt)
     tree.body = hoists + [s for s in tree.body if not isinstance(s, ast.FunctionDef)]
     return ast.unparse(tree)
+
+
+def rewrite_expr_methods(source: str) -> str:
+    """元素级方法链改写为函数调用：`X.method(args)` → `method(X, *args)`。
+
+    expr_codegen 的 AST 处理假设 Call.func 恒为 Name，属性调用（如
+    `ts_delta(x, 1).abs()`）在其中直接崩溃——改写为 `abs(ts_delta(x, 1))`
+    后分区校验/代码生成语义不变（白名单方法均为无窗口、无分组、无副作用的
+    元素级纯函数，与 ast_gate 的 ALLOWED_EXPR_METHODS 同源）。
+    """
+    tree = ast.parse(source)
+
+    class _MethodRewriter(ast.NodeTransformer):
+        def visit_Call(self, node: ast.Call) -> ast.Call:
+            node = self.generic_visit(node)  # 先改写嵌套调用
+            if isinstance(node.func, ast.Attribute) and node.func.attr in ALLOWED_EXPR_METHODS:
+                return ast.Call(
+                    func=_name(node.func.attr),
+                    args=[node.func.value] + list(node.args),
+                    keywords=list(node.keywords),
+                )
+            return node
+
+    return ast.unparse(_MethodRewriter().visit(tree))

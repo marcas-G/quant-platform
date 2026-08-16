@@ -26,6 +26,7 @@ from factorlab.ops.platform_ops import (
     expand_user_macros,
     inline_defs,
     register_platform_ops,
+    rewrite_expr_methods,
 )
 from factorlab.ops.polars_ta_wrappers import register_polars_ta_ops
 from factorlab.process.registry import run_process_chain
@@ -58,6 +59,7 @@ def compute_formula(
 ) -> pl.DataFrame:
     validate_formula(formula)
     formula = inline_defs(formula)  # def 内联（幂等：无 def 原样返回）——窗口算子合法化为顶层 ts_ 调用
+    formula = rewrite_expr_methods(formula)  # 元素级方法链 → 函数调用（expr_codegen 不支持属性调用）
     formula = expand_platform_macros(formula)  # 薄封装 → ts_ 表达式，保证按 asset 分区
     register_polars_ta_ops()  # 幂等；保证分区校验能识别 ts_/cs_/ta_ 算子
     register_platform_ops()
@@ -140,6 +142,7 @@ def run_factor(spec: FactorSpec, ctx: RunContext) -> FactorResult:
     formula = expand_user_macros(formula, operators)
     validate_formula(formula)
     formula = inline_defs(formula)
+    formula = rewrite_expr_methods(formula)
     formula = expand_platform_macros(formula)  # 薄封装 → ts_ 表达式（compute_formula 内部再展开幂等无害）
     try:
         con = duckdb.connect(str(ctx.db_path), read_only=True)

@@ -64,7 +64,7 @@ M4a 打通「平台库数据 → 因子计算 → 复权视图 → 周频评估�
 |------|------|
 | `factorlab version` | 打印包版本 |
 | `factorlab lint <spec.yaml>` | 校验 Spec 与因子脚本 AST，失败时以非 0 退出 |
-| `factorlab run <spec.yaml> [--universe U] [--max-memory M] [--output-dir DIR] [--no-float32] [--backtest/--no-backtest] [--groups N]` | 计算因子并周频评估 + 分层回测（默认），落盘 `results/<name>/` |
+| `factorlab run <spec.yaml> [--universe U] [--max-memory M] [--output-dir DIR] [--no-float32] [--backtest/--no-backtest] [--groups N] [--set k=v ...]` | 计算因子并周频评估 + 分层回测（默认），落盘 `results/<name>/`（`--set` 生成 `results/<name>_<k><v>.../` 参数变体） |
 | `factorlab list` | 列出已保存因子与最近运行摘要（扫描 `results_dir/*/summary.json`，按运行时间倒序） |
 | `factorlab show <name>` | 查看单因子完整摘要（spec 原文/评估/分层回测） |
 | `factorlab op list` | 列出已注册算子 |
@@ -89,11 +89,16 @@ M4a 打通「平台库数据 → 因子计算 → 复权视图 → 周频评估�
 - `--backtest/--no-backtest`：默认产出分层回测并写入 evaluation；`--no-backtest`
   关闭（快速评估，weekly 落盘不受影响）。
 - `--groups N`：分层档数（默认 10，`N >= 2`）。
+- `--set k=v`（可多次）：覆盖 spec 的 `params`（见 §2），生成**参数变体**——
+  变体名 `<spec.name>_<k><v>...`（如 `vol_run_energy_win100_gain1.5`），results
+  独立目录，与默认变体（`results/<name>/`）并存不覆盖。值类型解析
+  int → float → bool（`true/false`）→ str；格式错误（缺 `=` 或空值）以非 0
+  退出提示。`--output-dir` 显式给出时优先于变体目录。
 - 落盘：`panel.parquet`（run_factor 日频面板）、`weekly.parquet`（周频对齐面板——
   评估/回测输入）、`summary.json`（run_factor 摘要 + `evaluation` 字段——quant_core
   周频评估 + `layered_backtest` 分层回测，CLI 层追加后重写）。
 - 错误路径以非 0 退出并打印原因：spec 不存在、平台库缺失、universe 无有效股票、
-  公式/process 校验失败等。
+  `--set` 格式错误、公式/process 校验失败等。
 
 示例：
 
@@ -101,6 +106,8 @@ M4a 打通「平台库数据 → 因子计算 → 复权视图 → 周频评估�
 factorlab run factor/demo.yaml --universe 600519 --output-dir out/run1
 factorlab run factor/demo.yaml --groups 5          # 5 档分层回测
 factorlab run factor/demo.yaml --no-backtest       # 仅评估，不产分层回测
+factorlab run factor/demo.yaml --set win=100       # 参数变体（results/demo_win100/）
+factorlab run factor/demo.yaml --set win=100 --set gain=1.5   # 多变体参数
 ```
 
 ### `factorlab list` / `factorlab show <name>`
@@ -174,6 +181,15 @@ formula: |
   `formula`（参数 AST 绑定替换，展开先于平台薄封装；公式内 `def` 同名函数优先）。
   宏公式须为单表达式（`mode="eval"`），可引用平台薄封装（`returns` 等）与 `ts_*` 算子；
   展开后数据列引用（如宏公式内的 `volume`）自动纳入加载。
+- `params`：可选顶层参数映射 `dict[str, number|str|bool]`（缺省空）。formula（含
+  operators 宏体、def 体）内 `${name}` 文本引用在编译期替换为字面量；引用未声明
+  的参数名报错。`factorlab run --set k=v` 覆盖（合并进 spec.params）并生成变体
+  （见 §1 run）。例：
+  ```yaml
+  params: {win: 200, gain: 2.0}
+  formula: |
+    signal = ts_rank(volume, ${win}) * ${gain}
+  ```
 - `formula` 或 `factors`：二选一。
 - 使用 `factors` 时必须提供 `combine`。
 - `combine.method`：`ic_weight | equal_weight | weight_sum`；`weight_sum` 时
@@ -232,9 +248,18 @@ combine:
 - `ts_delay(x, d)` 和 `ts_delta(x, d)` 的位移不能为负：字面量（含可折叠表达式如
   `1 - 2`、`d=-1`、`-1.0`）在执行前被拒绝；非常量变量位移无法静态判断，放行。
 - 未知算子会在执行前被拒绝。
-- **`def` 内禁止窗口/截面算子**：expr_codegen 把用户 def 当黑盒整体在元素级分区
-  执行，def 内的 `ts_/cs_/gp_` 调用会在全表上跑窗口、跨资产泄漏，因此直接拒绝
-  （带源码位置）。`def` 内只允许元素级纯函数；窗口语义请直接写在公式顶层。
+- **`def` 内窗口/截面算子合法**（free-form）：计算前 `def` 经**内联展开**（参数
+  绑定、中间变量提升到顶层、唯一命名防冲突）——窗口算子成为顶层 `ts_*` 调用，
+  按 asset 分区正确，无跨资产泄漏。支持多语句函数体、def 调 def（不依赖定义
+  顺序）；边界：递归 def（含间接）拒绝、函数体仅支持赋值与单个带返回值
+  `return`、`_` 前缀不能作 def 名（中间变量约定）。
+- **元素级方法链**：`ts_delta(x, 1).abs()` 语法合法——AST 门放行白名单
+  （`abs/log/log1p/sqrt/exp/sign/floor`，与元素级函数名单同源）方法在表达式结果
+  上的调用，计算前改写为函数调用 `abs(ts_delta(x, 1))`（expr_codegen 的 AST
+  处理不支持属性调用）。模块/对象属性调用（`np.abs`、`pl.read_csv`）与窗口方法
+  （`x.rolling_mean`）仍被拒——窗口语义必须走 `ts_*` 算子。
+- **参数引用**：formula 内 `${name}` 文本引用 spec.params（见 §2 `params`）——
+  宏体/def 体内同样可见，编译期替换为字面量。
 - 平台薄封装算子（`returns/vwap/adv20`）在解析期**展开为 `ts_` 表达式**再交给
   `expr_codegen`，保证按 asset 分区；`group_rank/group_mean` 自带 `.over(key)`
   分组语义，不展开。import 别名（`returns as ret`）同样生效。
@@ -269,6 +294,19 @@ combine:
 ### `factorlab.engine.partitions.reject_future_shifts(source) -> None`
 
 拒绝 `ts_delay/ts_delta` 的字面量负位移（防未来函数）。
+
+### `factorlab.ops.platform_ops.inline_defs(source) -> str` / `rewrite_expr_methods(source) -> str`
+
+free-form 源码变换（`compute_formula` 与 `run_factor` 展开链内自动调用，用户一般
+无需手动使用）：
+
+- `inline_defs(source)`：公式内 `def` 内联展开——窗口算子合法化为顶层 `ts_*`
+  调用（分区正确），多语句提升、def 调 def 递归展开、多次调用独立实例化
+  （唯一命名防变量串扰）。无 def 原样返回（幂等）。递归 def（含间接）抛
+  `FactorDSLError`。
+- `rewrite_expr_methods(source)`：元素级方法链改写为函数调用（`X.method(...)` →
+  `method(X, ...)`，白名单与 ast_gate 的 `ALLOWED_EXPR_METHODS` 同源）。
+  无方法链原样返回。
 
 ### 算子族注册
 
@@ -307,6 +345,13 @@ def tail_ratio(x: pl.Expr, n: int) -> pl.Expr:
 前向收益（total_return 口径，raw close×adj）→ 复权视图（`adjustment` 口径，
 因子计算使用）→ `compute_formula` → process 链 → 落盘 `panel.parquet` + `summary.json`。
 周频对齐在评估阶段（`eval`）进行，run_factor 输出日频面板。
+
+**free-form 展开链**（spec.formula 处理顺序）：`${param}` 文本替换（spec.params；
+operators 宏体经副本一并替换，def 体在 formula 文本内命中；未知参数名抛
+`ValueError`）→ 用户宏展开（spec.operators，宏体可引用 `${}`）→ AST 校验 →
+def 内联（窗口算子合法化）→ 元素级方法链改写 → 平台薄封装展开。
+`factorlab run --set k=v` 在 CLI 层合并进 spec.params 并生成变体名
+`<name>_<k><v>...`（见 §1 run；summary 的 `spec_yaml` 保留合并后的 params）。
 
 `RunContext` 字段：`db_path`（默认 `settings.platform_db` = `data/factorlab.duckdb`）、
 `output_dir`、`universe_override`（6 位代码或引用名称/路径，优先级最高）、`float32`、
@@ -623,7 +668,9 @@ python -m pytest
 命令、分层回测（`tests/test_layered.py`：分档/方向翻转/净值数学/long-short/摘要/
 无效周排除/全 null 空回测）、run 参数与 list/show（`tests/test_cli_run.py`、
 `tests/test_cli_list_show.py`）、真实平台库集成（`tests/test_e2e_m4.py`：
-run → 周频评估 + 分层回测，回测期数 = 评估周数），真实 results 目录 Web 冒烟
+run → 周频评估 + 分层回测，回测期数 = 评估周数；`tests/test_e2e_free_form.py`：
+free-form 端到端——A 股日频版 RunLength 思路因子 vol_run_energy（def 内窗口算子 +
+params 替换 + run --set 变体，n_weeks > 50）），真实 results 目录 Web 冒烟
 （`tests/test_e2e_web.py`：列表含因子名/详情含图表数据/旧因子降级/缺失 404），
 以及 teajoin 集成测试（token 配置时真实拉取，`tests/test_e2e_data.py`）。
 

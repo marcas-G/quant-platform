@@ -1,7 +1,9 @@
-"""factorlab run 命令测试：help、tmp 平台库端到端落盘（含 evaluation）、错误路径。"""
+"""factorlab run 命令测试：help、tmp 平台库端到端落盘（含 evaluation）、--set 变体、错误路径。"""
 import json
 
 import polars as pl
+import pytest
+import yaml
 from typer.testing import CliRunner
 
 from factorlab.cli.main import app
@@ -13,7 +15,7 @@ runner = CliRunner()
 def test_run_help():
     result = runner.invoke(app, ["run", "--help"])
     assert result.exit_code == 0
-    for opt in ("--universe", "--max-memory", "--output-dir", "--backtest", "--no-backtest", "--groups"):
+    for opt in ("--universe", "--max-memory", "--output-dir", "--backtest", "--no-backtest", "--groups", "--set"):
         assert opt in result.stdout
 
 
@@ -267,3 +269,101 @@ formula: |
     result = runner.invoke(app, ["run", str(spec_path)])
     assert result.exit_code != 0
     assert "universe" in result.output
+
+
+def test_run_set_param_variant(tmp_path, monkeypatch):
+    # --set win=2 → 变体名 demo_win2 + results 独立目录；默认变体（无 --set）并存不覆盖
+    # 覆盖生效证明（计算层面）：默认 win=20 窗口 > 9 交易日 → signal 全 null（ratio=1.0）；
+    # --set win=2 → 仅每资产头部 2 行 null（ratio=4/18）
+    build_db(tmp_path, n_days=9)
+    spec_path = tmp_path / "demo.yaml"
+    spec_path.write_text("""
+name: demo
+category: custom
+direction: 1
+universe:
+  codes: ["000001.SZ", "600519.SH"]
+date:
+  start: "2024-01-02"
+  end: "2024-01-12"
+params: {win: 20}
+formula: |
+  signal = close / ts_delay(close, ${win}) - 1
+""", encoding="utf-8")
+    monkeypatch.setattr("factorlab.config.settings.platform_db", tmp_path / "q.duckdb")
+    monkeypatch.setattr("factorlab.config.settings.results_dir", tmp_path / "results")
+    # 默认变体：params 原样（win=20 → 全 null）
+    result = runner.invoke(app, ["run", str(spec_path)])
+    assert result.exit_code == 0, result.output
+    default_dir = tmp_path / "results" / "demo"
+    assert (default_dir / "summary.json").exists()
+    default_summary = json.loads((default_dir / "summary.json").read_text(encoding="utf-8"))
+    assert default_summary["signal_null_ratio"] == 1.0
+    assert yaml.safe_load(default_summary["spec_yaml"])["params"] == {"win": 20}
+    # --set 变体：独立目录 + 覆盖值进入计算
+    result = runner.invoke(app, ["run", str(spec_path), "--set", "win=2"])
+    assert result.exit_code == 0, result.output
+    variant_dir = tmp_path / "results" / "demo_win2"
+    assert (variant_dir / "summary.json").exists()
+    assert (variant_dir / "panel.parquet").exists()
+    summary = json.loads((variant_dir / "summary.json").read_text(encoding="utf-8"))
+    assert summary["signal_null_ratio"] == pytest.approx(4 / 18, abs=1e-4)  # 2 只 × 头部 2 天 null
+    assert yaml.safe_load(summary["spec_yaml"])["params"] == {"win": 2}  # values 合并进 spec.params
+    # 变体名回显到 stdout；默认变体目录未受影响
+    assert "demo_win2" in result.stdout
+    assert (default_dir / "summary.json").exists()
+
+
+def test_run_set_multiple_typed_values(tmp_path, monkeypatch):
+    # --set 可多次；int/float/bool/str 解析；变体名按 k+v 拼接（values 合并进 spec.params）
+    build_db(tmp_path)
+    spec_path = tmp_path / "demo.yaml"
+    spec_path.write_text("""
+name: demo
+category: custom
+direction: 1
+universe:
+  codes: ["000001.SZ", "600519.SH"]
+date:
+  start: "2024-01-02"
+  end: "2024-01-09"
+params: {win: 20, gain: 2.0, tag: "base"}
+formula: |
+  signal = close / open - 1 + ${gain} * 0
+""", encoding="utf-8")
+    monkeypatch.setattr("factorlab.config.settings.platform_db", tmp_path / "q.duckdb")
+    monkeypatch.setattr("factorlab.config.settings.results_dir", tmp_path / "results")
+    result = runner.invoke(app, [
+        "run", str(spec_path),
+        "--set", "win=100", "--set", "gain=2.5",
+        "--set", "fast=true", "--set", "tag=abc",
+    ])
+    assert result.exit_code == 0, result.output
+    variant_dir = tmp_path / "results" / "demo_win100_gain2.5_fastTrue_tagabc"
+    assert (variant_dir / "summary.json").exists()
+    summary = json.loads((variant_dir / "summary.json").read_text(encoding="utf-8"))
+    params = yaml.safe_load(summary["spec_yaml"])["params"]
+    assert params["win"] == 100 and params["gain"] == 2.5  # int/float 解析
+    assert params["fast"] is True and params["tag"] == "abc"  # bool/str 解析
+    assert "demo_win100_gain2.5_fastTrue_tagabc" in result.stdout
+
+
+def test_run_set_bad_format_rejected(tmp_path, monkeypatch):
+    # 边界：--set 缺 =（win100）或空值（win=）→ 非 0 退出并提示格式
+    build_db(tmp_path)
+    spec_path = tmp_path / "demo.yaml"
+    spec_path.write_text("""
+name: demo
+category: custom
+direction: 1
+universe:
+  codes: ["000001.SZ"]
+formula: |
+  signal = close / open - 1
+""", encoding="utf-8")
+    monkeypatch.setattr("factorlab.config.settings.platform_db", tmp_path / "q.duckdb")
+    for kv in ("win100", "win="):
+        result = runner.invoke(app, ["run", str(spec_path), "--set", kv])
+        assert result.exit_code != 0, kv
+        assert "--set" in result.output
+        assert kv in result.output
