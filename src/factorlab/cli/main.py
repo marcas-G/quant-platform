@@ -105,9 +105,14 @@ def run_factor_cli(
     max_memory: str = "4GB",
     output_dir: Path | None = None,
     float32: bool = True,
+    backtest: bool = True,
+    groups: int = typer.Option(10, min=2),
 ) -> None:
-    """计算因子并评估（平台库）。--universe 默认 FACTORLAB_DEFAULT_UNIVERSE。"""
+    """计算因子并评估（平台库）。--backtest 默认产出分层回测；--no-backtest 关闭（快速评估）。
+    --groups 分层档数（>=2）。--universe 默认 FACTORLAB_DEFAULT_UNIVERSE。"""
     from factorlab.engine.compute import RunContext, run_factor as run_impl
+    from factorlab.eval.alignment import align_weekly
+    from factorlab.eval.layered import layered_backtest
     from factorlab.eval.rust_ic import evaluate_factor_weekly
 
     try:
@@ -117,7 +122,7 @@ def run_factor_cli(
         raise typer.Exit(code=1) from exc
     ctx = RunContext(
         db_path=settings.platform_db,
-        output_dir=output_dir or (Path("results") / spec.name),
+        output_dir=output_dir or (settings.results_dir / spec.name),
         universe_override=universe or settings.default_universe,
         float32=float32,
     )
@@ -128,7 +133,11 @@ def run_factor_cli(
         if spec.target != "forward_return_5d":
             console.print(f"提示: quant_core 当前固定评估 forward_return_5d（spec.target={spec.target} 暂未接线，M4b 处理）")
         result = run_impl(spec, ctx)
+        # 周频对齐面板：评估与分层回测的实际输入（evaluate_factor_weekly 内部重复对齐——YAGNI 不优化）
+        weekly = align_weekly(result.panel)
         evaluation = evaluate_factor_weekly(result.panel, spec.name, spec.direction)
+        if backtest:
+            evaluation["layered_backtest"] = layered_backtest(weekly, spec.direction, n_groups=groups)
     except (ValueError, FileNotFoundError, FactorDSLError) as exc:
         console.print(f"错误: {exc}")
         raise typer.Exit(code=1) from exc
@@ -136,7 +145,7 @@ def run_factor_cli(
         settings.default_max_memory = original_memory
     # run_factor 已落盘 panel.parquet/summary.json（无 evaluation）；CLI 追加评估结果并重写
     result.summary["evaluation"] = evaluation
-    result.panel.write_parquet(ctx.output_dir / "weekly.parquet")  # 评估输入面板
+    weekly.write_parquet(ctx.output_dir / "weekly.parquet")  # 周频对齐面板（替代原日频冗余）
     (ctx.output_dir / "summary.json").write_text(
         json.dumps(result.summary, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
     ic = evaluation.get("ic", {})

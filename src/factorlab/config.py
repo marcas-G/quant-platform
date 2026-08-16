@@ -19,6 +19,7 @@ class Settings(BaseSettings):
     default_chunk_size: int = 1000
     use_float32: bool = True
     data_dir: Path = Path("data")
+    results_dir: Path = Path("results")  # FACTORLAB_RESULTS_DIR 可覆盖；run --output-dir 缺省根目录
     universes_dir: Path = Path.home() / ".factorlab" / "universes"
     default_universe: str | None = None
 

@@ -135,7 +135,12 @@ def run_factor(spec: FactorSpec, ctx: RunContext) -> FactorResult:
         # 缩放 close，再乘 adj 会二次复权——HFQ/QFQ 收益应一致）
         panel = compute_forward_returns(panel)
         adjustment = getattr(spec, "adjustment", None) or ctx.adjustment
-        panel = view_prices(panel, adjustment)
+        asof = None
+        if adjustment == "pit_qfq":
+            # view_prices 的 asof 是 datetime.date（pit_qfq 分支 filter pl.Date <= asof）——
+            # spec.date.end 是 str，需转 date 对象（str 与 pl.Date 比较会报错）
+            asof = datetime.date.fromisoformat(spec.date.end) if spec.date.end else panel["date"].max()
+        panel = view_prices(panel, adjustment, asof=asof)
         # compute_formula 仅输出 date/code/signal（M2 约定），把 signal 接回完整面板，
         # 供 process 链使用；公式引用的 close 等在 view_prices 后为复权值
         panel = panel.join(compute_formula(panel, formula), on=["date", "code"], how="left")

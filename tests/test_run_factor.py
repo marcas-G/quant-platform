@@ -393,6 +393,58 @@ def test_run_factor_unknown_adjustment_rejected(tmp_path):
         run_factor(spec, RunContext(db_path=tmp_path / "q.duckdb", output_dir=tmp_path / "out_x"))
 
 
+def test_run_factor_pit_qfq_asof(tmp_path):
+    # spec.adjustment=pit_qfq：view_prices asof=spec.date.end（研究日视角）——装配不崩且口径生效
+    build_db(tmp_path, ex_date=True)
+    spec_path = tmp_path / "spec_pit.yaml"
+    spec_path.write_text("""
+name: demo_pit
+category: custom
+direction: 1
+universe:
+  codes: ["000001.SZ"]
+date:
+  start: "2024-01-02"
+  end: "2024-01-09"
+adjustment: pit_qfq
+process: []
+formula: |
+  from polars_ta.prefix.wq import ts_delay
+  signal = close / ts_delay(close, 1) - 1
+""", encoding="utf-8")
+    result = run_factor(load_spec(spec_path), RunContext(db_path=tmp_path / "q.duckdb", output_dir=tmp_path / "out_pit"))
+    assert result.panel.height > 0
+    a = result.panel.filter(pl.col("code") == "000001").sort("date")
+    # asof=2024-01-09（adj=1.5）：除权日 01-04 因子 = 8×1.5/11 - 1（raw 口径会是 8/11 - 1）
+    day3 = a.filter(pl.col("date") == datetime.date(2024, 1, 4))["signal"][0]
+    assert day3 == pytest.approx(8 * 1.5 / 11 - 1)
+    summary = json.loads((tmp_path / "out_pit" / "summary.json").read_text(encoding="utf-8"))
+    assert summary["adjustment"] == "pit_qfq"
+
+
+def test_run_factor_pit_qfq_without_date_end(tmp_path):
+    # 边界：spec.date.end 为空时 asof 回落面板最大日期（不崩）
+    build_db(tmp_path, ex_date=True)
+    spec_path = tmp_path / "spec_pit_noend.yaml"
+    spec_path.write_text("""
+name: demo_pit_noend
+category: custom
+direction: 1
+universe:
+  codes: ["000001.SZ"]
+date:
+  start: "2024-01-02"
+adjustment: pit_qfq
+process: []
+formula: |
+  signal = close
+""", encoding="utf-8")
+    result = run_factor(load_spec(spec_path), RunContext(db_path=tmp_path / "q.duckdb", output_dir=tmp_path / "out_pit2"))
+    assert result.panel.height > 0
+    summary = json.loads((tmp_path / "out_pit2" / "summary.json").read_text(encoding="utf-8"))
+    assert summary["adjustment"] == "pit_qfq"
+
+
 def test_formula_columns_extracts_data_cols_only():
     formula = '''
 from polars_ta.prefix.wq import ts_mean, ts_delay

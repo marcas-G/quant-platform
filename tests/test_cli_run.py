@@ -1,6 +1,7 @@
 """factorlab run 命令测试：help、tmp 平台库端到端落盘（含 evaluation）、错误路径。"""
 import json
 
+import polars as pl
 from typer.testing import CliRunner
 
 from factorlab.cli.main import app
@@ -12,7 +13,7 @@ runner = CliRunner()
 def test_run_help():
     result = runner.invoke(app, ["run", "--help"])
     assert result.exit_code == 0
-    for opt in ("--universe", "--max-memory", "--output-dir"):
+    for opt in ("--universe", "--max-memory", "--output-dir", "--backtest", "--no-backtest", "--groups"):
         assert opt in result.stdout
 
 
@@ -121,6 +122,128 @@ formula: |
     result = runner.invoke(app, ["run", str(spec_path)])
     assert result.exit_code != 0
     assert "nope.duckdb" in result.output
+
+
+def test_run_backtest_flag(tmp_path, monkeypatch):
+    # --backtest（默认）：summary.evaluation 含 layered_backtest；--output-dir 缺省 results_dir/<name>
+    build_db(tmp_path)
+    spec_path = tmp_path / "demo.yaml"
+    spec_path.write_text("""
+name: demo
+category: custom
+direction: 1
+universe:
+  codes: ["000001.SZ", "600519.SH"]
+date:
+  start: "2024-01-02"
+  end: "2024-01-09"
+formula: |
+  signal = close / open - 1
+""", encoding="utf-8")
+    monkeypatch.setattr("factorlab.config.settings.platform_db", tmp_path / "q.duckdb")
+    monkeypatch.setattr("factorlab.config.settings.results_dir", tmp_path / "results")
+    result = runner.invoke(app, ["run", str(spec_path)])
+    assert result.exit_code == 0, result.output
+    summary = json.loads((tmp_path / "results" / "demo" / "summary.json").read_text(encoding="utf-8"))
+    assert "layered_backtest" in summary["evaluation"]
+    assert summary["evaluation"]["layered_backtest"]["n_groups"] == 10
+    assert summary["evaluation"]["layered_backtest"]["periods"] >= 1
+
+
+def test_run_no_backtest_flag(tmp_path, monkeypatch):
+    # --no-backtest：跳过 layered_backtest（评估仍在），weekly 落盘不受开关影响
+    build_db(tmp_path)
+    spec_path = tmp_path / "demo.yaml"
+    spec_path.write_text("""
+name: demo
+category: custom
+direction: 1
+universe:
+  codes: ["000001.SZ", "600519.SH"]
+date:
+  start: "2024-01-02"
+  end: "2024-01-09"
+formula: |
+  signal = close / open - 1
+""", encoding="utf-8")
+    monkeypatch.setattr("factorlab.config.settings.platform_db", tmp_path / "q.duckdb")
+    out_dir = tmp_path / "out_nobt"
+    result = runner.invoke(app, ["run", "--no-backtest", str(spec_path), "--output-dir", str(out_dir)])
+    assert result.exit_code == 0, result.output
+    summary = json.loads((out_dir / "summary.json").read_text(encoding="utf-8"))
+    assert "evaluation" in summary
+    assert "layered_backtest" not in summary["evaluation"]
+    assert (out_dir / "weekly.parquet").exists()
+
+
+def test_run_groups_param(tmp_path, monkeypatch):
+    # --groups 传递到 layered_backtest.n_groups
+    build_db(tmp_path, n_days=9)
+    spec_path = tmp_path / "demo.yaml"
+    spec_path.write_text("""
+name: demo
+category: custom
+direction: 1
+universe:
+  codes: ["000001.SZ", "600519.SH"]
+date:
+  start: "2024-01-02"
+  end: "2024-01-12"
+formula: |
+  signal = close / open - 1
+""", encoding="utf-8")
+    monkeypatch.setattr("factorlab.config.settings.platform_db", tmp_path / "q.duckdb")
+    out_dir = tmp_path / "out_g"
+    result = runner.invoke(app, ["run", "--groups", "5", str(spec_path), "--output-dir", str(out_dir)])
+    assert result.exit_code == 0, result.output
+    summary = json.loads((out_dir / "summary.json").read_text(encoding="utf-8"))
+    assert summary["evaluation"]["layered_backtest"]["n_groups"] == 5
+
+
+def test_run_groups_invalid_rejected(tmp_path, monkeypatch):
+    # 边界：--groups < 2 在 typer 解析期拒绝（分层回测至少 2 档）
+    build_db(tmp_path)
+    spec_path = tmp_path / "demo.yaml"
+    spec_path.write_text("""
+name: demo
+category: custom
+direction: 1
+universe:
+  codes: ["000001.SZ"]
+formula: |
+  signal = close / open - 1
+""", encoding="utf-8")
+    monkeypatch.setattr("factorlab.config.settings.platform_db", tmp_path / "q.duckdb")
+    result = runner.invoke(app, ["run", "--groups", "1", str(spec_path)])
+    assert result.exit_code != 0
+    assert "groups" in result.output
+
+
+def test_run_weekly_parquet_is_weekly_aligned(tmp_path, monkeypatch):
+    # weekly.parquet 为周频对齐面板（行数 = 周数 × 股票数），不再冗余日频（panel.parquet 保留日频）
+    build_db(tmp_path, n_days=9)  # 9 交易日 = 2 个 ISO 周（01-05 / 01-12 各为周内最后交易日）
+    spec_path = tmp_path / "demo.yaml"
+    spec_path.write_text("""
+name: demo
+category: custom
+direction: 1
+universe:
+  codes: ["000001.SZ", "600519.SH"]
+date:
+  start: "2024-01-02"
+  end: "2024-01-12"
+formula: |
+  signal = close / open - 1
+""", encoding="utf-8")
+    monkeypatch.setattr("factorlab.config.settings.platform_db", tmp_path / "q.duckdb")
+    out_dir = tmp_path / "out_weekly"
+    result = runner.invoke(app, ["run", str(spec_path), "--output-dir", str(out_dir)])
+    assert result.exit_code == 0, result.output
+    weekly = pl.read_parquet(out_dir / "weekly.parquet")
+    assert weekly.height == 2 * 2  # 2 周 × 2 只
+    daily = pl.read_parquet(out_dir / "panel.parquet")
+    assert daily.height == 9 * 2
+    assert daily.height > weekly.height
 
 
 def test_run_empty_universe(tmp_path, monkeypatch):
