@@ -271,3 +271,21 @@ def test_rebuild_concurrent_is_faster_than_serial(tmp_path, monkeypatch):
     concurrent = time.monotonic() - t0
 
     assert concurrent < serial * 0.8  # 5 路并发应显著快于串行
+
+
+def test_rebuild_accepts_string_is_open(tmp_path, monkeypatch):
+    """fetcher 统一 String 构造后 trade_cal.is_open 是 String——rebuild 需 cast 后比较。"""
+    dates = ["20240102", "20240103"]
+    tables = {
+        ("trade_cal", ""): pl.DataFrame(
+            {"exchange": ["SSE"] * 2, "cal_date": dates, "is_open": ["1", "1"]}  # String 类型
+        ),
+        ("stock_basic", ""): pl.DataFrame({"ts_code": ["A.SZ"], "symbol": ["A"]}),
+        ("daily", "20240102"): pl.DataFrame({"trade_date": ["20240102"], "ts_code": ["A.SZ"], "close": [10.0]}),
+        ("daily", "20240103"): pl.DataFrame({"trade_date": ["20240103"], "ts_code": ["A.SZ"], "close": [11.0]}),
+    }
+    db = PlatformDB(tmp_path / "staging.duckdb")
+    client = _fake_client(monkeypatch, tables)
+    report = rebuild_all(db, client, scope=RebuildScope(start="20240102", end="20240103"),
+                         manifest_path=tmp_path / "m.json")
+    assert db.query("SELECT count(*) AS n FROM daily")["n"][0] == 2

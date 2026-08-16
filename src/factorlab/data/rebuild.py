@@ -140,7 +140,7 @@ def rebuild_all(
                                      "end_date": scope.end or DEFAULT_END})
     if cal.height == 0 or "is_open" not in cal.columns:
         raise ValueError("trade_cal 无交易日，检查 token/日期范围")
-    cal = cal.filter(pl.col("is_open") == 1)
+    cal = cal.filter(pl.col("is_open").cast(pl.Int32) == 1)  # fetcher 统一 String 构造，需 cast
     dates = sorted(cal["cal_date"].to_list())
     if not dates:
         raise ValueError("trade_cal 无交易日，检查 token/日期范围")

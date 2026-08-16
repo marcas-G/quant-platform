@@ -29,7 +29,7 @@ def refresh(db: PlatformDB, client: TeaJoinClient, manifest_path: Path | None = 
 
     today = datetime.date.today().strftime("%Y%m%d")
     cal = client.fetch("trade_cal", {"exchange": "SSE", "start_date": start_from, "end_date": today})
-    new_dates = sorted(d for d in cal.filter(pl.col("is_open") == 1)["cal_date"].to_list()
+    new_dates = sorted(d for d in cal.filter(pl.col("is_open").cast(pl.Int32) == 1)["cal_date"].to_list()
                        if d > last or d in failed_all)
     if not new_dates:
         return {"new_dates": [], "tables": {}}
