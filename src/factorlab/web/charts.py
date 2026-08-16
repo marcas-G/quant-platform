@@ -70,26 +70,28 @@ def decile_bar_figure(groups: list[dict]) -> str:
     return fig.to_json()
 
 
+# 分层档位颜色：sequential blue ramp 10 步（D1 深 → D10 浅，有序语义）
+_LAYERED_BLUE = ["#0d366b", "#104281", "#184f95", "#1c5cab", "#256abf",
+                 "#2a78d6", "#3987e5", "#5598e7", "#6da7ec", "#86b6ef"]
+
+
 def layered_net_value_figure(net_values: dict[str, list[float]], dates: list[str]) -> str:
     """分层回测净值曲线 → plotly figure JSON 字符串。
 
-    D1（最佳）/D10（最差）/long_short 用强调色，中间档用弱化灰色；
-    图例完整（颜色不单独承载身份）。
+    每档不同颜色（sequential blue 渐变，D1 深 → Dn 浅），long_short 橙色突出；
+    全部实线。图例完整（颜色不单独承载身份）。
     """
     fig = go.Figure()
-    last_label = f"D{len(net_values) - 1}"  # 键集合 = D1..Dn + long_short
     for label, values in net_values.items():
         if label == "long_short":
-            color, width, dash = _SERIES_ORANGE, 2.5, None
-        elif label == "D1":
-            color, width, dash = _SERIES_BLUE, 2.5, None
-        elif label == last_label:
-            color, width, dash = _SERIES_RED, 2.5, None
+            color, width = _SERIES_ORANGE, 2.5
         else:
-            color, width, dash = _MUTED, 1.2, "dot"
+            idx = int(label[1:]) - 1  # D1 → 0
+            color = _LAYERED_BLUE[idx % len(_LAYERED_BLUE)]
+            width = 2.0
         fig.add_trace(go.Scatter(
             x=dates, y=values, mode="lines", name=label,
-            line=dict(color=color, width=width, dash=dash),
+            line=dict(color=color, width=width),
             hovertemplate="%{x}<br>%{fullData.name}=%{y:.4f}<extra></extra>"))
     fig.update_layout(**_base_layout("分层回测净值", 380))
     return fig.to_json()
