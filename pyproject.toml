@@ -24,6 +24,7 @@ dependencies = [
     "plotly>=6.7",
     "requests>=2.32",
     "psutil>=7.2",
+    "quant-core>=0.1.0",  # Rust 评估内核（PyO3；源见 quant-data 项目归档，本仓库仅声明）
 ]
 
 [project.optional-dependencies]
