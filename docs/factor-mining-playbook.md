@@ -199,7 +199,65 @@ formula: |
 | 涨跌停日 | 一字板不可成交 | 回测/实盘需 Raw Execution 过滤（平台数据有 stk_limit 表） |
 | ST/停牌污染 | 异常值 | universe exclude_st；fill_suspensions 已补停牌 |
 
-## 6. 因子入库与管理
+## 6. 算子扩展（三层机制）
+
+平台提供三层算子扩展——按使用场景选择：
+
+| 层 | 机制 | 适用 | 示例 |
+|----|------|------|------|
+| **1** | 公式内 `def` | 单次使用的元素级逻辑（无窗口） | `def flip(x, n): return x * n` |
+| **2** | DSL 内联宏（spec.operators） | 公式内复用、可参数化 | `mom_ratio(x, n)` 宏 |
+| **3** | Python 算子插件（`op add`） | 可复用、需版本钉住的新语义 | `@factor_op("event_decay", kind="ts", ...)` |
+
+**选择建议**：临时逻辑用第 1 层；同 spec 内复用用第 2 层；跨因子复用/需要版本管理用第 3 层（`~/.factorlab/plugins/`，AST 安全扫描 + 版本快照）。
+
+**第 1 层——公式内 def（元素级）**：
+
+```yaml
+formula: |
+  def flip(x, n):
+      return x * n
+  signal = flip(close, 2) - close
+```
+
+> **限制**：`def` 内禁止 ts_/cs_ 窗口算子（分区安全——请写顶层）；中间变量用 `_` 前缀。
+
+**第 2 层——DSL 内联宏**：
+
+```yaml
+operators:
+  mom_ratio:
+    params: [x, n]
+    formula: "delay(x, n) / delay(x, 2 * n) - 1"
+formula: |
+  from polars_ta.prefix.wq import ts_delay as delay
+  signal = mom_ratio(close, 5)
+```
+
+**第 3 层——Python 算子插件**：
+
+```python
+# my_ops.py —— factorlab op add ./my_ops.py
+import polars as pl
+from factorlab.ops.registry import factor_op
+
+@factor_op("event_decay", kind="ts", version="0.1.0")
+def event_decay(x: pl.Expr, n: int) -> pl.Expr:
+    return x.rolling_mean(window_size=n)
+```
+
+```bash
+factorlab op add ./my_ops.py      # AST 安全扫描 + 注册（冲突需 --force）
+factorlab op list                 # 列出用户插件算子
+factorlab op doc event_decay      # 签名/类别/版本
+factorlab op remove event_decay   # 禁用（保留历史结果）
+```
+
+**内置算子**（直接可用，无需扩展）：`wq` 族（ts_mean/ts_std_dev/ts_rank/ts_corr/ts_covariance/
+ts_skewness/ts_kurtosis/ts_cum_sum/ts_delay/ts_delta 等）、`ta/tdx` 族（RSI/ATR/CCI/MACD/BIAS/KDJ/BOLL）、
+平台薄封装（returns/vwap/adv20/group_rank/group_mean）。
+
+## 7. 因子入库与管理
 
 ```
 factorlab run factor/my_factor.yaml          # 计算 + 评估 + 分层回测
