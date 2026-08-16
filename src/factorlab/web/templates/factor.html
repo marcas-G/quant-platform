@@ -1,29 +1,58 @@
 <!DOCTYPE html>
-<html lang="zh"><head><meta charset="utf-8"><title>{{ name }} - FactorLab</title>
+<html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>{{ name }} - FactorLab</title>
+<link rel="stylesheet" href="/static/style.css">
 <script src="/static/plotly.min.js"></script></head>
 <body>
-<h1>{{ name }}</h1>
-<p>universe={{ summary.universe_count }} | {{ summary.date_start }} ~ {{ summary.date_end }}
-| rows={{ summary.panel_rows }} | null={{ summary.signal_null_ratio }}</p>
-<table border="1" cellpadding="6">
-<tr><th>IC mean</th><th>IC t_stat</th><th>十分位 spread</th><th>月换手</th><th>覆盖</th></tr>
-<tr><td>{{ summary.evaluation.ic.mean }}</td>
-<td>{{ summary.evaluation.ic.t_stat }}</td>
-<td>{{ summary.evaluation.decile_returns.spread.ret }}</td>
-<td>{{ summary.evaluation.turnover.monthly }}</td>
-<td>{{ summary.evaluation.coverage.pct_valid }}</td></tr>
-</table>
-{% if charts.ic %}
-<div id="ic-chart"></div>
-<script>Plotly.newPlot("ic-chart", {{ charts.ic | safe }});</script>
-{% elif not has_weekly %}<p>无周频数据（IC 曲线不可用）</p>{% endif %}
-{% if charts.decile %}
-<div id="decile-chart"></div>
-<script>Plotly.newPlot("decile-chart", {{ charts.decile | safe }});</script>
-{% endif %}
-{% if charts.layered %}
-<div id="layered-chart"></div>
-<script>Plotly.newPlot("layered-chart", {{ charts.layered | safe }});</script>
-{% endif %}
-<pre>{{ summary.spec_yaml }}</pre>
+<div class="container">
+  <div class="topbar">
+    <h1>{{ name }}</h1>
+    <span class="meta"><a href="/">← 因子库</a></span>
+  </div>
+
+  <div class="metrics">
+    <div class="metric"><div class="label">IC mean</div>
+      <div class="value {{ 'pos' if summary.evaluation.ic.mean is not none and summary.evaluation.ic.mean >= 0 else ('neg' if summary.evaluation.ic.mean is not none else '') }}">
+        {{ "%.4f"|format(summary.evaluation.ic.mean) if summary.evaluation.ic.mean is not none else "—" }}</div></div>
+    <div class="metric"><div class="label">IC t_stat</div>
+      <div class="value">{{ "%.2f"|format(summary.evaluation.ic.t_stat) if summary.evaluation.ic.t_stat is not none else "—" }}</div>
+      <div class="hint">{{ "显著" if summary.evaluation.ic.t_stat is not none and summary.evaluation.ic.t_stat|abs >= 2 else "不显著" }}</div></div>
+    <div class="metric"><div class="label">十分位 spread</div>
+      <div class="value">{{ "%.4f"|format(summary.evaluation.decile_returns.spread.ret) if summary.evaluation.decile_returns.spread.ret is not none else "—" }}</div></div>
+    <div class="metric"><div class="label">月换手</div>
+      <div class="value">{{ "%.1f%%"|format(summary.evaluation.turnover.monthly * 100) if summary.evaluation.turnover.monthly is not none else "—" }}</div></div>
+    <div class="metric"><div class="label">覆盖</div>
+      <div class="value">{{ "%.0f%%"|format(summary.evaluation.coverage.pct_valid * 100) if summary.evaluation.coverage.pct_valid is not none else "—" }}</div></div>
+    <div class="metric"><div class="label">universe</div>
+      <div class="value">{{ summary.universe_count }}</div>
+      <div class="hint">{{ summary.date_start }} ~ {{ summary.date_end }}</div></div>
+    <div class="metric"><div class="label">面板</div>
+      <div class="value">{{ summary.panel_rows }}</div>
+      <div class="hint">null={{ "%.1f%%"|format(summary.signal_null_ratio * 100) }}</div></div>
+  </div>
+
+  {% if charts.ic %}
+  <div class="chart-card"><h2>IC 曲线</h2>
+    <div id="ic-chart"></div>
+    <script>Plotly.newPlot("ic-chart", {{ charts.ic | safe }});</script>
+  </div>
+  {% elif not has_weekly %}<div class="chart-card"><h2>IC 曲线</h2><p class="placeholder">无周频数据（IC 曲线不可用）</p></div>{% endif %}
+
+  {% if charts.decile %}
+  <div class="chart-card"><h2>十分位收益</h2>
+    <div id="decile-chart"></div>
+    <script>Plotly.newPlot("decile-chart", {{ charts.decile | safe }});</script>
+  </div>
+  {% endif %}
+
+  {% if charts.layered %}
+  <div class="chart-card"><h2>分层回测净值</h2>
+    <div id="layered-chart"></div>
+    <script>Plotly.newPlot("layered-chart", {{ charts.layered | safe }});</script>
+  </div>
+  {% endif %}
+
+  <h2 style="margin: 20px 0 8px">Spec 原文</h2>
+  <pre class="spec">{{ summary.spec_yaml }}</pre>
+</div>
 </body></html>

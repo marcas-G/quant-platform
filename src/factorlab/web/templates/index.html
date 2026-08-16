@@ -1,16 +1,32 @@
 <!DOCTYPE html>
-<html lang="zh"><head><meta charset="utf-8"><title>FactorLab</title></head>
+<html lang="zh"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>FactorLab</title>
+<link rel="stylesheet" href="/static/style.css"></head>
 <body>
-<h1>FactorLab 因子库</h1>
-{% if factors %}
-<table border="1" cellpadding="6">
-<tr><th>名称</th><th>类别</th><th>方向</th><th>IC mean</th><th>十分位 spread</th><th>最近运行</th></tr>
-{% for f in factors %}
-<tr><td><a href="/factor/{{ f.name }}">{{ f.name }}</a></td>
-<td>{{ f.category }}</td><td>{{ f.direction }}</td>
-<td>{{ f.ic_mean }}</td><td>{{ f.spread }}</td>
-<td>{{ f.run_at }}</td></tr>
-{% endfor %}
-</table>
-{% else %}<p>暂无因子结果（先运行 factorlab run）</p>{% endif %}
+<div class="container">
+  <div class="topbar">
+    <h1>FactorLab 因子库</h1>
+    <span class="meta">{{ factors|length }} 个因子</span>
+  </div>
+  {% if factors %}
+  <table>
+    <thead>
+      <tr><th>名称</th><th>类别</th><th>方向</th><th class="num">IC mean</th>
+          <th class="num">十分位 spread</th><th>最近运行</th></tr>
+    </thead>
+    <tbody>
+    {% for f in factors %}
+      <tr>
+        <td><a href="/factor/{{ f.name }}">{{ f.name }}</a></td>
+        <td>{{ f.category }}</td>
+        <td>{{ f.direction }}</td>
+        <td class="num">{{ "%.4f"|format(f.ic_mean) if f.ic_mean is not none else "—" }}</td>
+        <td class="num">{{ "%.4f"|format(f.spread) if f.spread is not none else "—" }}</td>
+        <td>{{ f.run_at }}</td>
+      </tr>
+    {% endfor %}
+    </tbody>
+  </table>
+  {% else %}<p class="empty">暂无因子结果（先运行 factorlab run）</p>{% endif %}
+</div>
 </body></html>

@@ -39,7 +39,7 @@ def test_web_factor_detail_real_charts(real_results_dir):
     resp = TestClient(create_app(real_results_dir)).get("/factor/m4b_smoke")
     assert resp.status_code == 200
     assert "m4b_smoke" in resp.text
-    assert "0.0785" in resp.text  # 真实 IC mean（0.07857…）
+    assert "0.0786" in resp.text  # 真实 IC mean 格式化 %.4f（0.07857 → 0.0786）
     assert "Plotly" in resp.text  # 图表脚本与 figure JSON 内嵌
     assert "long_short" in resp.text  # 分层回测净值序列数据
 
