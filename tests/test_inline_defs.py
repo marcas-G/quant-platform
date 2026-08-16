@@ -1,7 +1,7 @@
 import pytest
 
 from factorlab.factor.errors import FactorDSLError
-from factorlab.ops.platform_ops import inline_defs
+from factorlab.ops.platform_ops import inline_defs, rewrite_expr_methods
 
 
 def test_inline_single_def_with_window_ops():
@@ -248,3 +248,30 @@ signal = scale_it(10, 5) + scale_it(20, 5)
     ns: dict = {}
     exec(out, ns)
     assert ns["signal"] == 1.0  # 10/20 + 20/40
+
+
+def test_rewrite_elementwise_method_chain_to_function_call():
+    # 元素级方法链 → 函数调用（expr_codegen 的 AST 处理不支持属性调用：
+    # ts_delta(x, 1).abs() 在其 visit_Call 中崩溃——改写后语义不变）
+    out = rewrite_expr_methods("signal = ts_delta(close, 1).abs()")
+    assert out == "signal = abs(ts_delta(close, 1))"
+
+
+def test_rewrite_method_chain_after_inline_defs():
+    # def 体内方法链在 inline_defs 后为顶层表达式——改写同样生效（free-form 端到端形态）
+    src = '''
+def oi_energy(x, n):
+    _e = ts_rank(ts_delta(x, 1).abs(), n)
+    return sqrt(_e * (1 - _e))
+
+signal = oi_energy(volume, 20)
+'''
+    out = rewrite_expr_methods(inline_defs(src))
+    assert "abs(" in out
+    assert ".abs()" not in out
+    assert "def oi_energy" not in out
+
+
+def test_rewrite_no_method_chain_unchanged():
+    src = "signal = ts_mean(close, 20)"
+    assert rewrite_expr_methods(src) == src

@@ -99,6 +99,21 @@ def _client() -> TeaJoinClient:
     return TeaJoinClient(token=settings.teajoin_token, base_url=settings.teajoin_base_url)
 
 
+def _parse_param_value(value: str) -> int | float | bool | str:
+    """--set 值类型解析：int → float → bool（true/false）→ str 原样。"""
+    try:
+        return int(value)
+    except ValueError:
+        pass
+    try:
+        return float(value)
+    except ValueError:
+        pass
+    if value.lower() in ("true", "false"):
+        return value.lower() == "true"
+    return value
+
+
 @app.command("run")
 def run_factor_cli(
     spec_path: Path,
@@ -108,22 +123,34 @@ def run_factor_cli(
     float32: bool = True,
     backtest: bool = True,
     groups: int = typer.Option(10, min=2),
+    set_params: list[str] = typer.Option(None, "--set", help="覆盖 spec.params（k=v，可多次，生成 name_kv 变体）"),
 ) -> None:
     """计算因子并评估（平台库）。--backtest 默认产出分层回测；--no-backtest 关闭（快速评估）。
-    --groups 分层档数（>=2）。--universe 默认 FACTORLAB_DEFAULT_UNIVERSE。"""
+    --groups 分层档数（>=2）。--set k=v 覆盖 spec.params 生成变体（results 独立目录）。
+    --universe 默认 FACTORLAB_DEFAULT_UNIVERSE。"""
     from factorlab.engine.compute import RunContext, run_factor as run_impl
     from factorlab.eval.alignment import align_weekly
     from factorlab.eval.layered import layered_backtest
     from factorlab.eval.rust_ic import evaluate_factor_weekly
 
+    overrides = {}
+    for kv in set_params or []:
+        key, _, value = kv.partition("=")
+        if not key or not value:
+            raise typer.BadParameter(f"--set 格式应为 k=v: {kv}")
+        overrides[key] = _parse_param_value(value)
     try:
         spec = load_spec(spec_path)
     except FileNotFoundError as exc:
         console.print(f"错误: {exc}")
         raise typer.Exit(code=1) from exc
+    variant = spec.name
+    if overrides:
+        spec.params = {**spec.params, **overrides}
+        variant = spec.name + "_" + "_".join(f"{k}{v}" for k, v in overrides.items())
     ctx = RunContext(
         db_path=settings.platform_db,
-        output_dir=output_dir or (settings.results_dir / spec.name),
+        output_dir=output_dir or (settings.results_dir / variant),
         universe_override=universe or settings.default_universe,
         float32=float32,
     )
@@ -153,7 +180,7 @@ def run_factor_cli(
     (ctx.output_dir / "summary.json").write_text(
         json.dumps(result.summary, ensure_ascii=False, indent=2, default=str), encoding="utf-8")
     ic = evaluation.get("ic", {})
-    console.print(f"{spec.name}: n_weeks={evaluation.get('n_weeks')} "
+    console.print(f"{variant}: n_weeks={evaluation.get('n_weeks')} "
                   f"ic_mean={ic.get('mean')} spread={evaluation.get('decile_returns', {}).get('spread', {}).get('ret')}")
 
 

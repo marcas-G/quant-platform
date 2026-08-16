@@ -60,6 +60,11 @@ ALLOWED_IMPORT_PREFIXES = (
 
 FORBIDDEN_CALLS = {"eval", "exec", "open", "compile", "__import__"}
 
+# polars Expr 纯元素级方法白名单（与元素级函数名单同语义——无窗口、无分组、无副作用）。
+# 属性调用仅放行「白名单方法 + 基表达式非裸 Name」：ts_delta(x, 1).abs() 合法
+# （free-form 设计 §2.1）；np.abs / pl.read_csv / x.rolling_mean 仍被拒。
+ALLOWED_EXPR_METHODS = {"abs", "log", "log1p", "sqrt", "exp", "sign", "floor"}
+
 
 def _is_allowed_import(module: str | None) -> bool:
     return module is not None and module.startswith(ALLOWED_IMPORT_PREFIXES)
@@ -105,8 +110,12 @@ def validate_formula(source: str) -> None:
                 )
 
         if isinstance(node, ast.Call) and isinstance(node.func, ast.Attribute):
-            raise FactorDSLError(
-                "禁止属性调用；请使用已导入的算子函数",
-                node.lineno,
-                node.col_offset,
-            )
+            # 仅放行纯元素级方法链在表达式结果上（基表达式非裸 Name——模块/对象属性如
+            # np.abs、pl.read_csv 仍属禁止的属性调用）
+            if isinstance(node.func.value, ast.Name) or node.func.attr not in ALLOWED_EXPR_METHODS:
+                raise FactorDSLError(
+                    "禁止属性调用；请使用已导入的算子函数"
+                    f"（元素级方法链仅限 {sorted(ALLOWED_EXPR_METHODS)}）",
+                    node.lineno,
+                    node.col_offset,
+                )

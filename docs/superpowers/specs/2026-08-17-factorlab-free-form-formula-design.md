@@ -56,13 +56,17 @@ formula: |
 ### 2.3 展开链
 
 ```
-validate_formula（原始源码校验）
+validate_formula（原始源码校验；元素级方法链 .abs() 等放行——白名单 + 基表达式非裸 Name）
 → expand_user_macros（spec.operators 宏）
 → inline_defs（def 内联展开——窗口算子合法化）
+→ rewrite_expr_methods（元素级方法链改写为函数调用——expr_codegen 的 AST 处理
+  不支持属性调用，实现时发现）
 → expand_platform_macros（平台薄封装）
 → validate_partition_calls / reject_future_shifts（展开后校验）
 → codegen_exec
 ```
+
+（params 的 `${}` 文本替换在展开链最前——宏体/def 体内同样可见。）
 
 ## 3. 顶层参数化
 

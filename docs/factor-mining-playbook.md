@@ -122,7 +122,48 @@ formula: |
   signal = momentum(close, 5) - _vol
 ```
 
-> **限制**：`def` 内禁止 ts_/cs_ 算子（分区安全——窗口算子请写顶层）；中间变量用 `_` 前缀。
+> **注意**：`def` 内窗口算子现在**合法**（free-form 内联展开保证分区安全，不再
+> 要求写顶层）；中间变量用 `_` 前缀（`_` 前缀不能作 def 名）；递归 def 拒绝。
+
+### 2.6 自由代码 + 参数化模板（def 自定义算子 + params + --set 变体）
+
+一个 spec 文件 = 完整因子（元数据 + 参数 + 自由代码），`--set` 一键生成参数变体。
+
+```yaml
+name: vol_run_energy
+category: custom
+direction: -1
+params: {win: 200, gain: 2.0}
+universe:
+  rules: {exclude_st: true, exchanges: ["SSE", "SZSE"]}
+date:
+  start: "2022-01-01"
+  end: "2025-12-31"
+process:
+  - winsorize(quantile=0.99)
+  - standardize()
+formula: |
+  from polars_ta.prefix.wq import ts_rank, ts_delta, ts_count
+
+  # 自定义算子：量能变化率的钟形调制（def 内窗口算子——内联展开保证分区安全）
+  def oi_energy(x, n):
+      _e = ts_rank(ts_delta(x, 1).abs(), n)
+      return sqrt(_e * (1 - _e))
+
+  _energy = oi_energy(volume, ${win})
+  _rl = ts_count(sign(ts_delta(volume, 1)) == 1, 500)
+  signal = -ts_rank(_rl, 500) * _energy * ${gain}
+```
+
+> 说明：
+> - `${win}` / `${gain}` 引用 `params`——**改参数不用改公式**；`${}` 在宏体/def 体内同样可见。
+> - `factorlab run vol_run_energy.yaml --set win=100 --set gain=1.5` → 变体
+>   `vol_run_energy_win100_gain1.5`，results 独立目录，与默认变体并存
+>   （`list`/`show`/`serve` 均可见）——同思路多参数对比直接用 `--set`，无需复制 spec。
+> - `--set` 值自动解析类型：int/float/bool（true/false）/str。
+> - 长窗口注意：500 日游程窗口需 ≥ 4 年数据（polars_ta 全窗口语义，窗口 > 数据
+>   长度时输出全 null）；停牌日会中断窗口导致其后 500 行 null——长窗口因子建议
+>   用长历史 + 流动性好的股票池。
 
 ## 3. Spec 编写规范
 
@@ -133,6 +174,7 @@ formula: |
 | `universe` | codes 或 rules 二选一 | **挖掘批次固定同一 universe**（同池计算、同池比较）；全市场用 rules（exclude_st + exchanges） |
 | `date` | 可调历史深度 | 验证期建议 ≥3 年（统计稳健）；全历史 2000 起回测更长 |
 | `direction` | 1 或 -1 | 按因子经济学含义（动量=1、反转/波动=-1） |
+| `params` | 顶层参数映射（number/str/bool，可选） | 公式内 `${name}` 引用；`run --set k=v` 覆盖生成变体（§2.6） |
 | `adjustment` | raw/qfq/hfq/pit_qfq | **默认 qfq**（除权日不假崩）；价差类因子可试 raw；pit_qfq 用于严格防未来研究 |
 | `process` | 处理链 | 推荐 `winsorize(quantile=0.99) → standardize()` 基线；neutralize 按需（行业/市值） |
 | `target` | forward_return_5d（当前） | 20d 暂未接线（quant_core 固定 5d） |
@@ -150,7 +192,7 @@ formula: |
 
 ### 3.3 防未来三原则（平台已强制 + 用户自查）
 
-1. **TS 窗口只回溯**（平台强制：负 lookback 拒绝、def 内窗口算子拒绝）
+1. **TS 窗口只回溯**（平台强制：负 lookback 拒绝；def 内窗口算子经内联展开后同样按资产分区执行）
 2. **因子值只用到当日数据**（平台强制：前向收益独立于因子计算）
 3. **复权口径一致性**（用户自查：动量/技术指标用 qfq；评估目标 forward 用 total_return 含分红）
 
@@ -205,13 +247,13 @@ formula: |
 
 | 层 | 机制 | 适用 | 示例 |
 |----|------|------|------|
-| **1** | 公式内 `def` | 单次使用的元素级逻辑（无窗口） | `def flip(x, n): return x * n` |
+| **1** | 公式内 `def` | 单次使用的自定义逻辑（含窗口算子——内联展开保证分区安全） | `def momentum(x, n): return ts_delay(x, n) / ts_delay(x, 2*n) - 1` |
 | **2** | DSL 内联宏（spec.operators） | 公式内复用、可参数化 | `mom_ratio(x, n)` 宏 |
 | **3** | Python 算子插件（`op add`） | 可复用、需版本钉住的新语义 | `@factor_op("event_decay", kind="ts", ...)` |
 
 **选择建议**：临时逻辑用第 1 层；同 spec 内复用用第 2 层；跨因子复用/需要版本管理用第 3 层（`~/.factorlab/plugins/`，AST 安全扫描 + 版本快照）。
 
-**第 1 层——公式内 def（元素级）**：
+**第 1 层——公式内 def（自由代码）**：
 
 ```yaml
 formula: |
@@ -220,7 +262,8 @@ formula: |
   signal = flip(close, 2) - close
 ```
 
-> **限制**：`def` 内禁止 ts_/cs_ 窗口算子（分区安全——请写顶层）；中间变量用 `_` 前缀。
+> **注意**：`def` 内窗口算子合法（free-form 内联展开——见 §2.5/§2.6）；中间变量
+> 用 `_` 前缀（`_` 前缀不能作 def 名）；递归 def 拒绝。
 
 **第 2 层——DSL 内联宏**：
 
@@ -268,6 +311,10 @@ factorlab serve                              # Web 可视化（IC 曲线/净值�
 
 **因子命名约定**：`<类别>_<逻辑>_<窗口>`（如 `momentum_20d`、`low_vol_20d`）；
 方向写入 spec（direction）——评估输出自动按方向调整。
+
+**变体命名**：`factorlab run --set k=v` 自动生成 `<name>_<k><v>` 目录
+（如 `momentum_20d_win100`），results 独立目录与默认变体并存——同因子多参数
+对比用 `--set` 即可，无需复制/修改 spec（§2.6）。
 
 ## 7. 数据刷新提醒
 

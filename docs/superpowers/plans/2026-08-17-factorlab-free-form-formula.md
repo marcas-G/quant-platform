@@ -444,6 +444,24 @@ git commit -m "feat: add run --set param variants; document free-form formulas"
 
 ---
 
+### Task 3 实现修正记录（与计划的偏差，实现时发现并处理）
+
+1. **e2e 日期范围 2024-2025 → 2022-2025**：polars_ta 全窗口语义（min_samples=窗口
+   长），500 日游程窗口在 2 年（≈483 交易日）面板上输出全 null（n_weeks=0）。
+   改为 4 年（≈967 交易日）——500 日暖机后仍有 ~56 有效周（实测 n_weeks=56，
+   实测 null_ratio≈0.72：暖机 + 停牌日中断 500 行窗口）。
+2. **`ts_count` 未注册**：计划公式使用 `ts_count` 但 polars_ta_wrappers 的 _WQ_TS
+   名单缺失 → 分区校验「未知算子」。已补入 _WQ_TS。
+3. **属性调用（`.abs()`）两处阻碍**：ast_gate 拒绝一切属性调用（设计 §2.1 用
+   `ts_delta(x, 1).abs()`）且 expr_codegen 的 AST 处理不支持属性调用（visit_Call
+   假设 func 为 Name，直接崩溃）。处理：ast_gate 放行白名单纯元素级方法
+   （abs/log/log1p/sqrt/exp/sign/floor）在表达式结果上的调用（基表达式非裸 Name——
+   np.abs/pl.read_csv 仍拒）；新增 `rewrite_expr_methods`（X.method(...) →
+   method(X, ...)）接入展开链（compute_formula 与 run_factor 早链）。
+4. **`--set` 空值**：`--set win=`（空 value）同样拒绝（`if not key or not value`）。
+
+---
+
 ## Self-Review
 
 **1. Spec coverage（对照 free-form spec）：**
