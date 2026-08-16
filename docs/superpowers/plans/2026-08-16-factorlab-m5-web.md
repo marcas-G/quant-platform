@@ -128,26 +128,46 @@ MIN_STOCKS = 3  # 秩相关稳健性的最小有效股票数
 def weekly_ic(panel: pl.DataFrame, target: str = "forward_return_5d") -> pl.DataFrame:
     """周度 RankIC：每期（周）signal 与 target 的 Spearman 秩相关序列。
 
-    与 quant_core 的 RankIC 同源定义（rank 相关）；有效股票 < MIN_STOCKS 的周 → null。
-    signal/target null 行排除（复用 rust_ic 过滤语义）。
+    - 与 quant_core 的 RankIC 同源定义（秩相关）；polars 1.38 的
+      pl.corr(method="spearman") 直接支持，无需手工 rank（rank 后
+      Pearson 与之一致——秩相关即秩的 Pearson）。
+    - signal/target null 行排除（复用 rust_ic 的过滤语义）。
+    - 面板中每个日期都保留一行：有效股票 < MIN_STOCKS 的周 ic = null
+      （秩相关不稳健；含有效股票为 0 的周）。
+    - 输出 (date, ic) 按日期排序。
+    - 缺列（date/code/signal/target）抛 ValueError（不依赖 polars 内部异常）。
     """
-    df = panel.drop_nulls(["signal", target])
-    if df.height == 0:
-        return pl.DataFrame({"date": [], "ic": []})
+    required = {"date", "code", "signal", target}
+    missing = required - set(panel.columns)
+    if missing:
+        raise ValueError(f"评估面板缺少列: {sorted(missing)}")
 
-    result = df.group_by("date").agg(
-        pl.corr(pl.col("signal").rank(), pl.col(target).rank(), method="spearman").alias("ic")
-    ).sort("date")
-    # 有效股票不足的周 → null（corr 对 <2 样本返回 null；<3 手动置 null）
-    counts = df.group_by("date").len()
-    result = result.join(counts, on="date", how="left")
-    return result.with_columns(
-        pl.when(pl.col("len") < MIN_STOCKS).then(None).otherwise(pl.col("ic")).alias("ic")
-    ).select(["date", "ic"])
+    valid = panel.drop_nulls(["signal", target])
+    stats = valid.group_by("date").agg(
+        ic=pl.corr(pl.col("signal"), pl.col(target), method="spearman"),
+        n_valid=pl.len(),
+    )
+    return (
+        panel.select("date").unique()
+        .join(stats, on="date", how="left")
+        .with_columns(
+            pl.when(pl.col("n_valid") < MIN_STOCKS).then(None).otherwise(pl.col("ic")).alias("ic")
+        )
+        .select(["date", "ic"])
+        .sort("date")
+    )
 ```
 
-（polars `pl.corr(..., method="spearman")` 对 rank 输入等价 Spearman——若 polars 1.38
-的 corr 直接支持 method="spearman" 则直接用原始值；以测试通过为准。）
+（polars 1.38 的 `pl.corr(..., method="spearman")` 在 group_by.agg 中直接支持，
+用原始值即可（rank 输入多余），精确秩相关 = 1.0 与平局 average-rank 测试锁定。
+
+实现与初稿的两处差异（记录自执行）：
+1. 有效股票为 0 的周（某周 signal/target 全 null）**保留**在输出且 ic = null
+   ——spec §4 "每期有效股票 < 3 → 该期 ic = null" 的字面语义；初稿 drop_nulls
+   后 group_by 会丢失该周（与 1-2 只股票的周留 null 不一致）。测试
+   test_weekly_ic_week_all_null 锁定。
+2. 缺列抛 `ValueError`（初稿会让 polars 抛 ColumnNotFoundError）——复用
+   rust_ic 的显式列检查语义。测试 test_weekly_ic_missing_target_column 锁定。
 
 - [ ] **Step 4: Run test to verify it passes**
 
