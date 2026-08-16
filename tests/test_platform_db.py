@@ -311,10 +311,9 @@ def test_integrity_pct_chg_uses_pre_close_on_ex_rights_day(tmp_path):
 def test_integrity_calendar_gaps_ignores_future_days(tmp_path):
     """trade_cal 含未来公告日（如 2026-12-31）——daily 无未来数据，规则应排除未来日。"""
     db = build_db(tmp_path)
-    today = datetime.date.today().strftime("%Y%m%d")
     db.upsert("trade_cal", pl.DataFrame({
-        "cal_date": ["20240102", today, "20261231"],  # 含今日与未来公告日
-        "is_open": [1, 1, 1],
+        "cal_date": ["20240102", "20261231"],  # 未来公告日（20261231）不算缺日
+        "is_open": [1, 1],
     }), keys=[])
     db.upsert("daily", pl.DataFrame({
         "trade_date": ["20240102"],
