@@ -115,9 +115,7 @@ def run_factor(spec: FactorSpec, ctx: RunContext) -> FactorResult:
     try:
         codes = resolve_codes(spec, con, override=ctx.universe_override)
         formula_cols = _formula_columns(formula)  # 展开后提取：宏公式内引用的数据列也纳入加载
-        if "close" not in formula_cols:
-            raise ValueError("因子公式必须引用 close 列（前向收益依赖 close[t+h]）")
-        # adj_factor 显式请求：load_daily 默认不输出 adj 列，total_return 前向收益需要
+        # close/adj_factor 恒加载（forward 依赖 close 列而非公式引用——纯量价因子允许）
         cols = formula_cols + ["close", "adj_factor"]
         raw = load_daily(
             ctx.db_path, codes,

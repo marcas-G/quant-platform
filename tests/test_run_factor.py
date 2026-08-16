@@ -137,12 +137,13 @@ def test_run_factor_empty_date_range_rejected(tmp_path):
         run_factor(spec, RunContext(db_path=tmp_path / "q.duckdb", output_dir=tmp_path / "out3"))
 
 
-def test_run_factor_formula_without_close_rejected(tmp_path):
+def test_run_factor_formula_without_close_succeeds(tmp_path):
+    # close 恒加载（forward 依赖 close 列而非公式引用）——纯量价因子不应被拒
     build_db(tmp_path)
     spec = _spec(tmp_path)
     spec.formula = "signal = open"
-    with pytest.raises(ValueError, match="close"):
-        run_factor(spec, RunContext(db_path=tmp_path / "q.duckdb", output_dir=tmp_path / "out4"))
+    result = run_factor(spec, RunContext(db_path=tmp_path / "q.duckdb", output_dir=tmp_path / "out4"))
+    assert "forward_return_5d" in result.panel.columns  # forward 仍可用
 
 
 def test_run_factor_factors_combine_rejected(tmp_path):
