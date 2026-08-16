@@ -5,20 +5,29 @@ from factorlab.data.universe import normalize_code, resolve_codes
 from factorlab.spec import FactorSpec
 
 
+def build_db(tmp_path):
+    """平台库风格假库：stock_basic（无 exchange 列依赖——交易所由 ts_code 后缀推断）/
+    stock_st（无 is_st 列——最新 trade_date 快照的 ts_code 集合即 ST 集合）/daily/trade_cal。"""
+    db = duckdb.connect(tmp_path / "t.duckdb")
+    db.execute("CREATE TABLE stock_basic (ts_code VARCHAR, symbol VARCHAR, exchange VARCHAR, list_date VARCHAR, industry VARCHAR, market VARCHAR)")
+    db.execute("""INSERT INTO stock_basic VALUES
+        ('000001.SZ', '000001', 'SZSE', '19910403', '银行', '主板'),
+        ('600519.SH', '600519', 'SSE', '20010827', '白酒', '主板'),
+        ('830001.BJ', '830001', 'BSE', '20200101', '其他', '北交所')""")
+    db.execute("CREATE TABLE stock_st (ts_code VARCHAR, name VARCHAR, trade_date VARCHAR, type VARCHAR, type_name VARCHAR)")
+    # 仅 000001 在最新快照（600519 无 ST 记录）——exclude_st 的 ST 集合 = {000001}
+    db.execute("""INSERT INTO stock_st VALUES
+        ('000001.SZ', 'ST平安', '20260814', 'ST', '实施风险警示')""")
+    db.execute("CREATE TABLE daily (ts_code VARCHAR, trade_date VARCHAR, close DOUBLE)")
+    db.execute("INSERT INTO daily VALUES ('000001.SZ', '20260812', 11.0), ('600519.SH', '20260812', 1410.0)")
+    db.execute("CREATE TABLE trade_cal (exchange VARCHAR, cal_date VARCHAR, is_open BIGINT)")
+    db.execute("INSERT INTO trade_cal VALUES ('SSE', '20260812', 1), ('SSE', '20260813', 1)")
+    return db
+
+
 @pytest.fixture
 def db(tmp_path):
-    conn = duckdb.connect(tmp_path / "t.duckdb")
-    conn.execute("CREATE TABLE stock_basic_tushare (symbol VARCHAR, ts_code VARCHAR, exchange VARCHAR, list_date VARCHAR, industry VARCHAR)")
-    conn.execute("""INSERT INTO stock_basic_tushare VALUES
-        ('000001', '000001.SZ', 'SZSE', '19910403', '银行'),
-        ('600519', '600519.SH', 'SSE', '20010827', '白酒'),
-        ('830001', '830001.BJ', 'BSE', '20200101', '其他')""")
-    conn.execute("CREATE TABLE st_status (code VARCHAR, snap_date DATE, is_st BOOLEAN, st_type VARCHAR, name VARCHAR)")
-    conn.execute("""INSERT INTO st_status VALUES
-        ('000001', DATE '2026-01-05', FALSE, '', ''),
-        ('000001', DATE '2026-03-10', TRUE, '', ''),
-        ('600519', DATE '2026-03-10', FALSE, '', '')""")
-    conn.execute("CREATE TABLE daily (date VARCHAR, code VARCHAR, close DOUBLE)")
+    conn = build_db(tmp_path)
     yield conn
     conn.close()
 
@@ -54,19 +63,42 @@ def test_resolve_codes_inline_dedup(db):
     assert resolve_codes(spec, db) == ["000001", "600519"]
 
 
-def test_resolve_codes_rules_exclude_st(db):
+def test_resolve_codes_exclude_st_platform_db(db):
+    # 平台库 stock_st 无 is_st：最新 trade_date 快照的 ts_code 集合 = ST 集合
     spec = spec_with(rules={"exclude_st": True})
-    assert resolve_codes(spec, db) == ["600519"]  # 000001 最新 st 标记为 TRUE
+    assert resolve_codes(spec, db) == ["600519"]  # 000001 在 stock_st 最新快照
 
 
-def test_resolve_codes_rules_exchanges_rejects_bse(db):
+def test_resolve_codes_exclude_st_latest_snapshot_only(db):
+    # 600519 曾有 ST 记录（旧快照）但最新 trade_date 快照无 → 不算 ST，不被排除
+    db.execute("INSERT INTO stock_st VALUES ('600519.SH', '贵州茅台', '20260101', 'ST', '实施风险警示')")
+    spec = spec_with(rules={"exclude_st": True})
+    assert resolve_codes(spec, db) == ["600519"]
+
+
+def test_resolve_codes_exclude_st_missing_stock_st_table(db):
+    # 缺 stock_st 表（如未重建的平台库）：明确报错而非 DuckDB Catalog Error
+    db.execute("DROP TABLE stock_st")
+    with pytest.raises(ValueError, match="stock_st"):
+        resolve_codes(spec_with(rules={"exclude_st": True}), db)
+
+
+def test_resolve_codes_exchanges_by_suffix(db):
+    # 平台库 stock_basic 无 exchange 列：SSE 由 ts_code 后缀 .SH 推断
+    spec = spec_with(rules={"exchanges": ["SSE"]})
+    assert resolve_codes(spec, db) == ["600519"]
+
+
+def test_resolve_codes_rejects_bse(db):
+    # 含 830001.BJ；BSE 显式拒绝（v1 仅 SSE/SZSE）
     with pytest.raises(ValueError, match="BSE"):
         resolve_codes(spec_with(rules={"exchanges": ["BSE"]}), db)
 
 
-def test_resolve_codes_rules_exchanges_sse(db):
-    spec = spec_with(rules={"exchanges": ["SSE"]})
-    assert resolve_codes(spec, db) == ["600519"]
+def test_resolve_codes_exchanges_empty_list(db):
+    # 空列表等价于未指定：默认 SSE+SZSE（不含 BSE）
+    spec = spec_with(rules={"exchanges": []})
+    assert resolve_codes(spec, db) == ["000001", "600519"]
 
 
 def test_resolve_codes_rules_empty(db):
@@ -99,10 +131,17 @@ def test_resolve_codes_rules_min_list_days_filters_young(db):
 
 
 def test_resolve_codes_rules_min_list_days_from_daily(db):
-    # 不设 date.start → 回退到 daily 最早日期 2000-01-04；600519 上市 2001-08-27 晚于该日期 → 被过滤
-    db.execute("INSERT INTO daily VALUES ('2000-01-04', '000001', 10.0)")
+    # 不设 date.start → 回退到 daily 最早 trade_date（平台库 'YYYYMMDD'）；600519 上市晚于该日期 → 被过滤
+    db.execute("INSERT INTO daily VALUES ('000001.SZ', '20000104', 10.0)")
     spec = spec_with(rules={"min_list_days": 100})
     assert resolve_codes(spec, db) == ["000001"]
+
+
+def test_resolve_codes_min_list_days_no_date_source_raises(db):
+    # date.start 未设置且 daily 为空 → 无基准日期，明确报错
+    db.execute("DELETE FROM daily")
+    with pytest.raises(ValueError, match="date.start"):
+        resolve_codes(spec_with(rules={"min_list_days": 100}), db)
 
 
 def test_resolve_codes_empty_result_error(db):

@@ -11,6 +11,8 @@ from factorlab.spec import FactorSpec
 
 VALID_EXCHANGES = ("SSE", "SZSE")
 _ALLOWED_RULES = {"exclude_st", "min_list_days", "exchanges"}
+# 平台库 stock_basic 无 exchange 列：交易所从 ts_code 后缀推断（.SH→SSE、.SZ→SZSE、.BJ→BSE）
+_EXCHANGE_BY_SUFFIX = {"SH": "SSE", "SZ": "SZSE", "BJ": "BSE"}
 
 
 def normalize_code(code: str) -> str:
@@ -47,28 +49,38 @@ def _codes_from_rules(rules: dict[str, Any], db: duckdb.DuckDBPyConnection, date
     unknown = set(rules) - _ALLOWED_RULES
     if unknown:
         raise ValueError(f"未知 universe 规则: {sorted(unknown)}（支持: {sorted(_ALLOWED_RULES)}）")
-    sql = "SELECT symbol FROM stock_basic_tushare WHERE exchange IN (SELECT unnest(?))"
-    params: list[Any] = [list(VALID_EXCHANGES)]
+    # 平台库默认宇宙 = SSE+SZSE（无 exchange 列，按 ts_code 后缀推断；BSE 不进默认宇宙）
+    sql = "SELECT symbol FROM stock_basic WHERE substr(ts_code, -2) IN (SELECT unnest(?))"
+    params: list[Any] = [[s for s, ex in _EXCHANGE_BY_SUFFIX.items() if ex in VALID_EXCHANGES]]
     if rules.get("exclude_st"):
-        # st_status 快照日期列名为 snap_date（真实库 schema；假库须一致）
-        sql += " AND symbol NOT IN (SELECT code FROM st_status WHERE is_st AND snap_date = (SELECT max(snap_date) FROM st_status))"
+        tables = {r[0] for r in db.execute("SELECT table_name FROM information_schema.tables").fetchall()}
+        if "stock_st" not in tables:
+            raise ValueError("exclude_st 需要 stock_st 表（平台库由 data rebuild 生成）")
+        # stock_st 无 is_st 列：最新 trade_date 快照中的 ts_code 集合即 ST 集合（type='ST' 语义）
+        sql += (
+            " AND symbol NOT IN (SELECT substr(ts_code, 1, 6) FROM stock_st"
+            " WHERE trade_date = (SELECT max(trade_date) FROM stock_st))"
+        )
     exchanges = rules.get("exchanges")
     if exchanges:
         bad = [e for e in exchanges if e not in VALID_EXCHANGES]
         if bad:
             raise ValueError(f"不支持的交易所: {bad}（v1 仅支持 {VALID_EXCHANGES}，不含 BSE）")
-        sql += " AND exchange IN (SELECT unnest(?))"
-        params.append(list(exchanges))
+        suffixes = [s for s, ex in _EXCHANGE_BY_SUFFIX.items() if ex in exchanges]
+        sql += " AND substr(ts_code, -2) IN (SELECT unnest(?))"
+        params.append(suffixes)
     min_days = rules.get("min_list_days")
     if min_days is not None:
         min_days = int(min_days)
         if min_days < 0:
             raise ValueError(f"min_list_days 不能为负: {min_days}")
         if date_start is None:
-            date_start = db.execute("SELECT min(date) FROM daily").fetchone()[0]
-        # 真实库 list_date 为 'YYYYMMDD' 字符串（如 '19910403'），strptime 解析；ISO 直接 CAST 会抛 ConversionException
-        sql += " AND strptime(list_date, '%Y%m%d') <= CAST(? AS DATE) - INTERVAL (?) DAY"
-        params.extend([date_start, min_days])
+            date_start = db.execute("SELECT min(trade_date) FROM daily").fetchone()[0]
+            if date_start is None:
+                raise ValueError("min_list_days 需要基准日期：daily 无数据且 spec 未设置 date.start")
+        # 双格式（'YYYY-MM-DD'/'YYYYMMDD'）统一转 YYYYMMDD；平台库 list_date 为 'YYYYMMDD'（strptime 比较）
+        sql += " AND strptime(list_date, '%Y%m%d') <= strptime(?, '%Y%m%d') - INTERVAL (?) DAY"
+        params.extend([date_start.replace("-", ""), min_days])
     rows = db.execute(sql, params).fetchall()
     return sorted(r[0] for r in rows)
 
@@ -99,7 +111,7 @@ def resolve_codes(
 
     if "codes" in data:
         # 先按 6 位数字/ts_code 标准化；非标准格式（如 1 字符 symbol 测试数据）原样保留，
-        # 统一与 stock_basic_tushare 的 symbol 或 ts_code 列匹配，返回 symbol（daily.code 格式）
+        # 统一与平台库 stock_basic 的 symbol 或 ts_code 列匹配，返回 symbol（daily.code 格式）
         candidates: list[str] = []
         for c in data["codes"]:
             try:
@@ -107,7 +119,7 @@ def resolve_codes(
             except ValueError:
                 candidates.append(c)
         rows = db.execute(
-            "SELECT symbol, ts_code FROM stock_basic_tushare"
+            "SELECT symbol, ts_code FROM stock_basic"
             " WHERE symbol IN (SELECT unnest(?)) OR ts_code IN (SELECT unnest(?))",
             [candidates, candidates],
         ).fetchall()

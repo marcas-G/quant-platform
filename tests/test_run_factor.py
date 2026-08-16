@@ -16,8 +16,8 @@ def build_db(tmp_path):
         for i, d in enumerate(dates):
             db.execute("INSERT INTO daily VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                        (d, base + i, base + i + 0.5, base + i - 0.5, base + i + 1, 1000.0, 1e6, 0.01, 0.1, code))
-    db.execute("CREATE TABLE stock_basic_tushare (symbol VARCHAR, ts_code VARCHAR, exchange VARCHAR, list_date VARCHAR, industry VARCHAR)")
-    db.execute("INSERT INTO stock_basic_tushare VALUES ('A', 'A.SZ', 'SZSE', '19910101', '银行'), ('B', 'B.SH', 'SSE', '20010101', '白酒')")
+    db.execute("CREATE TABLE stock_basic (symbol VARCHAR, ts_code VARCHAR, exchange VARCHAR, list_date VARCHAR, industry VARCHAR)")
+    db.execute("INSERT INTO stock_basic VALUES ('A', 'A.SZ', 'SZSE', '19910101', '银行'), ('B', 'B.SH', 'SSE', '20010101', '白酒')")
     db.execute("CREATE TABLE st_status (code VARCHAR, date DATE, is_st BOOLEAN)")
     db.close()
 

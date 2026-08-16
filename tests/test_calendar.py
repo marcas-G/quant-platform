@@ -12,9 +12,10 @@ from factorlab.data.calendar import fill_suspensions, trading_calendar
 
 
 def test_trading_calendar_deduplicates(tmp_path):
+    # 平台库 trade_cal 按交易所分行：SSE/SZSE 同日重复 → 去重
     db = duckdb.connect(tmp_path / "t.duckdb")
-    db.execute("CREATE TABLE daily (date VARCHAR, code VARCHAR)")
-    db.execute("INSERT INTO daily VALUES ('2024-01-02','A'), ('2024-01-03','A'), ('2024-01-03','B')")
+    db.execute("CREATE TABLE trade_cal (exchange VARCHAR, cal_date VARCHAR, is_open BIGINT)")
+    db.execute("INSERT INTO trade_cal VALUES ('SSE','20240102',1), ('SZSE','20240102',1), ('SSE','20240103',1)")
     db.close()
     cal = trading_calendar(tmp_path / "t.duckdb")
     assert cal.to_list() == [datetime.date(2024, 1, 2), datetime.date(2024, 1, 3)]
@@ -22,8 +23,8 @@ def test_trading_calendar_deduplicates(tmp_path):
 
 def test_trading_calendar_ordered_even_with_reverse_insertion(tmp_path):
     db = duckdb.connect(tmp_path / "t.duckdb")
-    db.execute("CREATE TABLE daily (date VARCHAR, code VARCHAR)")
-    db.execute("INSERT INTO daily VALUES ('2024-01-03','A'), ('2024-01-02','A')")
+    db.execute("CREATE TABLE trade_cal (exchange VARCHAR, cal_date VARCHAR, is_open BIGINT)")
+    db.execute("INSERT INTO trade_cal VALUES ('SSE','20240103',1), ('SSE','20240102',1)")
     db.close()
     cal = trading_calendar(tmp_path / "t.duckdb")
     assert cal.to_list() == [datetime.date(2024, 1, 2), datetime.date(2024, 1, 3)]
@@ -31,20 +32,48 @@ def test_trading_calendar_ordered_even_with_reverse_insertion(tmp_path):
 
 def test_trading_calendar_date_range_inclusive(tmp_path):
     db = duckdb.connect(tmp_path / "t.duckdb")
-    db.execute("CREATE TABLE daily (date VARCHAR, code VARCHAR)")
-    db.execute(
-        "INSERT INTO daily VALUES ('2024-01-02','A'), ('2024-01-03','A'), ('2024-01-04','A')"
-    )
+    db.execute("CREATE TABLE trade_cal (exchange VARCHAR, cal_date VARCHAR, is_open BIGINT)")
+    db.execute("INSERT INTO trade_cal VALUES ('SSE','20240102',1), ('SSE','20240103',1), ('SSE','20240104',1)")
     db.close()
     cal = trading_calendar(tmp_path / "t.duckdb", date_start="2024-01-02", date_end="2024-01-03")
     assert cal.to_list() == [datetime.date(2024, 1, 2), datetime.date(2024, 1, 3)]
 
 
-def test_trading_calendar_empty_table_returns_empty_date_series(tmp_path):
+def test_trading_calendar_filters_closed_days(tmp_path):
+    # is_open=0 的休市日不出现在日历
     db = duckdb.connect(tmp_path / "t.duckdb")
-    db.execute("CREATE TABLE daily (date VARCHAR, code VARCHAR)")
+    db.execute("CREATE TABLE trade_cal (exchange VARCHAR, cal_date VARCHAR, is_open BIGINT)")
+    db.execute("INSERT INTO trade_cal VALUES ('SSE','20240102',1), ('SSE','20240103',0), ('SSE','20240104',1)")
     db.close()
     cal = trading_calendar(tmp_path / "t.duckdb")
+    assert cal.to_list() == [datetime.date(2024, 1, 2), datetime.date(2024, 1, 4)]
+
+
+def test_trading_calendar_accepts_yyyymmdd_range(tmp_path):
+    # 日期范围参数支持 ISO 'YYYY-MM-DD' 与 'YYYYMMDD' 双格式
+    db = duckdb.connect(tmp_path / "t.duckdb")
+    db.execute("CREATE TABLE trade_cal (exchange VARCHAR, cal_date VARCHAR, is_open BIGINT)")
+    db.execute("INSERT INTO trade_cal VALUES ('SSE','20240102',1), ('SSE','20240103',1)")
+    db.close()
+    cal = trading_calendar(tmp_path / "t.duckdb", date_start="20240102", date_end="20240102")
+    assert cal.to_list() == [datetime.date(2024, 1, 2)]
+
+
+def test_trading_calendar_empty_table_returns_empty_date_series(tmp_path):
+    db = duckdb.connect(tmp_path / "t.duckdb")
+    db.execute("CREATE TABLE trade_cal (exchange VARCHAR, cal_date VARCHAR, is_open BIGINT)")
+    db.close()
+    cal = trading_calendar(tmp_path / "t.duckdb")
+    assert cal.to_list() == []
+    assert cal.dtype == pl.Date
+
+
+def test_trading_calendar_range_no_match_returns_empty(tmp_path):
+    db = duckdb.connect(tmp_path / "t.duckdb")
+    db.execute("CREATE TABLE trade_cal (exchange VARCHAR, cal_date VARCHAR, is_open BIGINT)")
+    db.execute("INSERT INTO trade_cal VALUES ('SSE','20240102',1)")
+    db.close()
+    cal = trading_calendar(tmp_path / "t.duckdb", date_start="20240105")
     assert cal.to_list() == []
     assert cal.dtype == pl.Date
 
