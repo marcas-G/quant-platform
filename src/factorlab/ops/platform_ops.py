@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import ast
+import copy
 
 import polars as pl
 
@@ -143,3 +144,66 @@ def expand_platform_macros(source: str) -> str:
         return source
     imports = ", ".join(sorted(expander.used))
     return f"from polars_ta.prefix.wq import {imports}\n{ast.unparse(transformed)}"
+
+
+def expand_user_macros(source: str, operators: dict[str, "OperatorMacro"]) -> str:
+    """spec.operators 内联宏展开：name(args) → formula（params 按位置绑定替换）。
+
+    展开在 expand_platform_macros 之前（用户宏公式可引用平台薄封装，如 returns(x)）；
+    公式内 def 同名函数优先（不展开）。单遍展开：用户宏公式内嵌套引用其他用户宏
+    不支持（沿用未展开名称，由下游 codegen 报未知算子）。
+    参数绑定按 AST Name 节点替换（而非字符串 replace），避免短参数名（如 n）误替换
+    ts_mean/ts_min 等标识符中的子串。
+    """
+    if not operators:
+        return source
+    from factorlab.spec import OperatorMacro  # 延迟导入避免循环
+
+    try:
+        tree = ast.parse(source)
+    except SyntaxError as exc:
+        raise FactorDSLError(f"语法错误: {exc.msg}", exc.lineno, exc.offset) from exc
+    defined = {n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
+
+    def _bind_names(node: ast.AST, binding: dict[str, ast.expr]) -> ast.AST:
+        """深度替换表达式树中的参数名 Name 为调用实参（每处实参深拷贝）。"""
+        for field, value in ast.iter_fields(node):
+            if isinstance(value, ast.AST):
+                setattr(node, field, _bind_names(value, binding))
+            elif isinstance(value, list):
+                for i, item in enumerate(value):
+                    if isinstance(item, ast.AST):
+                        value[i] = _bind_names(item, binding)
+        if isinstance(node, ast.Name) and node.id in binding:
+            return copy.deepcopy(binding[node.id])
+        return node
+
+    class _UserMacroExpander(ast.NodeTransformer):
+        def visit_Call(self, node: ast.Call) -> ast.expr:
+            node = self.generic_visit(node)
+            if not isinstance(node.func, ast.Name) or node.func.id not in operators:
+                return node
+            if node.func.id in defined:
+                return node
+            macro = operators[node.func.id]
+            params = macro.params or []
+            if len(node.args) != len(params):
+                raise FactorDSLError(
+                    f"宏 {node.func.id} 需要 {len(params)} 个参数，实际 {len(node.args)} 个",
+                    node.lineno,
+                    node.col_offset,
+                )
+            try:
+                expr = ast.parse(macro.formula, mode="eval").body
+            except SyntaxError as exc:
+                raise FactorDSLError(
+                    f"宏 {node.func.id} 展开失败: {exc.msg}",
+                    node.lineno,
+                    node.col_offset,
+                ) from exc
+            expanded = _bind_names(expr, dict(zip(params, node.args)))
+            expanded = ast.fix_missing_locations(expanded)
+            expanded.lineno, expanded.col_offset = node.lineno, node.col_offset
+            return expanded
+
+    return ast.unparse(_UserMacroExpander().visit(tree))

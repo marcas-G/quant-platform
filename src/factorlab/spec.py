@@ -90,6 +90,8 @@ class FactorSpec(BaseModel):
     formula: str | None = None
     factors: list[SubFactorSpec] | None = None
     combine: CombineSpec | None = None
+    # 复权视图口径：pit_qfq 预留（需 asof 研究日，审计场景 M4b 消费）
+    adjustment: Literal["raw", "qfq", "hfq", "pit_qfq"] = "qfq"
 
     @model_validator(mode="after")
     def _validate_script(self) -> "FactorSpec":

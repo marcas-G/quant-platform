@@ -291,11 +291,100 @@ formula: |
     assert result.panel["date"].max() <= datetime.date.today()
 
 
+def test_run_factor_consumes_operators_macros(tmp_path):
+    # spec.operators 内联宏：mom_ratio(x, n) → delay(x, n)/delay(x, 2n) - 1 展开后计算正确
+    build_db(tmp_path)
+    spec_path = tmp_path / "spec_macro.yaml"
+    spec_path.write_text("""
+name: macro_demo
+category: custom
+direction: 1
+universe:
+  codes: ["000001.SZ"]
+date:
+  start: "2024-01-02"
+  end: "2024-01-09"
+operators:
+  mom_ratio:
+    params: [x, n]
+    formula: "delay(x, n) / delay(x, 2 * n) - 1"
+formula: |
+  from polars_ta.prefix.wq import ts_delay as delay
+  signal = mom_ratio(close, 1)
+""", encoding="utf-8")
+    result = run_factor(load_spec(spec_path), RunContext(db_path=tmp_path / "q.duckdb", output_dir=tmp_path / "out"))
+    assert result.panel.height > 0
+    # 展开语义：mom_ratio(close, 1) → delay(close, 1)/delay(close, 2) - 1 = close[t-1]/close[t-2] - 1
+    # 000001 收盘 11,12,13,14,15,16：第 3 个交易日（01-04）signal = 12/11 - 1
+    a = result.panel.filter(pl.col("code") == "000001").sort("date")
+    day3 = a.filter(pl.col("date") == datetime.date(2024, 1, 4))["signal"][0]
+    assert day3 == pytest.approx(12 / 11 - 1)
+    # delay(close, 2) 需要前 2 个交易日：前 2 日 signal 为 null
+    assert a.head(2)["signal"].null_count() == 2
+
+
+def test_run_factor_macro_formula_column_refs_loaded(tmp_path):
+    # 宏公式内引用的数据列（volume）须纳入列加载（_formula_columns 在展开后提取）
+    build_db(tmp_path)
+    spec_path = tmp_path / "spec_macro_vol.yaml"
+    spec_path.write_text("""
+name: macro_vol
+category: custom
+direction: 1
+universe:
+  codes: ["000001.SZ"]
+date:
+  start: "2024-01-02"
+  end: "2024-01-09"
+operators:
+  vwap_ratio:
+    params: [x]
+    formula: "x * volume"
+formula: |
+  signal = vwap_ratio(close)
+""", encoding="utf-8")
+    result = run_factor(load_spec(spec_path), RunContext(db_path=tmp_path / "q.duckdb", output_dir=tmp_path / "out_v"))
+    assert result.panel.height > 0
+    a = result.panel.filter(pl.col("code") == "000001").sort("date")
+    # 展开后 signal = close * volume：首日 = 11 × 1000
+    assert a["signal"][0] == pytest.approx(11 * 1000.0)
+
+
+def test_run_factor_spec_adjustment_raw(tmp_path):
+    # spec.adjustment 字段消费：声明 raw 时以 spec 为准（覆盖 qfq 默认），除权日保留假崩
+    build_db(tmp_path, ex_date=True)
+    spec_path = tmp_path / "spec_raw.yaml"
+    spec_path.write_text("""
+name: demo_raw
+category: custom
+direction: 1
+universe:
+  codes: ["000001.SZ"]
+date:
+  start: "2024-01-02"
+  end: "2024-01-09"
+adjustment: raw
+process: []
+formula: |
+  from polars_ta.prefix.wq import ts_delay
+  signal = close / ts_delay(close, 1) - 1
+""", encoding="utf-8")
+    result = run_factor(load_spec(spec_path), RunContext(db_path=tmp_path / "q.duckdb", output_dir=tmp_path / "out_raw"))
+    panel = result.panel.sort(["date"])
+    a = panel.filter(pl.col("code") == "000001")
+    # raw：除权日 8/11 - 1（qfq 下会是 8×1.5/11 - 1）
+    day3 = a.filter(pl.col("date") == datetime.date(2024, 1, 4))["signal"][0]
+    assert day3 == pytest.approx(8 / 11 - 1)
+    summary = json.loads((tmp_path / "out_raw" / "summary.json").read_text(encoding="utf-8"))
+    assert summary["adjustment"] == "raw"
+
+
 def test_run_factor_unknown_adjustment_rejected(tmp_path):
     build_db(tmp_path)
+    spec = _spec(tmp_path)
+    spec.adjustment = "bogus"  # spec 级声明非法口径（spec 默认 qfq，ctx 兜底不再生效）
     with pytest.raises(ValueError, match="view"):
-        run_factor(_spec(tmp_path), RunContext(
-            db_path=tmp_path / "q.duckdb", output_dir=tmp_path / "out_x", adjustment="bogus"))
+        run_factor(spec, RunContext(db_path=tmp_path / "q.duckdb", output_dir=tmp_path / "out_x"))
 
 
 def test_formula_columns_extracts_data_cols_only():

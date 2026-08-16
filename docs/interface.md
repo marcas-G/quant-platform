@@ -43,7 +43,13 @@ formula: |
 - `date.start` / `date.end`：可选，`YYYY-MM-DD`。
 - `target`：`forward_return_5d | forward_return_20d`，默认 `forward_return_5d`。
 - `process`：可选字符串列表。
-- `operators`：可选 DSL 宏映射。**注意：当前未实现消费（M4 接入），spec 中声明会被静默忽略；公式引用宏名会报未知算子。**
+- `adjustment`：复权视图口径 `raw | qfq | hfq | pit_qfq`，默认 `qfq`（`pit_qfq`
+  预留：需 asof 研究日，审计场景消费）。
+- `operators`：可选 DSL 宏映射。`name: {params: [p1, p2, ...], formula: "..."}`，
+  `formula` 中按位置引用 `params`；公式内 `name(args)` 调用在计算前展开为
+  `formula`（参数 AST 绑定替换，展开先于平台薄封装；公式内 `def` 同名函数优先）。
+  宏公式须为单表达式（`mode="eval"`），可引用平台薄封装（`returns` 等）与 `ts_*` 算子；
+  展开后数据列引用（如宏公式内的 `volume`）自动纳入加载。
 - `formula` 或 `factors`：二选一。
 - 使用 `factors` 时必须提供 `combine`。
 - `combine.method`：`ic_weight | equal_weight | weight_sum`；`weight_sum` 时
@@ -180,7 +186,8 @@ def tail_ratio(x: pl.Expr, n: int) -> pl.Expr:
 
 `RunContext` 字段：`db_path`（默认 `settings.platform_db` = `data/factorlab.duckdb`）、
 `output_dir`、`universe_override`（6 位代码或引用名称/路径，优先级最高）、`float32`、
-`adjustment`（复权视图口径 `raw|qfq|hfq`，默认 `qfq`；spec 声明 adjustment 时以 spec 为准）。
+`adjustment`（复权视图口径兜底 `raw|qfq|hfq|pit_qfq`，默认 `qfq`；spec 声明
+`adjustment` 时以 spec 为准——spec 字段默认 qfq，未声明时即用默认值）。
 
 `FactorResult`：`spec`、`panel`（列：`date, code, signal, forward_return_5d, forward_return_20d, close`，
 其中 close 为复权视图价格）、

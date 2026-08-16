@@ -107,3 +107,18 @@ def test_universe_rejects_empty(tmp_path):
 def test_universe_rejects_blank_reference(tmp_path):
     with pytest.raises(ValueError):
         load_spec(make_spec(tmp_path, universe="   "))
+
+
+def test_spec_adjustment_default_qfq(tmp_path):
+    spec = load_spec(make_spec(tmp_path))
+    assert spec.adjustment == "qfq"
+
+
+def test_spec_adjustment_explicit(tmp_path):
+    spec = load_spec(make_spec(tmp_path, adjustment="raw"))
+    assert spec.adjustment == "raw"
+
+
+def test_spec_adjustment_invalid(tmp_path):
+    with pytest.raises(ValueError):
+        load_spec(make_spec(tmp_path, adjustment="bogus"))

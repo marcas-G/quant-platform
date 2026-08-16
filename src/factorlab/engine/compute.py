@@ -19,7 +19,7 @@ from factorlab.data.universe import resolve_codes
 from factorlab.engine.forward import compute_forward_returns
 from factorlab.engine.partitions import reject_future_shifts, validate_partition_calls
 from factorlab.factor.ast_gate import validate_formula
-from factorlab.ops.platform_ops import expand_platform_macros, register_platform_ops
+from factorlab.ops.platform_ops import expand_platform_macros, expand_user_macros, register_platform_ops
 from factorlab.ops.polars_ta_wrappers import register_polars_ta_ops
 from factorlab.process.registry import run_process_chain
 from factorlab.spec import FactorSpec
@@ -81,7 +81,7 @@ def _formula_columns(formula: str) -> list[str]:
 @dataclass
 class RunContext:
     """运行上下文。universe_override：6 位代码（如 600519）、universe 引用名或 yaml 文件路径。
-    adjustment：复权视图口径（raw|qfq|hfq；spec 声明 adjustment 时以 spec 为准，Task 4 接线）。"""
+    adjustment：复权视图口径兜底（raw|qfq|hfq|pit_qfq；spec.adjustment 声明时以 spec 为准）。"""
 
     db_path: Path = _settings.platform_db
     output_dir: Path = Path("results")
@@ -102,14 +102,19 @@ def run_factor(spec: FactorSpec, ctx: RunContext) -> FactorResult:
     raw close×adj，必须先于复权视图）→ 复权视图（因子计算口径）→ 因子 → process → 落盘。"""
     if spec.factors is not None:
         raise NotImplementedError("多因子 factors/combine 组合尚未支持（M3a 仅支持单公式因子）")
-    validate_formula(spec.formula)  # 提前校验：语法/禁止调用错误在打开数据库前抛出
+    # spec.operators 内联宏先展开（用户宏公式可引用平台薄封装），展开后公式再校验：
+    # 宏公式内的语法/禁止调用错误同样在打开数据库前暴露
+    formula = spec.formula or ""
+    formula = expand_user_macros(formula, spec.operators)
+    validate_formula(formula)
+    formula = expand_platform_macros(formula)  # 薄封装 → ts_ 表达式（compute_formula 内部再展开幂等无害）
     try:
         con = duckdb.connect(str(ctx.db_path), read_only=True)
     except duckdb.IOException as exc:
         raise FileNotFoundError(f"数据库不存在: {ctx.db_path}（可运行 data refresh 或检查路径）") from exc
     try:
         codes = resolve_codes(spec, con, override=ctx.universe_override)
-        formula_cols = _formula_columns(spec.formula)
+        formula_cols = _formula_columns(formula)  # 展开后提取：宏公式内引用的数据列也纳入加载
         if "close" not in formula_cols:
             raise ValueError("因子公式必须引用 close 列（前向收益依赖 close[t+h]）")
         # adj_factor 显式请求：load_daily 默认不输出 adj 列，total_return 前向收益需要
@@ -133,7 +138,7 @@ def run_factor(spec: FactorSpec, ctx: RunContext) -> FactorResult:
         panel = view_prices(panel, adjustment)
         # compute_formula 仅输出 date/code/signal（M2 约定），把 signal 接回完整面板，
         # 供 process 链使用；公式引用的 close 等在 view_prices 后为复权值
-        panel = panel.join(compute_formula(panel, spec.formula), on=["date", "code"], how="left")
+        panel = panel.join(compute_formula(panel, formula), on=["date", "code"], how="left")
         panel = run_process_chain(panel, spec.process, ctx=con)
         # spec 2.5 对齐输出：date, code, signal, forward_return_h, close
         keep = ["date", "code", "signal", "forward_return_5d", "forward_return_20d", "close"]

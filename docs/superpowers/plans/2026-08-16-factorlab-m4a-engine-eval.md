@@ -465,10 +465,11 @@ git commit -m "feat: adjust factor view and total-return forward in run_factor"
 **Files:**
 - Modify: `src/factorlab/ops/platform_ops.py`（宏展开器扩展）
 - Modify: `src/factorlab/spec.py`（FactorSpec.adjustment 字段）
-- Modify: `src/factorlab/cli/main.py`（run 的 --universe 默认）
-- Test: `tests/test_run_factor.py`、`tests/test_spec.py`
+- Modify: `src/factorlab/engine/compute.py`（run_factor 接入宏展开）
+- Modify: `src/factorlab/cli/main.py`（run 的 --universe 默认，Task 7 实现）
+- Test: `tests/test_run_factor.py`、`tests/test_spec.py`、`tests/test_platform_ops.py`、`docs/interface.md`
 
-- [ ] **Step 1: 测试**
+- [x] **Step 1: 测试**
 
 ```python
 def test_spec_adjustment_field():
@@ -494,11 +495,11 @@ formula: |
     assert result.panel.height > 0
 ```
 
-- [ ] **Step 2: Run test to verify it fails**
+- [x] **Step 2: Run test to verify it fails**
 
 Expected: FAIL — adjustment 字段不存在；operators 未消费。
 
-- [ ] **Step 3: 实现**
+- [x] **Step 3: 实现**
 
 `src/factorlab/spec.py` FactorSpec 增加：
 
@@ -534,19 +535,24 @@ def expand_user_macros(source: str, operators: dict[str, OperatorMacro]) -> str:
     ...
 ```
 
-（实现时用递归替换宏调用；宏展开在 `expand_platform_macros` 之后、validate 之前。）
+（实现修正：宏展开顺序为用户宏 → validate → 平台宏（用户宏公式可引用平台薄封装
+`returns` 等，必须先于平台宏展开；原"平台宏之后、validate 之前"顺序会让宏公式内
+的平台薄封装无法展开）。参数绑定用 AST Name 节点替换而非字符串 replace——短参数名
+（如 `n`）会误替换 `ts_mean`/`ts_min` 等标识符子串。run_factor 接入：展开后公式用于
+`validate_formula`、`_formula_columns`（宏公式内数据列引用纳入加载）与
+`compute_formula`。）
 
 `src/factorlab/cli/main.py`：run 命令的 `--universe` 默认 `settings.default_universe`（Task 7 一起实现）。
 
-- [ ] **Step 4: Run test to verify it passes**
+- [x] **Step 4: Run test to verify it passes**
 
 Run: `pytest tests/test_run_factor.py tests/test_spec.py -v`
 Expected: PASS。
 
-- [ ] **Step 5: Commit**
+- [x] **Step 5: Commit**
 
 ```bash
-git add src/factorlab/spec.py src/factorlab/ops/platform_ops.py tests/test_run_factor.py tests/test_spec.py
+git add src/factorlab/spec.py src/factorlab/ops/platform_ops.py src/factorlab/engine/compute.py tests/test_run_factor.py tests/test_spec.py tests/test_platform_ops.py docs/interface.md docs/superpowers/plans/2026-08-16-factorlab-m4a-engine-eval.md
 git commit -m "feat: consume adjustment field and inline operator macros"
 ```
 
