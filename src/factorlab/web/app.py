@@ -54,6 +54,40 @@ def _display(v):
     return "" if v is None else v
 
 
+
+def _num(value) -> float | None:
+    """仅返回 float；None/非数字 → None（模板显示为 —）。"""
+    return value if isinstance(value, (int, float)) and not isinstance(value, bool) else None
+
+
+def _safe_summary(summary: dict) -> dict:
+    """归一化模板访问的字段：缺省 None（旧结果/字段缺失不崩溃）。"""
+    ev = summary.get("evaluation")
+    if not isinstance(ev, dict):
+        ev = {}
+    ic = ev.get("ic")
+    if not isinstance(ic, dict):
+        ic = {}
+    ev["ic"] = {"mean": _num(ic.get("mean")), "t_stat": _num(ic.get("t_stat"))}
+    dr = ev.get("decile_returns")
+    if not isinstance(dr, dict):
+        dr = {}
+    spread = dr.get("spread")
+    if not isinstance(spread, dict):
+        spread = {}
+    ev["decile_returns"] = {"spread": {"ret": _num(spread.get("ret"))},
+                            "groups": dr.get("groups") if isinstance(dr.get("groups"), list) else []}
+    to = ev.get("turnover")
+    ev["turnover"] = {"monthly": _num(to.get("monthly")) if isinstance(to, dict) else None}
+    cov = ev.get("coverage")
+    ev["coverage"] = {"pct_valid": _num(cov.get("pct_valid")) if isinstance(cov, dict) else None}
+    summary["evaluation"] = ev
+    for k in ("universe_count", "date_start", "date_end", "panel_rows",
+              "signal_null_ratio", "spec_yaml", "category", "direction"):
+        summary.setdefault(k, None)
+    return summary
+
+
 def create_app(results_dir: Path) -> FastAPI:
     """构建只读 Web 可视化应用（因子列表 + 详情）。results_dir 显式传入（可测性）。"""
     app = FastAPI(title="FactorLab")
@@ -76,8 +110,8 @@ def create_app(results_dir: Path) -> FastAPI:
                     "name": s.get("name") or summary_path.parent.name,
                     "category": _display(s.get("category")),
                     "direction": _display(s.get("direction")),
-                    "ic_mean": _display(ic.get("mean")),
-                    "spread": _display(_group(decile, "spread").get("ret")),
+                    "ic_mean": _num(ic.get("mean")),       # None/非数字 → None（模板显示 —）
+                    "spread": _num(_group(decile, "spread").get("ret")),
                     "run_at": datetime.fromtimestamp(summary_path.stat().st_mtime).strftime("%Y-%m-%d %H:%M"),
                 })
         return templates.TemplateResponse(request, "index.html", {"factors": factors})
@@ -85,7 +119,7 @@ def create_app(results_dir: Path) -> FastAPI:
     @app.get("/factor/{name}", response_class=HTMLResponse)
     def factor_detail(request: Request, name: str):
         name = _safe_name(name)  # 路由入口校验（_load_summary 内部再校验，双保险）
-        summary = _load_summary(results_dir, name)
+        summary = _safe_summary(_load_summary(results_dir, name))
         # 归一化 evaluation 各分组：缺失 → 空 dict，模板链式访问渲染空串而非崩溃
         ev = _group(summary, "evaluation")
         decile = _group(ev, "decile_returns")
