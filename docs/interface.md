@@ -244,6 +244,26 @@ DuckDB 只读加载；SQL-first 过滤；`date` cast `pl.Date`；数值列 float
 `align_weekly` 对齐到 **ISO 周**最后一个交易日（跨年日期同属 ISO 周时合并为该周
 最后交易日，与 tushare weekly 语义一致；M4a 起由 `eval` 使用）。
 
+### `factorlab.eval.rust_ic.evaluate_factor_weekly`
+
+周频评估桥接：日频面板 → 周频对齐（`align_weekly`）→ Rust `quant_core.evaluate_factor`。
+签名 `evaluate_factor_weekly(panel, factor_name, direction, target="forward_return_5d") -> dict`，
+`panel` 需含 `date`（pl.Date）、`code`（str）、`signal`、`target` 四列，缺列抛
+`ValueError`（中文消息，含缺失列名）。`direction` 约定 `1`（多）/`-1`（空）。
+返回 quant_core 原始 dict（`factor`/`target`/`n_weeks`/`ic`/`pearson_ic`/
+`decile_returns`/`turnover`/`coverage`），另附加 `factor_name` 字段；内部 `factor`
+恒为 `"_factor"`（quant_core 内部列名约定）。
+
+行为约定（实测）：
+- `signal`/`target` 为 null 的行在桥接层**过滤**（quant_core 拒绝 Python `None`，
+  实测 `TypeError: must be real number`）；停牌补全行与尾部无未来数据的 forward
+  行均不进入评估。`NaN` 不属 null，quant_core 容忍（实测）。
+- 空面板（列齐全）不报错，透传后返回全 `nan` 结构（`n_weeks == 0`）。
+- 列检查先于周频对齐：缺列的裸 `date`/`code` 空表（Null dtype）也报 `ValueError`，
+  而非 polars dtype 错误。
+- `direction` 原样透传为 int（`0` 实测按 `-1` 处理，属 quant_core 内部语义，桥接层
+  不校验）。
+
 ### `factorlab.data.adjust.view_prices / total_return`
 
 价格视图（输入 raw 价格面板，含 `adj_factor` 列；输出含 scaled 价格列）：
