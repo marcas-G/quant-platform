@@ -308,3 +308,32 @@ def test_fetch_all_null_column_cast_to_string(monkeypatch):
     client = _client(monkeypatch, responder)
     df = client.fetch("suspend_d", {"trade_date": "20000104"})
     assert df.schema["suspend_timing"] == pl.String  # 不是 Null 类型
+
+
+def test_fetch_mixed_null_and_string_column(monkeypatch):
+    """同列混合 JSON null + 字符串（suspend_timing）：统一 String 构造，不崩溃。"""
+    items = [["000001.SZ", "20110519", None], ["000002.SZ", "20110519", "09:30-10:30"]]
+    fields = ["ts_code", "trade_date", "suspend_timing"]
+
+    def responder(url, json=None, timeout=30):
+        return _ok_response(items=items, fields=fields)
+
+    client = _client(monkeypatch, responder)
+    df = client.fetch("suspend_d", {"trade_date": "20110519"})
+    assert df.schema["suspend_timing"] == pl.String
+    assert df["suspend_timing"].to_list() == [None, "09:30-10:30"]
+
+
+def test_fetch_string_after_inference_window(monkeypatch):
+    """前 100 行全 null、100 行后出现字符串（polars 默认推断窗口）→ 统一 String 构造不崩。"""
+    items = [["000001.SZ", "20110519", None]] * 120
+    items += [["000002.SZ", "20110519", "09:30-10:30"]] * 80
+    fields = ["ts_code", "trade_date", "suspend_timing"]
+
+    def responder(url, json=None, timeout=30):
+        return _ok_response(items=items, fields=fields)
+
+    client = _client(monkeypatch, responder)
+    df = client.fetch("suspend_d", {"trade_date": "20110519"})
+    assert df.height == 200
+    assert df.schema["suspend_timing"] == pl.String

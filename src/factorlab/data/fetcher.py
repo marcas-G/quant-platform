@@ -82,7 +82,14 @@ class TeaJoinClient:
             if not data:
                 return pl.DataFrame()
             try:
-                frame = pl.DataFrame(data.get("items") or [], schema=data["fields"], orient="row")
+                # 统一 String schema 构造：polars 默认按前 100 行推断类型，混合类型列
+                # （如 suspend_timing 前段 null、后段 '09:30-10:30'）会 append 崩溃；
+                # 全 String 构造后由下方空串/数值 cast 逻辑统一处理类型。
+                frame = pl.DataFrame(
+                    data.get("items") or [],
+                    schema={f: pl.String for f in data["fields"]},
+                    orient="row",
+                )
             except Exception as exc:
                 raise TeaJoinError(api_name, f"返回数据与字段不匹配: {exc}") from exc
             if frame.height:
