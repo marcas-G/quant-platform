@@ -14,6 +14,8 @@ from factorlab.data.fetcher import TeaJoinClient
 from factorlab.data.platform_db import PlatformDB
 
 DAILY_TABLES = ("daily", "daily_basic", "adj_factor", "stock_st", "stk_limit", "suspend_d", "moneyflow")
+# 服务端对 suspend_d 的连续访问敏感（并发拉取批量失败、串行正常）：该表强制串行
+SERIAL_TABLES = ("suspend_d",)
 # M3b+ 按 ts_code 分批拉取（真实 API 强制 ts_code，全市场按报告期不可行）
 FINANCIAL_TABLES = ("income", "balancesheet", "cashflow")
 INDEX_CODES = ("000300.SH", "000905.SH", "000852.SH", "000016.SH")
@@ -83,8 +85,10 @@ def _rebuild_daily_table(
     fetched: list[str] = []
     total_rows = 0
     todo = [d for d in dates if d not in completed]
+    errors: dict[str, str] = {}
     done_count = 0
-    with ThreadPoolExecutor(max_workers=max_workers) as pool:
+    workers = 1 if table in SERIAL_TABLES else max_workers
+    with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {pool.submit(_fetch_one_date, client, table, d): d for d in todo}
         for fut in as_completed(futures):
             d = futures[fut]
@@ -93,17 +97,21 @@ def _rebuild_daily_table(
                 db.upsert_on(con, table, df, keys=["trade_date", "ts_code"], dedup=False)
                 completed.add(d)
                 failed.discard(d)  # 重试成功后从 failed 移除
+                errors.pop(d, None)
                 fetched.append(d)
                 total_rows += df.height
-            except Exception:
+            except Exception as exc:
                 failed.add(d)
+                errors[d] = str(exc)[:120]  # 诊断：失败原因
             done_count += 1
             if done_count % 20 == 0:
-                manifest[table] = {"completed": sorted(completed), "failed": sorted(failed)}
+                manifest[table] = {"completed": sorted(completed), "failed": sorted(failed),
+                                   "failed_errors": errors}
                 save_manifest(manifest_path, manifest)
-    manifest[table] = {"completed": sorted(completed), "failed": sorted(failed)}
+    manifest[table] = {"completed": sorted(completed), "failed": sorted(failed), "failed_errors": errors}
     save_manifest(manifest_path, manifest)
-    return {"dates_fetched": sorted(fetched), "rows": total_rows, "failed": sorted(failed)}
+    return {"dates_fetched": sorted(fetched), "rows": total_rows, "failed": sorted(failed),
+            "failed_errors": errors}
 
 
 def rebuild_all(
