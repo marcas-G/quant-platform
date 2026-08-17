@@ -114,6 +114,7 @@ formula: |
 
 | 日期 | 变体/版本 | 改动 | IC mean | t | 结论 |
 |------|-----------|------|---------|---|------|
+| 2026-08-18 | 衍生：`reversal_20d_highmomentum` | 批次3轮56：H2 新高动量，见 [`reversal_20d_highmomentum.md`](reversal_20d_highmomentum.md) | 0.0160 | 1.20 | **无效**：距高点双向无信息 |
 | 2026-08-18 | 衍生：`reversal_5d_intraday` | 批次3轮48：I2 5 日日内，见 [`reversal_5d_intraday.md`](reversal_5d_intraday.md) | 0.0402 | 3.62 | **无效**：日内谱峰 20 日 |
 | 2026-08-18 | 衍生：`reversal_5d_corr` | 批次3轮38：N2 秩次加法，见 [`reversal_5d_corr.md`](reversal_5d_corr.md) | 0.0450 | 4.65 | 观察中：IC 超两父本、稳定性降 |
 | 2026-08-18 | 衍生：`reversal_5d_turn` | 批次3轮24：N2 换手率条件化，见 [`reversal_5d_turn.md`](reversal_5d_turn.md) | 0.0283 | 2.32 | 观察中：spread+92%、IC 持平 |
