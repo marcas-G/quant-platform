@@ -115,6 +115,7 @@ formula: |
 
 | 日期 | 变体/版本 | 改动 | IC mean | t | 结论 |
 |------|-----------|------|---------|---|------|
+| 2026-08-18 | 衍生：`reversal_20d_pricevolcorr10` | 批次3轮44：C2 corr 10 日，见 [`reversal_20d_pricevolcorr10.md`](reversal_20d_pricevolcorr10.md) | 0.0439 | 6.46 | 候选：谱峰 10 日 |
 | 2026-08-18 | 衍生：`reversal_20d_intraday_tv` | 批次3轮31：L4 双条件化叠加，见 [`reversal_20d_intraday_tv.md`](reversal_20d_intraday_tv.md) | 0.0567 | 5.34 | 观察中：t/IR 创纪录、IC 未超 turn |
 | 2026-08-18 | 衍生：`reversal_20d_intraday` | 批次3轮25：D2 日内成分，见 [`reversal_20d_intraday.md`](reversal_20d_intraday.md) | 0.0591 | 5.22 | **最强候选**：IC 全库纪录，日内是反转主驱动 |
 | 2026-08-18 | 衍生：`momentum_20d_decile5` | 批次3轮8：D3 5 档粒度，见 [`momentum_20d_decile5.md`](momentum_20d_decile5.md) | 0.0397 | 3.41 | **无效**：10 档有边际信息 |
