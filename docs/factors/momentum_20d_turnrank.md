@@ -130,6 +130,7 @@ formula: |
 
 | 日期 | 变体/版本 | 改动 | IC mean | t | 结论 |
 |------|-----------|------|---------|---|------|
+| 2026-08-18 | 衍生：`reversal_20d_corr_intraday` | 批次3轮33：M3 秩次加法组合，见 [`reversal_20d_corr_intraday.md`](reversal_20d_corr_intraday.md) | 0.0581 | 6.08 | **强候选**：综合平衡最优 |
 | 2026-08-18 | 衍生：`reversal_10d_cumret` | 批次3轮22：C2 10 日累计（谱峰定位），见 [`reversal_10d_cumret.md`](reversal_10d_cumret.md) | 0.0394 | 3.36 | **无效**：20 日是 cumret 谱峰 |
 | 2026-08-18 | 衍生：`momentum_20d_turnrank_vol` | 批次3轮11：组合对称验证（=volturn 交换等价），见 [`momentum_20d_turnrank_vol.md`](momentum_20d_turnrank_vol.md) | 0.0366 | 3.25 | **无效**：与 volturn 数学等价（重复） |
 | 2026-08-17 | 衍生：`momentum_20d_turnrank_avg20` | 挖因子轮 10：H3 换手率平滑 20 日，见 [`momentum_20d_turnrank_avg20.md`](momentum_20d_turnrank_avg20.md) | 0.0416 | 3.33 | **无效**：与快照版等价 |
