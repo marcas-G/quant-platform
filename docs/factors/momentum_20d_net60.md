@@ -116,6 +116,7 @@ formula: |
 
 | 日期 | 变体/版本 | 改动 | IC mean | t | 结论 |
 |------|-----------|------|---------|---|------|
+| 2026-08-18 | 衍生：`reversal_20d_skew` | 批次3轮50：S2 收益偏度，见 [`reversal_20d_skew.md`](reversal_20d_skew.md) | 0.0245 | 4.29 | 候选：彩票偏好确认 |
 | 2026-08-18 | 衍生：`reversal_20d_intraday_vol` | 批次3轮30：V3 量能确认，见 [`reversal_20d_intraday_vol.md`](reversal_20d_intraday_vol.md) | 0.0547 | 5.33 | 观察中：t/IR 创纪录、IC 略降 |
 | 2026-08-18 | 衍生：`momentum_20d_m60` | 批次3轮15：60 日动量方向对照，见 [`momentum_20d_m60.md`](momentum_20d_m60.md) | -0.0377 | -3.14 | **无效**：60 日仍是反转区（尺度谱确认） |
 | 2026-08-18 | 衍生：`momentum_20d_downtrend` | 批次3轮4：趋势条件化掩码，见 [`momentum_20d_downtrend.md`](momentum_20d_downtrend.md) | 0.0177 | 2.11 | **无效**：掩码损失一半样本 |
