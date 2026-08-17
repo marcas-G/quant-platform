@@ -165,14 +165,14 @@ def create_app(results_dir: Path) -> FastAPI:
             all_names = sorted(p.parent.name for p in results_dir.glob("*/panel.parquet")
                                if p.parent.name != name)
             if all_names:
-                cm = factor_correlation([name] + all_names, results_dir)
+                cm = factor_correlation([name] + all_names, results_dir, sample_weeks=10)
                 pairs = [(r["factor_b"], r["rank_corr"]) for r in cm.to_dicts()
                          if r["factor_a"] == name]
                 pairs.sort(key=lambda x: abs(x[1]), reverse=True)
                 top = pairs[:10]
                 if top:
                     others = [t[0] for t in top]
-                    cm2 = factor_correlation([name] + others, results_dir)
+                    cm2 = factor_correlation([name] + others, results_dir, sample_weeks=10)
                     names_l = [name] + others
                     matrix = [[0.0] * len(names_l) for _ in names_l]
                     for r in cm2.to_dicts():
