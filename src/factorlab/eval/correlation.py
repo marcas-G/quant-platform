@@ -83,3 +83,55 @@ def factor_correlation(names: list[str], results_dir: str | pathlib.Path,
                 "pearson": pearson[i, j] / denom,
             })
     return pl.DataFrame(rows)
+
+
+def _sample_dates(joined: pl.DataFrame, n: int, seed: int) -> list:
+    """随机抽 n 个交易日（确定性 seed）。"""
+    import random
+    rng = random.Random(seed)
+    dates = joined["date"].unique().to_list()
+    return rng.sample(dates, min(n, len(dates)))
+
+
+def factor_svd(names: list[str] | None, results_dir: str | pathlib.Path,
+               sample_weeks: int = 15, seed: int = 42,
+               n_components: int = 6) -> dict:
+    """因子库 SVD 分解：奇异值谱 + 主成分载荷。
+
+    - 抽样 sample_weeks 个交易周构建信号矩阵（全量 join 在因子多时内存不稳，
+      抽样后规模可控且结构分析足够）。
+    - 返回 dict：singular_values（前 n_components）、cum_explained（累计占比）、
+      loadings（每因子 {name, PC1..PCn} 载荷）。
+    """
+    if names is None:
+        names = sorted(p.parent.name for p in
+                       pathlib.Path(results_dir).glob("*/panel.parquet"))
+    if len(names) < 2:
+        raise ValueError("至少需要 2 个因子")
+    joined = _join_panels(names, pathlib.Path(results_dir))
+    if sample_weeks and joined["date"].n_unique() > sample_weeks:
+        dates = _sample_dates(joined, sample_weeks, seed)
+        joined = joined.filter(pl.col("date").is_in(dates))
+    if joined.height < 30:
+        raise ValueError("抽样后样本不足 30 行")
+    mat = joined.select(names).to_numpy().astype(np.float64)
+    # NaN 按列均值填充（缺失因子在部分周无值）
+    col_means = np.nanmean(mat, axis=0)
+    mat = np.where(np.isnan(mat), col_means[None, :], mat)
+    C = np.corrcoef(mat, rowvar=False)
+    np.fill_diagonal(C, 1.0)
+    U, S, _ = np.linalg.svd(C)
+    total = S.sum()
+    cum = (np.cumsum(S) / total).tolist()
+    k = min(n_components, len(names))
+    loadings = []
+    for i, name in enumerate(names):
+        row = {"name": name}
+        for c in range(k):
+            row[f"PC{c + 1}"] = round(float(U[i, c]), 4)
+        loadings.append(row)
+    return {
+        "singular_values": [round(float(s), 3) for s in S[:k]],
+        "cum_explained": [round(float(v), 4) for v in cum[:k]],
+        "loadings": loadings,
+    }

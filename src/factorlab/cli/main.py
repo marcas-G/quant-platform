@@ -337,6 +337,42 @@ def corr_factors(names: list[str] = typer.Argument(...)) -> None:
     console.print(m.to_pandas().to_string(index=False))
 
 
+@app.command("svd")
+def svd_factors(names: list[str] = typer.Argument(None),
+                weeks: int = typer.Option(15, "--weeks", help="抽样交易周数（内存护栏，默认 15）")) -> None:
+    """因子库 SVD 分解：奇异值谱 + 主成分载荷（因子结构/有效维度分析）。
+
+    用法: factorlab svd [name1 name2 ...] [--weeks 15]
+    缺省 names = 全部有 panel 的因子（排除验证目录）。
+    """
+    from factorlab.eval.correlation import factor_svd
+    from factorlab.config import settings as _settings
+    results_dir = _settings.results_dir
+    if not names:
+        skip = {"acceptance", "demo_vol_skew", "m4b_smoke"}
+        names = sorted(p.parent.name for p in results_dir.glob("*/panel.parquet")
+                       if p.parent.name not in skip)
+    if len(names) < 2:
+        console.print("错误: 至少需要 2 个因子", style="red")
+        raise typer.Exit(code=1)
+    try:
+        r = factor_svd(names, results_dir, sample_weeks=weeks)
+    except FileNotFoundError as e:
+        console.print(f"错误: {e}", style="red")
+        raise typer.Exit(code=1)
+    console.print(f"SVD（{len(names)} 因子，抽样 {weeks} 周）：")
+    console.print("奇异值谱：")
+    for k, (sv, cum) in enumerate(zip(r["singular_values"], r["cum_explained"]), 1):
+        console.print(f"  PC{k:<2} 奇异值 {sv:8.3f}  累计解释 {cum * 100:5.1f}%")
+    console.print("主成分载荷（每 PC 取 |载荷| 最大 5 因子）：")
+    loadings = r["loadings"]
+    for k in range(len(r["singular_values"])):
+        pc = f"PC{k + 1}"
+        ranked = sorted(loadings, key=lambda x: abs(x[pc]), reverse=True)[:5]
+        parts = ", ".join(f"{x['name']}({x[pc]:+.2f})" for x in ranked)
+        console.print(f"  {pc}: {parts}")
+
+
 @app.command("serve")
 def serve(port: int = 8000, host: str = "127.0.0.1") -> None:
     """启动 Web 可视化（只读 results_dir）。"""
