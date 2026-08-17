@@ -143,6 +143,7 @@ formula: |
 
 | 日期 | 变体/版本 | 改动 | IC mean | t | 结论 |
 |------|-----------|------|---------|---|------|
+| 2026-08-18 | 衍生：`vol_run_energy_symrun_bell1` | 批次3轮13：S3 钟形锐度 1.0，见 [`vol_run_energy_symrun_bell1.md`](vol_run_energy_symrun_bell1.md) | 0.0278 | 8.37 | **无效**：与 sqrt 等价 |
 | 2026-08-17 | `vol_run_energy_symrun`（初始） | 挖因子轮 7：H3 游程对称化 `==1` → `!=0`（base=rl120_turn） | 0.0276 | 8.40 | **强候选**：IC +82%、IR 0.65 |
 
 ## 6. 风险与备注
