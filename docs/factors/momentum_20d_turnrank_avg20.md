@@ -113,6 +113,7 @@ formula: |
 
 | 日期 | 变体/版本 | 改动 | IC mean | t | 结论 |
 |------|-----------|------|---------|---|------|
+| 2026-08-18 | 衍生：`reversal_20d_corr_intraday_turn` | 批次3轮36：T3 三维秩次加法，见 [`reversal_20d_corr_intraday_turn.md`](reversal_20d_corr_intraday_turn.md) | 0.0724 | 6.79 | **候选**：三项全库纪录 |
 | 2026-08-18 | 衍生：`momentum_20d_cumret_turn` | 批次3轮20：A2 cumret 核心×条件化，见 [`momentum_20d_cumret_turn.md`](momentum_20d_cumret_turn.md) | 0.0492 | 3.91 | **无效**：相对 cumret 无增益（条件化冗余） |
 | 2026-08-18 | 衍生：`momentum_20d_volrank` | 批次3轮6：H3 波动率代理互换，见 [`momentum_20d_volrank.md`](momentum_20d_volrank.md) | 0.0422 | 3.52 | 边际：与换手率代理等价 |
 | 2026-08-17 | `momentum_20d_turnrank_avg20`（初始） | 挖因子轮 10：H3 换手率平滑 20 日 | 0.0416 | 3.33 | 无效：与快照版等价 |
