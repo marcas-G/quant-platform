@@ -1,0 +1,14 @@
+name: momentum_20d_m120
+category: custom
+direction: 1
+universe:
+  rules: {exclude_st: true, exchanges: ["SSE", "SZSE"]}
+date:
+  start: "2023-01-01"
+  end: "2026-07-31"
+process:
+  - winsorize(quantile=0.99)
+  - standardize()
+formula: |
+  from polars_ta.prefix.wq import ts_mean, ts_delay
+  signal = ts_mean(close, 120) / ts_delay(close, 120) - 1
