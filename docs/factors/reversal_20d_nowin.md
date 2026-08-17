@@ -106,6 +106,7 @@ formula: |
 
 | 日期 | 变体/版本 | 改动 | IC mean | t | 结论 |
 |------|-----------|------|---------|---|------|
+| 2026-08-18 | 衍生：`reversal_20d_four_dim_tsv10` | 批次3轮71：D2 去 intraday，见 [`reversal_20d_four_dim_tsv10.md`](reversal_20d_four_dim_tsv10.md) | 0.0645 | 7.44 | **无效**：intraday 贡献 +9% 确认 |
 | 2026-08-18 | 衍生：`reversal_20d_six_dim` | 批次3轮68：S3 六维加法，见 [`reversal_20d_six_dim.md`](reversal_20d_six_dim.md) | 0.0719 | 7.24 | **无效**：六维饱和 |
 | 2026-08-18 | 衍生：`reversal_20d_skew10` | 批次3轮53：K2 skew10，见 [`reversal_20d_skew10.md`](reversal_20d_skew10.md) | 0.0122 | 2.10 | **无效**：偏度谱峰 20 日 |
 | 2026-08-18 | 衍生：`reversal_20d_pricevolcorr_lev` | 批次3轮43：L2 量水平，见 [`reversal_20d_pricevolcorr_lev.md`](reversal_20d_pricevolcorr_lev.md) | 0.0267 | 4.04 | **无效**：Δ量版更优 |
