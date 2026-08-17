@@ -16,8 +16,20 @@ description: 挖因子循环。随机选一个已入库因子为种子，分析�
 ## 前置检查
 
 1. 因子库非空：`ls docs/factors/*.md`（排除 `_template.md`），空则报错并停止。
-2. 平台数据可用：`factorlab list` 不报错（平台库在 `data/factorlab.duckdb`）。
+2. 平台数据可用：CLI 不报错（平台库在 `data/factorlab.duckdb`）。
 3. 每轮开工前向用户播报：`第 k/N 轮：种子=<seed>`，然后继续（不等待）。
+
+## CLI 调用方式（重要）
+
+`factorlab` 不在 bash PATH 中。用以下任一方式（本 skill 内所有 `factorlab`
+命令均代换为 `$FLAB`）：
+
+```bash
+FLAB=/c/Users/ThinkPad/AppData/Roaming/Python/Python313/Scripts/factorlab.exe
+# 或先验证：where factorlab / pip show factorlab 找到 console script 路径
+```
+
+前置检查用：`$FLAB list`。
 
 ## 每轮流程（8 步）
 
