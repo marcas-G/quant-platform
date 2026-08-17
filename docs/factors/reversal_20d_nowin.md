@@ -106,6 +106,7 @@ formula: |
 
 | 日期 | 变体/版本 | 改动 | IC mean | t | 结论 |
 |------|-----------|------|---------|---|------|
+| 2026-08-18 | 衍生：`reversal_20d_ranknorm` | 批次3轮21：P3 csranknorm，见 [`reversal_20d_ranknorm.md`](reversal_20d_ranknorm.md) | 0.0409 | 3.47 | **无效**：分布形态无关（等价） |
 | 2026-08-18 | 衍生：`reversal_20d_nowin_fill0` | 批次3轮12：P3 缺失填充 fillna(0)，见 [`reversal_20d_nowin_fill0.md`](reversal_20d_nowin_fill0.md) | 0.0401 | 3.48 | **无效**：0 值聚集破坏分层 |
 | 2026-08-17 | `reversal_20d_nowin`（初始） | 挖因子轮 6：H8 移除 winsorize | 0.0409 | 3.47 | 无效：与 winsorize 版完全等价 |
 
