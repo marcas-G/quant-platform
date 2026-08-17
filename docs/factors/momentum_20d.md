@@ -124,6 +124,7 @@ formula: |
 
 | 日期 | 变体/版本 | 改动 | IC mean | t | 结论 |
 |------|-----------|------|---------|---|------|
+| 2026-08-18 | 衍生：`momentum_20d_open` | 批次3轮7：H3 open 口径，见 [`momentum_20d_open.md`](momentum_20d_open.md) | 0.0386 | 3.31 | **无效**：与 close 动量同构 |
 | 2026-08-17 | 衍生：`momentum_20d_net60` | 挖因子轮 8：H1 趋势剥离 `_m20-_m60`，见 [`momentum_20d_net60.md`](momentum_20d_net60.md) | -0.0060 | -0.52 | **无效**：反转方向下档位反向，证伪趋势剥离 |
 | 2026-08-17 | 衍生：`momentum_20d_decile` | 挖因子轮 5：H6 连续 → 横截面秩次分档，见 [`momentum_20d_decile.md`](momentum_20d_decile.md) | 0.0406 | 3.45 | **无效**：与连续版完全等价（秩次含全部信息） |
 | 2026-08-17 | 衍生：`momentum_20d_vwap` | 挖因子轮 2：变异 H3（close→日频 VWAP amount/volume）+ H9（方向→反转），见 [`momentum_20d_vwap.md`](momentum_20d_vwap.md) | 0.0390 | 3.45 | 全期显著；spread +78%；近 26 周衰减 |
