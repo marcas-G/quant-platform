@@ -143,6 +143,7 @@ formula: |
 
 | 日期 | 变体/版本 | 改动 | IC mean | t | 结论 |
 |------|-----------|------|---------|---|------|
+| 2026-08-18 | 衍生：`vol_run_energy_symrun_corr` | 批次3轮39：S3 跨家族秩次加法，见 [`vol_run_energy_symrun_corr.md`](vol_run_energy_symrun_corr.md) | 0.0147 | 2.79 | **无效**：量维度耦合，跨家族不可组合 |
 | 2026-08-18 | 衍生：`vol_run_energy_symrun_down` | 批次3轮19：S3 只算下跌活跃，见 [`vol_run_energy_symrun_down.md`](vol_run_energy_symrun_down.md) | 0.0126 | 3.95 | **无效**：上涨活跃是游程主源 |
 | 2026-08-18 | 衍生：`vol_run_energy_symrun_bell1` | 批次3轮13：S3 钟形锐度 1.0，见 [`vol_run_energy_symrun_bell1.md`](vol_run_energy_symrun_bell1.md) | 0.0278 | 8.37 | **无效**：与 sqrt 等价 |
 | 2026-08-17 | `vol_run_energy_symrun`（初始） | 挖因子轮 7：H3 游程对称化 `==1` → `!=0`（base=rl120_turn） | 0.0276 | 8.40 | **强候选**：IC +82%、IR 0.65 |
