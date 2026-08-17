@@ -98,6 +98,7 @@ formula: |
 
 | 日期 | 变体/版本 | 改动 | IC mean | t | 结论 |
 |------|-----------|------|---------|---|------|
+| 2026-08-18 | 衍生：`reversal_20d_four_dim_ctfm` | 批次4轮5：F3 MAX 替代 skew，见 [`reversal_20d_four_dim_ctfm.md`](reversal_20d_four_dim_ctfm.md) | 0.0769 | 6.36 | **候选**：IC 全库新纪录 |
 | 2026-08-18 | `reversal_20d_four_dim_ctfs`（初始） | 批次 3 轮 80：F3 四维加法 | 0.0696 | 6.96 | 无效：skew 冗余于 corr |
 
 ## 6. 风险与备注
