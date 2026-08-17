@@ -106,6 +106,7 @@ formula: |
 
 | 日期 | 变体/版本 | 改动 | IC mean | t | 结论 |
 |------|-----------|------|---------|---|------|
+| 2026-08-18 | 衍生：`vol_run_energy_symrun_extreme` | 批次4轮7：S2 极端换手聚焦，见 [`vol_run_energy_symrun_extreme.md`](vol_run_energy_symrun_extreme.md) | -0.0685 | -7.13 | **无效**：方向反转（同源不兼容） |
 | 2026-08-18 | `vol_run_energy_symrun_turn`（初始） | 批次 3 轮 87：S3 秩次加法 | 0.0368 | 2.94 | 观察中：IC 升、t 降 |
 
 ## 6. 风险与备注
