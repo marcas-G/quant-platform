@@ -129,6 +129,7 @@ formula: |
 
 | 日期 | 变体/版本 | 改动 | IC mean | t | 结论 |
 |------|-----------|------|---------|---|------|
+| 2026-08-18 | 衍生：`reversal_20d_smallcap` | 批次3轮1：H4 市值条件化 `×(1-cs_rank(circ_mv))`，见 [`reversal_20d_smallcap.md`](reversal_20d_smallcap.md) | 0.0360 | 2.90 | **无效**：市值无交互 |
 | 2026-08-17 | 衍生：`reversal_20d_volconf` | 挖因子轮 9：H4 量能确认 `× ts_rank(volume,20)`，见 [`reversal_20d_volconf.md`](reversal_20d_volconf.md) | 0.0350 | 3.28 | 边际：spread +19%、IC -14% |
 | 2026-08-17 | 衍生：`reversal_20d_nowin` | 挖因子轮 6：H8 移除 winsorize（极值保留），见 [`reversal_20d_nowin.md`](reversal_20d_nowin.md) | 0.0409 | 3.47 | **无效**：与 winsorize 版完全等价 |
 | 2026-08-17 | 衍生：`reversal_20d_near5` | 挖因子轮 3：H2 锚结构 → 近端 5 日单点反转，见 [`reversal_20d_near5.md`](reversal_20d_near5.md) | 0.0290 | 2.44 | **无效**：全面劣于 20 日版，证伪"反转近端驱动" |
