@@ -113,6 +113,7 @@ formula: |
 
 | 日期 | 变体/版本 | 改动 | IC mean | t | 结论 |
 |------|-----------|------|---------|---|------|
+| 2026-08-18 | 衍生：`reversal_20d_netflow_pct` | 批次3轮55：F2 占比归一化，见 [`reversal_20d_netflow_pct.md`](reversal_20d_netflow_pct.md) | 0.0283 | 3.30 | **无效**：绝对量更优 |
 | 2026-08-18 | 衍生：`reversal_20d_netflow10` | 批次3轮47：N2 netflow10，见 [`reversal_20d_netflow10.md`](reversal_20d_netflow10.md) | 0.0403 | 4.86 | **无效**：netflow 谱峰 20 日 |
 | 2026-08-18 | 衍生：`reversal_20d_corr_intraday_turn` | 批次3轮36：T3 三维秩次加法，见 [`reversal_20d_corr_intraday_turn.md`](reversal_20d_corr_intraday_turn.md) | 0.0724 | 6.79 | **候选**：三项全库纪录 |
 | 2026-08-18 | 衍生：`momentum_20d_cumret_turn` | 批次3轮20：A2 cumret 核心×条件化，见 [`momentum_20d_cumret_turn.md`](momentum_20d_cumret_turn.md) | 0.0492 | 3.91 | **无效**：相对 cumret 无增益（条件化冗余） |
