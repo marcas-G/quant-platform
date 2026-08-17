@@ -149,6 +149,7 @@ formula: |
 |------|-----------|------|---------|---|------|
 | 2026-08-18 | 衍生：`reversal_20d_five_dim_ctfi` | 批次3轮82：F3 五维加法，见 [`reversal_20d_five_dim_ctfi.md`](reversal_20d_five_dim_ctfi.md) | 0.0713 | 6.91 | **无效**：skew 持平 |
 | 2026-08-18 | 衍生：`reversal_20d_four_dim_ctfi` | 批次3轮81：F3 四维加法，见 [`reversal_20d_four_dim_ctfi.md`](reversal_20d_four_dim_ctfi.md) | 0.0717 | 6.77 | 候选：接近全库最强 |
+| 2026-08-18 | 衍生：`reversal_20d_turn_skew_flow30` | 批次3轮95：T3 三维加法，见 [`reversal_20d_turn_skew_flow30.md`](reversal_20d_turn_skew_flow30.md) | 0.0697 | 6.31 | 候选：投机系最强三维 |
 | 2026-08-18 | 衍生：`reversal_20d_intraday_flow30` | 批次3轮94：F3 flow30，见 [`reversal_20d_intraday_flow30.md`](reversal_20d_intraday_flow30.md) | 0.0589 | 5.50 | 候选：谱峰应用 |
 | 2026-08-18 | 衍生：`reversal_20d_corr_flow30` | 批次3轮93：F3 flow30，见 [`reversal_20d_corr_flow30.md`](reversal_20d_corr_flow30.md) | 0.0559 | 6.55 | 候选：双谱峰 |
 | 2026-08-18 | 衍生：`reversal_20d_corr10_intraday` | 批次3轮92：C3 corr10，见 [`reversal_20d_corr10_intraday.md`](reversal_20d_corr10_intraday.md) | 0.0607 | 6.16 | 候选：谱峰应用 |
