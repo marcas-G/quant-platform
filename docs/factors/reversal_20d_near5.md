@@ -114,6 +114,7 @@ formula: |
 
 | 日期 | 变体/版本 | 改动 | IC mean | t | 结论 |
 |------|-----------|------|---------|---|------|
+| 2026-08-18 | 衍生：`reversal_5d_corr` | 批次3轮38：N2 秩次加法，见 [`reversal_5d_corr.md`](reversal_5d_corr.md) | 0.0450 | 4.65 | 观察中：IC 超两父本、稳定性降 |
 | 2026-08-18 | 衍生：`reversal_5d_turn` | 批次3轮24：N2 换手率条件化，见 [`reversal_5d_turn.md`](reversal_5d_turn.md) | 0.0283 | 2.32 | 观察中：spread+92%、IC 持平 |
 | 2026-08-18 | 衍生：`reversal_5d_volconf` | 批次3轮10：N2 量能确认，见 [`reversal_5d_volconf.md`](reversal_5d_volconf.md) | 0.0304 | 2.84 | 观察中：spread+42%，未超 20 日家族 |
 | 2026-08-17 | `reversal_20d_near5`（初始） | 挖因子轮 3：H2 锚结构 → 近端 5 日单点 | 0.0290 | 2.44 | 无效：全面劣于 20 日版 |
