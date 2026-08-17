@@ -147,6 +147,7 @@ formula: |
 
 | 日期 | 变体/版本 | 改动 | IC mean | t | 结论 |
 |------|-----------|------|---------|---|------|
+| 2026-08-18 | 衍生：`reversal_20d_corr_flow_intraday` | 批次3轮59：T3 三维加法，见 [`reversal_20d_corr_flow_intraday.md`](reversal_20d_corr_flow_intraday.md) | 0.0607 | 5.96 | 候选：三维 IC 纪录 |
 | 2026-08-18 | 衍生：`reversal_20d_drawdown` | 批次3轮49：R2 回撤结构，见 [`reversal_20d_drawdown.md`](reversal_20d_drawdown.md) | -0.0160 | -1.20 | **无效**：回撤无反转信息（含方向修正） |
 | 2026-08-18 | 衍生：`reversal_20d_pricevolcorr_turn` | 批次3轮35：V2 turnover 量代理，见 [`reversal_20d_pricevolcorr_turn.md`](reversal_20d_pricevolcorr_turn.md) | 0.0425 | 6.37 | **无效**：量代理等价 |
 | 2026-08-18 | 衍生：`reversal_20d_overnight` | 批次3轮26：O2 隔夜成分（图景补全），见 [`reversal_20d_overnight.md`](reversal_20d_overnight.md) | -0.0223 | -4.06 | **无效**：隔夜延续、日内反转——拆分图景闭环 |
