@@ -149,6 +149,7 @@ formula: |
 |------|-----------|------|---------|---|------|
 | 2026-08-18 | 衍生：`reversal_20d_five_dim_ctfi` | 批次3轮82：F3 五维加法，见 [`reversal_20d_five_dim_ctfi.md`](reversal_20d_five_dim_ctfi.md) | 0.0713 | 6.91 | **无效**：skew 持平 |
 | 2026-08-18 | 衍生：`reversal_20d_four_dim_ctfi` | 批次3轮81：F3 四维加法，见 [`reversal_20d_four_dim_ctfi.md`](reversal_20d_four_dim_ctfi.md) | 0.0717 | 6.77 | 候选：接近全库最强 |
+| 2026-08-18 | 衍生：`reversal_20d_five_dim_tsvf` | 批次3轮99：F3 flow30 替换，见 [`reversal_20d_five_dim_tsvf.md`](reversal_20d_five_dim_tsvf.md) | 0.0700 | 7.48 | **无效**：intraday 更优 |
 | 2026-08-18 | 衍生：`reversal_20d_five_dim_all` | 批次3轮98：F3 五维加法，见 [`reversal_20d_five_dim_all.md`](reversal_20d_five_dim_all.md) | 0.0728 | 6.95 | **无效**：五维饱和 |
 | 2026-08-18 | 衍生：`reversal_20d_four_dim_tsfi` | 批次3轮97：F3 四维加法，见 [`reversal_20d_four_dim_tsfi.md`](reversal_20d_four_dim_tsfi.md) | 0.0727 | 6.73 | 候选：接近纪录 |
 | 2026-08-18 | 衍生：`reversal_20d_four_dim_ctfs30` | 批次3轮96：F3 flow30，见 [`reversal_20d_four_dim_ctfs30.md`](reversal_20d_four_dim_ctfs30.md) | 0.0706 | 6.91 | 候选：微升 |
