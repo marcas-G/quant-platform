@@ -116,6 +116,7 @@ formula: |
 
 | 日期 | 变体/版本 | 改动 | IC mean | t | 结论 |
 |------|-----------|------|---------|---|------|
+| 2026-08-18 | 衍生：`reversal_20d_five_dim_tsv10` | 批次3轮70：F2 vol10，见 [`reversal_20d_five_dim_tsv10.md`](reversal_20d_five_dim_tsv10.md) | 0.0707 | 7.58 | 候选：t/IR 全库新纪录 |
 | 2026-08-18 | 衍生：`reversal_20d_four_dim_tsv` | 批次3轮66：F3 四维加法，见 [`reversal_20d_four_dim_tsv.md`](reversal_20d_four_dim_tsv.md) | 0.0661 | 7.46 | 候选：t/IR 全库新纪录 |
 | 2026-08-18 | 衍生：`reversal_20d_intraday_flow` | 批次3轮57：N3 intraday×flow，见 [`reversal_20d_intraday_flow.md`](reversal_20d_intraday_flow.md) | 0.0559 | 5.29 | 观察中：IR 超两父本 |
 | 2026-08-18 | 衍生：`reversal_20d_four_dim10` | 批次3轮45：D2 corr10 四维，见 [`reversal_20d_four_dim10.md`](reversal_20d_four_dim10.md) | 0.0721 | 7.40 | **候选**：新全库最强 |
