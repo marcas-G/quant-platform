@@ -96,6 +96,7 @@ formula: |
 
 | 日期 | 变体/版本 | 改动 | IC mean | t | 结论 |
 |------|-----------|------|---------|---|------|
+| 2026-08-18 | 衍生：`reversal_20d_intraday_flowextreme` | 批次4轮8：F3 极端资金流聚焦，见 [`reversal_20d_intraday_flowextreme.md`](reversal_20d_intraday_flowextreme.md) | 0.0437 | 6.38 | 观察中：稳定性换水平 |
 | 2026-08-18 | `reversal_20d_intraday_flow30`（初始） | 批次 3 轮 94：F3 flow30 | 0.0589 | 5.50 | 候选：谱峰应用 |
 
 ## 6. 风险与备注
