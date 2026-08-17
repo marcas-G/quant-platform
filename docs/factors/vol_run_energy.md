@@ -147,6 +147,7 @@ formula: |
 
 | 日期 | 变体/版本 | 改动 | IC mean | t | 结论 |
 |------|-----------|------|---------|---|------|
+| 2026-08-18 | 衍生：`reversal_20d_vol_flow` | 批次3轮74：V3 vol×flow，见 [`reversal_20d_vol_flow.md`](reversal_20d_vol_flow.md) | 0.0461 | 6.22 | 候选：IC 超 netflow |
 | 2026-08-18 | 衍生：`reversal_20d_flow_skew` | 批次3轮61：F3 flow×skew，见 [`reversal_20d_flow_skew.md`](reversal_20d_flow_skew.md) | 0.0464 | 5.75 | 候选：IC 超两父本 |
 | 2026-08-18 | 衍生：`reversal_20d_corr_flow_intraday` | 批次3轮59：T3 三维加法，见 [`reversal_20d_corr_flow_intraday.md`](reversal_20d_corr_flow_intraday.md) | 0.0607 | 5.96 | 候选：三维 IC 纪录 |
 | 2026-08-18 | 衍生：`reversal_20d_drawdown` | 批次3轮49：R2 回撤结构，见 [`reversal_20d_drawdown.md`](reversal_20d_drawdown.md) | -0.0160 | -1.20 | **无效**：回撤无反转信息（含方向修正） |
