@@ -67,6 +67,7 @@ M4a 打通「平台库数据 → 因子计算 → 复权视图 → 周频评估�
 | `factorlab run <spec.yaml> [--universe U] [--max-memory M] [--output-dir DIR] [--no-float32] [--backtest/--no-backtest] [--groups N] [--set k=v ...]` | 计算因子并周频评估 + 分层回测（默认），落盘 `results/<name>/`（`--set` 生成 `results/<name>_<k><v>.../` 参数变体） |
 | `factorlab list` | 列出已保存因子与最近运行摘要（扫描 `results_dir/*/summary.json`，按运行时间倒序） |
 | `factorlab show <name>` | 查看单因子完整摘要（spec 原文/评估/分层回测） |
+| `factorlab corr <name1> <name2> ...` | 因子两两相关性（≥2 个）：周度横截面秩相关均值 + 全局 Pearson；任一因子无 results 报错（数据源 `results/<name>/panel.parquet` 的 signal，按 date+code inner join；join 后超 2000 万行每周降采样 5000 只） |
 | `factorlab op list` | 列出已注册算子 |
 | `factorlab op doc <name>` | 查看算子名称、类别、版本与 docstring |
 | `factorlab op add <plugin.py> [--force]` | 校验并注册用户插件；同名冲突需 `--force` |
@@ -181,6 +182,10 @@ formula: |
   `formula`（参数 AST 绑定替换，展开先于平台薄封装；公式内 `def` 同名函数优先）。
   宏公式须为单表达式（`mode="eval"`），可引用平台薄封装（`returns` 等）与 `ts_*` 算子；
   展开后数据列引用（如宏公式内的 `volume`）自动纳入加载。
+- **daily_basic 扩展字段**：公式可引用 `turnover/total_mv/circ_mv/pe_ttm/pb/dv_ratio/
+  volume_ratio`（daily_basic left join 自动加载，历史早期覆盖不足 → 缺失传播，
+  以 `signal_null_ratio` 呈现）。经典价值/技术因子（`value_bp`、`turnover_level` 等）
+  依赖这些字段。
 - `params`：可选顶层参数映射 `dict[str, number|str|bool]`（缺省空）。formula（含
   operators 宏体、def 体）内 `${name}` 文本引用在编译期替换为字面量；引用未声明
   的参数名报错。`factorlab run --set k=v` 覆盖（合并进 spec.params）并生成变体
