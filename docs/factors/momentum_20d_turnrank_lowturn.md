@@ -102,6 +102,7 @@ formula: |
 
 | 日期 | 变体/版本 | 改动 | IC mean | t | 结论 |
 |------|-----------|------|---------|---|------|
+| 2026-08-18 | 衍生：`momentum_20d_turnrank_extreme` | 批次4轮1：L4 极端区掩码，见 [`momentum_20d_turnrank_extreme.md`](momentum_20d_turnrank_extreme.md) | 0.0448 | 6.51 | **强候选**：t/IR 近翻倍、spread +62% |
 | 2026-08-18 | `momentum_20d_turnrank_lowturn`（初始） | 批次 3 轮 14：Q2 换手率方向反转 | 0.0148 | 1.47 | 无效：证伪流动性补偿方向 |
 
 ## 6. 风险与备注
