@@ -98,6 +98,7 @@ formula: |
 
 | 日期 | 变体/版本 | 改动 | IC mean | t | 结论 |
 |------|-----------|------|---------|---|------|
+| 2026-08-18 | 衍生：`reversal_20d_civ_extreme` | 批次4轮3：F3 极端信号替换 turn，见 [`reversal_20d_civ_extreme.md`](reversal_20d_civ_extreme.md) | 0.0668 | 6.66 | **无效**：组合内冗余（正交性>信息密度） |
 | 2026-08-18 | `reversal_20d_corr_intraday_turn_vol`（初始） | 批次 3 轮 37：F2 第四维 | 0.0719 | 7.35 | **候选**：t/IR 新纪录 |
 
 ## 6. 风险与备注
