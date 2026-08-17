@@ -96,3 +96,15 @@ def layered_net_value_figure(net_values: dict[str, list[float]], dates: list[str
             hovertemplate="%{x}<br>%{fullData.name}=%{y:.4f}<extra></extra>"))
     fig.update_layout(**_base_layout("分层回测净值", 380))
     return fig.to_json()
+
+
+def correlation_heatmap_figure(names: list[str], matrix: list[list[float]]) -> str:
+    """因子相关热力图（diverging：正蓝负红，0 白）→ plotly figure JSON。"""
+    fig = go.Figure(go.Heatmap(
+        z=matrix, x=names, y=names,
+        zmin=-1, zmax=1, colorscale=[
+            [0.0, "#e34948"], [0.5, "#fcfcfb"], [1.0, "#2a78d6"]],
+        colorbar=dict(title="corr", tickfont=dict(color=_SECONDARY_INK)),
+        hovertemplate="%{x} × %{y}<br>corr=%{z:.3f}<extra></extra>"))
+    fig.update_layout(_base_layout("因子相关性", 340))
+    return fig.to_json()

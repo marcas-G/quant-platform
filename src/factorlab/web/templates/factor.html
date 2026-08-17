@@ -49,6 +49,12 @@
   <div class="chart-card"><h2>分层回测净值</h2>
     <div id="layered-chart"></div>
     <script>Plotly.newPlot("layered-chart", {{ charts.layered | safe }});</script>
+  {% if charts.correlation %}
+  <div class="chart-card"><h2>相关因子</h2>
+    <div id="correlation-chart"></div>
+    <script>Plotly.newPlot("correlation-chart", {{ charts.correlation | safe }});</script>
+  </div>
+  {% endif %}
   </div>
   {% endif %}
 

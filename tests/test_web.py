@@ -169,3 +169,30 @@ def test_factor_detail_corrupt_weekly_degrade(tmp_path):
     assert resp.status_code == 200
     assert "无周频数据" in resp.text
     assert "decile-chart" in resp.text
+
+
+def test_factor_detail_has_correlation_block(tmp_path):
+    """详情页含相关热力图区块（库内有多因子时）。"""
+    import polars as pl
+    _write_factor(tmp_path, "alpha_1")
+    # 第二个因子：只有 panel（无 summary 也应被 corr 逻辑处理）
+    out2 = tmp_path / "beta_2"
+    out2.mkdir()
+    rows = []
+    for w, d in enumerate(["2024-01-05", "2024-01-12"]):
+        for s in range(10):
+            rows.append({"date": d, "code": f"{s:06d}", "signal": float(s * 2)})
+    pl.DataFrame(rows).write_parquet(out2 / "panel.parquet")
+    client = TestClient(create_app(results_dir=tmp_path))
+    r = client.get("/factor/alpha_1")
+    assert r.status_code == 200
+    assert "correlation-chart" in r.text
+
+
+def test_factor_detail_correlation_single_factor(tmp_path):
+    """库内只有当前因子 → 相关区块降级不崩溃。"""
+    _write_factor(tmp_path, "alpha_1")
+    client = TestClient(create_app(results_dir=tmp_path))
+    r = client.get("/factor/alpha_1")
+    assert r.status_code == 200
+    assert "correlation-chart" not in r.text

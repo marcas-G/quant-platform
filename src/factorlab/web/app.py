@@ -159,6 +159,30 @@ def create_app(results_dir: Path) -> FastAPI:
         if isinstance(layered.get("net_values"), dict) and layered["net_values"]:
             charts_data["layered"] = charts.layered_net_value_figure(
                 layered["net_values"], layered.get("dates", []))
+        # 相关因子热力图：与库内其他有结果因子（复用 correlation 模块，降级不崩溃）
+        try:
+            from factorlab.eval.correlation import factor_correlation
+            all_names = sorted(p.parent.name for p in results_dir.glob("*/panel.parquet")
+                               if p.parent.name != name)
+            if all_names:
+                cm = factor_correlation([name] + all_names, results_dir)
+                pairs = [(r["factor_b"], r["rank_corr"]) for r in cm.to_dicts()
+                         if r["factor_a"] == name]
+                pairs.sort(key=lambda x: abs(x[1]), reverse=True)
+                top = pairs[:10]
+                if top:
+                    others = [t[0] for t in top]
+                    cm2 = factor_correlation([name] + others, results_dir)
+                    names_l = [name] + others
+                    matrix = [[0.0] * len(names_l) for _ in names_l]
+                    for r in cm2.to_dicts():
+                        i, j = names_l.index(r["factor_a"]), names_l.index(r["factor_b"])
+                        matrix[i][j] = matrix[j][i] = r["rank_corr"]
+                    for k in range(len(names_l)):
+                        matrix[k][k] = 1.0
+                    charts_data["correlation"] = charts.correlation_heatmap_figure(names_l, matrix)
+        except (OSError, ValueError, pl.exceptions.PolarsError):
+            pass  # 相关区块降级（无其他因子/面板异常）
         return templates.TemplateResponse(request, "factor.html", {
             "name": name, "summary": summary, "charts": charts_data,
             "has_weekly": has_weekly,
