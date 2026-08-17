@@ -319,6 +319,21 @@ def data_verify(compare: Path | None = None) -> None:
     console.print(report)
 
 
+@app.command("corr")
+def corr_factors(names: list[str] = typer.Argument(..., min_length=2)) -> None:
+    """因子两两相关性：周度横截面秩相关均值 + 全局 Pearson。
+
+    用法: factorlab corr <name1> <name2> [<name3>...]
+    """
+    from factorlab.eval.correlation import factor_correlation
+    try:
+        m = factor_correlation(names, settings.results_dir)
+    except FileNotFoundError as e:
+        console.print(f"错误: {e}", style="red")
+        raise typer.Exit(code=1)
+    console.print(m.to_pandas().to_string(index=False))
+
+
 @app.command("serve")
 def serve(port: int = 8000, host: str = "127.0.0.1") -> None:
     """启动 Web 可视化（只读 results_dir）。"""
