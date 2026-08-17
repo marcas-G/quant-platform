@@ -316,7 +316,17 @@ factorlab serve                              # Web 可视化（IC 曲线/净值�
 （如 `momentum_20d_win100`），results 独立目录与默认变体并存——同因子多参数
 对比用 `--set` 即可，无需复制/修改 spec（§2.6）。
 
-## 7. 数据刷新提醒
+**因子档案（md）**：每个因子在 `docs/factors/<name>.md` 维护一份研究档案
+（模板：`docs/factors/_template.md`），与 `factor/<name>.yaml` 并行存放：
+
+- `yaml` = 机器可执行定义；`md` = 人读研究记录（逻辑动机、参数表、验证结果
+  快照、迭代历史、风险备注）。
+- 新建因子：复制模板 → 填写 → `factorlab run` 出结果后填 §4 验证数据
+  （数据源 `results/<name>/summary.json`，注明快照日期）。
+- 参数变体（`--set`）记录在主档案 §5 迭代历史，不单独建档案。
+- 二者必须一致：改 yaml 后同步更新 md 的 §3 实现全文。
+
+## 8. 数据刷新提醒
 
 - 数据停在 2026-08-14：`factorlab data update`（增量到最新交易日）
 - token 8/22 到期：到期前 `data refresh` 或续费（teajoin redeem）
