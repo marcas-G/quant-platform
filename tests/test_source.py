@@ -206,3 +206,21 @@ def test_load_daily_rejects_raw_platform_vol_name(tmp_path):
     build_db(tmp_path)
     with pytest.raises(ValueError, match="未知列名"):
         load_daily(tmp_path / "t.duckdb", ["000001"], cols=["vol"]).collect()
+
+
+def test_daily_basic_extended_columns_loaded(tmp_path):
+    """扩展字段（pe_ttm/pb/dv_ratio）经 daily_basic join 加载。"""
+    db = tmp_path / "t.duckdb"
+    con = duckdb.connect(str(db))
+    con.execute("create table daily (trade_date varchar, ts_code varchar, open double, high double, low double, close double, vol double, amount double)")
+    con.execute("create table adj_factor (trade_date varchar, ts_code varchar, adj_factor double)")
+    con.execute("create table daily_basic (trade_date varchar, ts_code varchar, turnover_rate double, total_mv double, circ_mv double, pe_ttm double, pb double, dv_ratio double)")
+    for d in ["20240102", "20240103", "20240104"]:
+        con.execute("insert into daily values (?, ?, 10, 11, 9, 10.5, 1000, 100000)", [d, "000001.SZ"])
+        con.execute("insert into adj_factor values (?, ?, 1.0)", [d, "000001.SZ"])
+        con.execute("insert into daily_basic values (?, ?, 1.0, 1e10, 5e9, 12.0, 1.5, 0.02)", [d, "000001.SZ"])
+    con.close()
+    df = load_daily(db, ["000001"], cols=["close", "pe_ttm", "pb", "dv_ratio"]).collect()
+    assert df["pe_ttm"].to_list() == [12.0] * 3
+    assert df["pb"].to_list() == [1.5] * 3
+    assert df["dv_ratio"].to_list() == [0.02] * 3
