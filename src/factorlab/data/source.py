@@ -12,7 +12,10 @@ _COL_MAP = {"volume": "vol"}
 # 平台库 daily 默认加载列（cols=None 时；turnover/total_mv/circ_mv 在 daily_basic，按需请求）
 _PLATFORM_COLS = ("open", "high", "low", "close", "pre_close", "change", "pct_chg", "volume", "amount")
 # cols 请求的平台语义列 → daily_basic 来源列（left join）
-_DAILY_BASIC_MAP = {"turnover": "turnover_rate", "total_mv": "total_mv", "circ_mv": "circ_mv"}
+_DAILY_BASIC_MAP = {
+    "turnover": "turnover_rate", "total_mv": "total_mv", "circ_mv": "circ_mv",
+    "pe_ttm": "pe_ttm", "pb": "pb", "dv_ratio": "dv_ratio",
+}
 _KNOWN_COLS = {"date", "code", "adj_factor", *_PLATFORM_COLS, *_DAILY_BASIC_MAP}
 
 
