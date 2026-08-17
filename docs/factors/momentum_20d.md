@@ -124,6 +124,7 @@ formula: |
 
 | 日期 | 变体/版本 | 改动 | IC mean | t | 结论 |
 |------|-----------|------|---------|---|------|
+| 2026-08-18 | 衍生：`reversal_20d_corr_vol` | 批次3轮75：C3 corr×vol，见 [`reversal_20d_corr_vol.md`](reversal_20d_corr_vol.md) | 0.0450 | 6.45 | 候选：边际 |
 | 2026-08-18 | 衍生：`reversal_20d_turn_skew` | 批次3轮62：T3 turn×skew，见 [`reversal_20d_turn_skew.md`](reversal_20d_turn_skew.md) | 0.0633 | 5.74 | **强候选**：IC 超两父本 |
 | 2026-08-18 | 衍生：`reversal_20d_four_dim_flow` | 批次3轮60：F2 flow 替换 vol，见 [`reversal_20d_four_dim_flow.md`](reversal_20d_four_dim_flow.md) | 0.0717 | 6.77 | **无效**：vol 维度更优 |
 | 2026-08-18 | 衍生：`reversal_20d_corr_skew` | 批次3轮52：C3 corr×skew 组合，见 [`reversal_20d_corr_skew.md`](reversal_20d_corr_skew.md) | 0.0425 | 6.45 | **无效**：skew 冗余于 corr |
