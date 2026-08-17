@@ -175,14 +175,20 @@ def test_factor_detail_has_correlation_block(tmp_path):
     """详情页含相关热力图区块（库内有多因子时）。"""
     import polars as pl
     _write_factor(tmp_path, "alpha_1")
-    # 第二个因子：只有 panel（无 summary 也应被 corr 逻辑处理）
-    out2 = tmp_path / "beta_2"
-    out2.mkdir()
+    # alpha_1 补 panel.parquet（corr 逻辑数据源）
     rows = []
     for w, d in enumerate(["2024-01-05", "2024-01-12"]):
         for s in range(10):
-            rows.append({"date": d, "code": f"{s:06d}", "signal": float(s * 2)})
-    pl.DataFrame(rows).write_parquet(out2 / "panel.parquet")
+            rows.append({"date": d, "code": f"{s:06d}", "signal": float(s)})
+    pl.DataFrame(rows).write_parquet(tmp_path / "alpha_1" / "panel.parquet")
+    # 第二个因子：只有 panel
+    out2 = tmp_path / "beta_2"
+    out2.mkdir()
+    rows2 = []
+    for w, d in enumerate(["2024-01-05", "2024-01-12"]):
+        for s in range(10):
+            rows2.append({"date": d, "code": f"{s:06d}", "signal": float(s * 2)})
+    pl.DataFrame(rows2).write_parquet(out2 / "panel.parquet")
     client = TestClient(create_app(results_dir=tmp_path))
     r = client.get("/factor/alpha_1")
     assert r.status_code == 200
