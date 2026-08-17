@@ -99,6 +99,7 @@ formula: |
 
 | 日期 | 变体/版本 | 改动 | IC mean | t | 结论 |
 |------|-----------|------|---------|---|------|
+| 2026-08-18 | 衍生：`reversal_10d_intraday_extreme` | 批次4轮4：I3 极端换手聚焦，见 [`reversal_10d_intraday_extreme.md`](reversal_10d_intraday_extreme.md) | 0.0537 | 8.20 | **强候选**：t/IR 近翻倍、spread 全库纪录 |
 | 2026-08-18 | `reversal_10d_intraday`（初始） | 批次 3 轮 28：I2 10 日日内 | 0.0503 | 4.49 | 无效：日内谱峰同为 20 日 |
 
 ## 6. 风险与备注
