@@ -124,6 +124,7 @@ formula: |
 
 | 日期 | 变体/版本 | 改动 | IC mean | t | 结论 |
 |------|-----------|------|---------|---|------|
+| 2026-08-18 | 衍生：`reversal_20d_four_dim_flow` | 批次3轮60：F2 flow 替换 vol，见 [`reversal_20d_four_dim_flow.md`](reversal_20d_four_dim_flow.md) | 0.0717 | 6.77 | **无效**：vol 维度更优 |
 | 2026-08-18 | 衍生：`reversal_20d_corr_skew` | 批次3轮52：C3 corr×skew 组合，见 [`reversal_20d_corr_skew.md`](reversal_20d_corr_skew.md) | 0.0425 | 6.45 | **无效**：skew 冗余于 corr |
 | 2026-08-18 | 衍生：`reversal_20d_netflow` | 批次3轮40：F2 净流入代理，见 [`reversal_20d_netflow.md`](reversal_20d_netflow.md) | 0.0417 | 5.01 | 候选：资金流维度显著 |
 | 2026-08-18 | 衍生：`reversal_20d_closepos` | 批次3轮29：P2 收盘位置，见 [`reversal_20d_closepos.md`](reversal_20d_closepos.md) | 0.0054 | 0.56 | **无效**：位置维度无信息（含一字板 NaN 修复） |
