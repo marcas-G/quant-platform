@@ -129,6 +129,7 @@ formula: |
 
 | 日期 | 变体/版本 | 改动 | IC mean | t | 结论 |
 |------|-----------|------|---------|---|------|
+| 2026-08-18 | 衍生：`reversal_20d_corr_turn_flow` | 批次3轮79：T3 三维加法，见 [`reversal_20d_corr_turn_flow.md`](reversal_20d_corr_turn_flow.md) | 0.0703 | 6.76 | 候选：IC 超 corr_turn |
 | 2026-08-18 | 衍生：`reversal_20d_corr_turn_skew` | 批次3轮77：T3 三维加法（=轮63 交换等价），见 [`reversal_20d_corr_turn_skew.md`](reversal_20d_corr_turn_skew.md) | 0.0656 | 6.75 | **无效**：重复+稀释 |
 | 2026-08-18 | 衍生：`reversal_20d_wcorr_tsv10` | 批次3轮73：C2 corr 双倍，见 [`reversal_20d_wcorr_tsv10.md`](reversal_20d_wcorr_tsv10.md) | 0.0683 | 7.65 | 观察中：t/IR 全库新纪录 |
 | 2026-08-18 | 衍生：`reversal_20d_five_dim_tsv` | 批次3轮67：E3 五维加法，见 [`reversal_20d_five_dim_tsv.md`](reversal_20d_five_dim_tsv.md) | 0.0712 | 7.51 | **候选**：综合最优 |
