@@ -147,6 +147,7 @@ formula: |
 
 | 日期 | 变体/版本 | 改动 | IC mean | t | 结论 |
 |------|-----------|------|---------|---|------|
+| 2026-08-18 | 衍生：`vol_run_energy_symrun_lin` | 批次3轮5：H3 去钟形（base=symrun），见 [`vol_run_energy_symrun_lin.md`](vol_run_energy_symrun_lin.md) | -0.0441 | -8.16 | **无效**：信号反转，钟形是秩次核心 |
 | 2026-08-17 | 衍生：`vol_run_energy_symrun` | 挖因子轮 7：H3 游程对称化 `==1`→`!=0`（base=rl120_turn），见 [`vol_run_energy_symrun.md`](vol_run_energy_symrun.md) | 0.0276 | 8.40 | **强候选**：IC +82%、IR 0.65；原始"上涨游程"被证伪/替代 |
 | 2026-08-17 | 衍生：`vol_run_energy_rl120_turn` | 挖因子轮 1：H2 游程窗口参数化 rl_win=120 + H8 volume→turnover，见 [`vol_run_energy_rl120_turn.md`](vol_run_energy_rl120_turn.md) | 0.0152 | 5.26 | **全面更优**：覆盖翻倍（有效周 167）、近 26 周不衰减（t=3.24）、IR 0.41 |
 | 2026-08-17 | `vol_run_energy_win100_gain1.5` | `run --set win=100 gain=1.5`：缩短能量窗口 + 降振幅 | 0.0131 | 3.86 | **更优**：t 3.12→3.86、IR 0.34→0.37、spread 0.15%→0.26%/周、缺失率 68%→60% |
