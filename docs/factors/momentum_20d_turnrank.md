@@ -130,6 +130,7 @@ formula: |
 
 | 日期 | 变体/版本 | 改动 | IC mean | t | 结论 |
 |------|-----------|------|---------|---|------|
+| 2026-08-18 | 衍生：`momentum_20d_turnrank_vol` | 批次3轮11：组合对称验证（=volturn 交换等价），见 [`momentum_20d_turnrank_vol.md`](momentum_20d_turnrank_vol.md) | 0.0366 | 3.25 | **无效**：与 volturn 数学等价（重复） |
 | 2026-08-17 | 衍生：`momentum_20d_turnrank_avg20` | 挖因子轮 10：H3 换手率平滑 20 日，见 [`momentum_20d_turnrank_avg20.md`](momentum_20d_turnrank_avg20.md) | 0.0416 | 3.33 | **无效**：与快照版等价 |
 | 2026-08-17 | 衍生：`momentum_20d_turnrank_quad` | 挖因子轮 4：H3 线性 → 凸化 `**2`，见 [`momentum_20d_turnrank_quad.md`](momentum_20d_turnrank_quad.md) | 0.0411 | 3.38 | **无效**：相对种子无改善，线性条件化已充分 |
 | 2026-08-17 | `momentum_20d_turnrank`（初始） | 挖因子轮 1：变异 H9（方向→反转）+ H5（同质性→换手率条件化） | 0.0419 | 3.37 | 全期显著；spread +30%；近 26 周衰减 |
