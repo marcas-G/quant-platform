@@ -1,0 +1,15 @@
+name: rsi_reversal_14
+category: custom
+direction: -1
+universe:
+  rules: {exclude_st: true, exchanges: ["SSE", "SZSE"]}
+date:
+  start: "2023-01-01"
+  end: "2026-07-31"
+process:
+  - winsorize(quantile=0.99)
+  - standardize()
+formula: |
+  from polars_ta.prefix.wq import ts_delta, ts_mean
+  _d = ts_delta(close, 1)
+  signal = ts_mean((_d + abs(_d)) / 2, 14) / (ts_mean((abs(_d) - _d) / 2, 14) + 1e-6)

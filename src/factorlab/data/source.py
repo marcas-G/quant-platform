@@ -15,6 +15,7 @@ _PLATFORM_COLS = ("open", "high", "low", "close", "pre_close", "change", "pct_ch
 _DAILY_BASIC_MAP = {
     "turnover": "turnover_rate", "total_mv": "total_mv", "circ_mv": "circ_mv",
     "pe_ttm": "pe_ttm", "pb": "pb", "dv_ratio": "dv_ratio",
+    "volume_ratio": "volume_ratio",
 }
 _KNOWN_COLS = {"date", "code", "adj_factor", *_PLATFORM_COLS, *_DAILY_BASIC_MAP}
 
