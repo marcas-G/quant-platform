@@ -346,8 +346,7 @@ def svd_factors(names: list[str] = typer.Argument(None),
     缺省 names = 全部有 panel 的因子（排除验证目录）。
     """
     from factorlab.eval.correlation import factor_svd
-    from factorlab.config import settings as _settings
-    results_dir = _settings.results_dir
+    results_dir = settings.results_dir
     if not names:
         skip = {"acceptance", "demo_vol_skew", "m4b_smoke"}
         names = sorted(p.parent.name for p in results_dir.glob("*/panel.parquet")
