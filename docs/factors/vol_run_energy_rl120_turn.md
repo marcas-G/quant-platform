@@ -139,6 +139,7 @@ formula: |
 
 | 日期 | 变体/版本 | 改动 | IC mean | t | 结论 |
 |------|-----------|------|---------|---|------|
+| 2026-08-18 | 衍生：`reversal_20d_intraday_adv` | 批次3轮88：A2 adv20 条件化，见 [`reversal_20d_intraday_adv.md`](reversal_20d_intraday_adv.md) | 0.0547 | 5.33 | **无效**：与量能确认等价 |
 | 2026-08-18 | 衍生：`vol_run_energy_symrun_w100` | 批次3轮69：W2 win100，见 [`vol_run_energy_symrun_w100.md`](vol_run_energy_symrun_w100.md) | 0.0217 | 7.49 | **无效**：turnover 口径 w200 最优 |
 | 2026-08-18 | 衍生：`reversal_20d_kurt` | 批次3轮51：K2 收益峰度，见 [`reversal_20d_kurt.md`](reversal_20d_kurt.md) | 0.0065 | 1.53 | **无效**：全期弱、近 26 周显著 |
 | 2026-08-18 | 衍生：`reversal_20d_five_dim` | 批次3轮41：E3 第五维，见 [`reversal_20d_five_dim.md`](reversal_20d_five_dim.md) | 0.0713 | 7.11 | **无效**：维度饱和（四维最优） |
