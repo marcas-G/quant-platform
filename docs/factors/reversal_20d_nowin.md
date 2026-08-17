@@ -106,6 +106,7 @@ formula: |
 
 | 日期 | 变体/版本 | 改动 | IC mean | t | 结论 |
 |------|-----------|------|---------|---|------|
+| 2026-08-18 | 衍生：`reversal_20d_skew10` | 批次3轮53：K2 skew10，见 [`reversal_20d_skew10.md`](reversal_20d_skew10.md) | 0.0122 | 2.10 | **无效**：偏度谱峰 20 日 |
 | 2026-08-18 | 衍生：`reversal_20d_pricevolcorr_lev` | 批次3轮43：L2 量水平，见 [`reversal_20d_pricevolcorr_lev.md`](reversal_20d_pricevolcorr_lev.md) | 0.0267 | 4.04 | **无效**：Δ量版更优 |
 | 2026-08-18 | 衍生：`reversal_20d_corr_intraday_turn_vol` | 批次3轮37：F2 第四维，见 [`reversal_20d_corr_intraday_turn_vol.md`](reversal_20d_corr_intraday_turn_vol.md) | 0.0719 | 7.35 | **候选**：t/IR 新纪录 |
 | 2026-08-18 | 衍生：`reversal_20d_ranknorm` | 批次3轮21：P3 csranknorm，见 [`reversal_20d_ranknorm.md`](reversal_20d_ranknorm.md) | 0.0409 | 3.47 | **无效**：分布形态无关（等价） |
