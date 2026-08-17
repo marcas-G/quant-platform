@@ -112,6 +112,7 @@ formula: |
 
 | 日期 | 变体/版本 | 改动 | IC mean | t | 结论 |
 |------|-----------|------|---------|---|------|
+| 2026-08-18 | 衍生：`momentum_20d_turnrank_lowturn` | 批次3轮14：Q2 换手率方向反转，见 [`momentum_20d_turnrank_lowturn.md`](momentum_20d_turnrank_lowturn.md) | 0.0148 | 1.47 | **无效**：证伪流动性补偿方向 |
 | 2026-08-17 | `momentum_20d_turnrank_quad`（初始） | 挖因子轮 4：H3 线性 → 凸化 `**2` | 0.0411 | 3.38 | 无效：相对种子无改善 |
 
 ## 6. 风险与备注
