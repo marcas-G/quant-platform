@@ -139,6 +139,7 @@ formula: |
 
 | 日期 | 变体/版本 | 改动 | IC mean | t | 结论 |
 |------|-----------|------|---------|---|------|
+| 2026-08-18 | 衍生：`vol_run_energy_cumret` | 批次3轮23：H2 跨家族乘法组合，见 [`vol_run_energy_cumret.md`](vol_run_energy_cumret.md) | -0.0111 | -1.48 | **无效**：量能-价格耦合，乘法组合方向冲突 |
 | 2026-08-18 | 衍生：`vol_run_energy_rl120_turn_up` | 批次3轮3：H4 能量只算放量，见 [`vol_run_energy_rl120_turn_up.md`](vol_run_energy_rl120_turn_up.md) | 0.0139 | 4.49 | **无效**：对称能量更优 |
 | 2026-08-17 | `vol_run_energy_rl120_turn`（初始） | 挖因子轮 1：H2 游程窗口参数化 120 + H8 turnover 口径 | 0.0152 | 5.26 | **候选**：覆盖翻倍、近 26 周不衰减 |
 
