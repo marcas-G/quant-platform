@@ -129,6 +129,7 @@ formula: |
 
 | 日期 | 变体/版本 | 改动 | IC mean | t | 结论 |
 |------|-----------|------|---------|---|------|
+| 2026-08-18 | 衍生：`reversal_10d_intraday` | 批次3轮28：I2 10 日日内（谱峰定位），见 [`reversal_10d_intraday.md`](reversal_10d_intraday.md) | 0.0503 | 4.49 | **无效**：日内谱峰同为 20 日 |
 | 2026-08-18 | 衍生：`reversal_20d_cumret` | 批次3轮18：R2 累计收益动量，见 [`reversal_20d_cumret.md`](reversal_20d_cumret.md) | 0.0503 | 4.17 | **强候选**：IC 突破优秀线，家族新基准 |
 | 2026-08-18 | 衍生：`reversal_20d_smallcap` | 批次3轮1：H4 市值条件化 `×(1-cs_rank(circ_mv))`，见 [`reversal_20d_smallcap.md`](reversal_20d_smallcap.md) | 0.0360 | 2.90 | **无效**：市值无交互 |
 | 2026-08-17 | 衍生：`reversal_20d_volconf` | 挖因子轮 9：H4 量能确认 `× ts_rank(volume,20)`，见 [`reversal_20d_volconf.md`](reversal_20d_volconf.md) | 0.0350 | 3.28 | 边际：spread +19%、IC -14% |
