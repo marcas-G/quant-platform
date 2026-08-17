@@ -139,6 +139,7 @@ formula: |
 
 | 日期 | 变体/版本 | 改动 | IC mean | t | 结论 |
 |------|-----------|------|---------|---|------|
+| 2026-08-18 | 衍生：`reversal_20d_kurt` | 批次3轮51：K2 收益峰度，见 [`reversal_20d_kurt.md`](reversal_20d_kurt.md) | 0.0065 | 1.53 | **无效**：全期弱、近 26 周显著 |
 | 2026-08-18 | 衍生：`reversal_20d_five_dim` | 批次3轮41：E3 第五维，见 [`reversal_20d_five_dim.md`](reversal_20d_five_dim.md) | 0.0713 | 7.11 | **无效**：维度饱和（四维最优） |
 | 2026-08-18 | 衍生：`reversal_20d_pricevolcorr60` | 批次3轮34：W2 corr 60 日，见 [`reversal_20d_pricevolcorr60.md`](reversal_20d_pricevolcorr60.md) | 0.0382 | 5.34 | **无效**：20 日是峰；近 26 周 t=1.81 亮点 |
 | 2026-08-18 | 衍生：`vol_run_energy_cumret` | 批次3轮23：H2 跨家族乘法组合，见 [`vol_run_energy_cumret.md`](vol_run_energy_cumret.md) | -0.0111 | -1.48 | **无效**：量能-价格耦合，乘法组合方向冲突 |
