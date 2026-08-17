@@ -124,6 +124,7 @@ formula: |
 
 | 日期 | 变体/版本 | 改动 | IC mean | t | 结论 |
 |------|-----------|------|---------|---|------|
+| 2026-08-18 | 衍生：`reversal_20d_closepos` | 批次3轮29：P2 收盘位置，见 [`reversal_20d_closepos.md`](reversal_20d_closepos.md) | 0.0054 | 0.56 | **无效**：位置维度无信息（含一字板 NaN 修复） |
 | 2026-08-18 | 衍生：`momentum_20d_m120` | 批次3轮17：120 日动量方向，见 [`momentum_20d_m120.md`](momentum_20d_m120.md) | -0.0154 | -1.25 | **无效**：反转谱衰减到分界（20-60 日最佳） |
 | 2026-08-18 | 衍生：`momentum_20d_open` | 批次3轮7：H3 open 口径，见 [`momentum_20d_open.md`](momentum_20d_open.md) | 0.0386 | 3.31 | **无效**：与 close 动量同构 |
 | 2026-08-17 | 衍生：`momentum_20d_net60` | 挖因子轮 8：H1 趋势剥离 `_m20-_m60`，见 [`momentum_20d_net60.md`](momentum_20d_net60.md) | -0.0060 | -0.52 | **无效**：反转方向下档位反向，证伪趋势剥离 |
