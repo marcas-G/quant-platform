@@ -70,15 +70,18 @@ def _join_panels(names: list[str], results_dir: pathlib.Path,
 
 
 def factor_correlation(names: list[str], results_dir: str | pathlib.Path,
+                       sample_weeks: int | None = None, seed: int = 42,
                        ) -> pl.DataFrame:
     """两两相关矩阵：周度横截面秩相关均值 + 全局 Pearson。
 
     返回列：factor_a / factor_b / rank_corr / pearson（上三角对，每对一行）。
     任一因子无 results → FileNotFoundError；因子数 < 2 → ValueError。
+    sample_weeks 非 None：抽样交易周（Web 全库热力图等大量因子场景的省内存路径）。
     """
     if len(names) < 2:
         raise ValueError("至少需要 2 个因子")
-    joined = _join_panels(names, pathlib.Path(results_dir))
+    joined = _join_panels(names, pathlib.Path(results_dir),
+                          sample_weeks=sample_weeks, seed=seed)
     n = len(names)
     rank_sum = np.zeros((n, n))
     pearson = np.zeros((n, n))
