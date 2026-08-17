@@ -116,6 +116,7 @@ formula: |
 
 | 日期 | 变体/版本 | 改动 | IC mean | t | 结论 |
 |------|-----------|------|---------|---|------|
+| 2026-08-18 | 衍生：`reversal_20d_volconf_fwd` | 批次3轮16：V3 前向填充，见 [`reversal_20d_volconf_fwd.md`](reversal_20d_volconf_fwd.md) | 0.0350 | 3.28 | **无效**：fillna 对 NaN 无效果 |
 | 2026-08-18 | 衍生：`reversal_20d_volturn` | 批次3轮2：V3 换手率条件化叠加，见 [`reversal_20d_volturn.md`](reversal_20d_volturn.md) | 0.0366 | 3.25 | 观察中：spread 超两父本 |
 | 2026-08-17 | `reversal_20d_volconf`（初始） | 挖因子轮 9：H4 量能确认 `× ts_rank(volume,20)` | 0.0350 | 3.28 | 边际：spread +19%、IC -14% |
 
