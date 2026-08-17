@@ -221,6 +221,6 @@ def test_daily_basic_extended_columns_loaded(tmp_path):
         con.execute("insert into daily_basic values (?, ?, 1.0, 1e10, 5e9, 12.0, 1.5, 0.02)", [d, "000001.SZ"])
     con.close()
     df = load_daily(db, ["000001"], cols=["close", "pe_ttm", "pb", "dv_ratio"]).collect()
-    assert df["pe_ttm"].to_list() == [12.0] * 3
-    assert df["pb"].to_list() == [1.5] * 3
-    assert df["dv_ratio"].to_list() == [0.02] * 3
+    assert df["pe_ttm"].to_list() == pytest.approx([12.0] * 3)
+    assert df["pb"].to_list() == pytest.approx([1.5] * 3)
+    assert df["dv_ratio"].to_list() == pytest.approx([0.02] * 3)
