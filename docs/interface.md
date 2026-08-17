@@ -68,6 +68,7 @@ M4a 打通「平台库数据 → 因子计算 → 复权视图 → 周频评估�
 | `factorlab list` | 列出已保存因子与最近运行摘要（扫描 `results_dir/*/summary.json`，按运行时间倒序） |
 | `factorlab show <name>` | 查看单因子完整摘要（spec 原文/评估/分层回测） |
 | `factorlab corr <name1> <name2> ...` | 因子两两相关性（≥2 个）：周度横截面秩相关均值 + 全局 Pearson；任一因子无 results 报错（数据源 `results/<name>/panel.parquet` 的 signal，按 date+code inner join；join 后超 2000 万行每周降采样 5000 只） |
+| `factorlab svd [name1 ...] [--weeks 15]` | 因子库 SVD 分解：奇异值谱 + 主成分载荷（因子结构/有效维度分析）；缺省 names = 全部有 panel 因子（排除验证目录）；抽样 weeks 个交易周（concat+pivot 单次操作，规避多 join 段错误） |
 | `factorlab op list` | 列出已注册算子 |
 | `factorlab op doc <name>` | 查看算子名称、类别、版本与 docstring |
 | `factorlab op add <plugin.py> [--force]` | 校验并注册用户插件；同名冲突需 `--force` |
