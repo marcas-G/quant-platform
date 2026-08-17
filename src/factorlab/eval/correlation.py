@@ -15,18 +15,51 @@ MAX_JOINED_ROWS = 20_000_000  # 内存护栏：join 后超限则每周降采样
 WEEKLY_SAMPLE_STOCKS = 5000
 
 
-def _load_signal(results_dir: pathlib.Path, name: str) -> pl.DataFrame:
-    """读因子 panel 的 date/code/signal。"""
+def _load_signal(results_dir: pathlib.Path, name: str,
+                 dates: list | None = None) -> pl.DataFrame:
+    """读因子 panel 的 date/code/signal（dates 非 None 时 lazy 先过滤——省内存）。"""
     p = pathlib.Path(results_dir) / name / "panel.parquet"
     if not p.exists():
         raise FileNotFoundError(f"因子 {name} 无结果（results/{name}/panel.parquet）")
-    return pl.read_parquet(p).select(["date", "code", "signal"]).rename({"signal": name})
+    lf = pl.scan_parquet(p)
+    if dates is not None:
+        lf = lf.filter(pl.col("date").is_in(dates))
+    return (lf.select(["date", "code", "signal"]).rename({"signal": name}).collect())
 
 
-def _join_panels(names: list[str], results_dir: pathlib.Path) -> pl.DataFrame:
-    joined = _load_signal(results_dir, names[0])
-    for name in names[1:]:
-        joined = joined.join(_load_signal(results_dir, name), on=["date", "code"], how="inner")
+def _sample_dates(df: pl.DataFrame, n: int, seed: int) -> list:
+    """随机抽 n 个交易日（确定性 seed）。"""
+    import random
+    rng = random.Random(seed)
+    dates = df["date"].unique().to_list()
+    return rng.sample(dates, min(n, len(dates)))
+
+
+def _join_panels(names: list[str], results_dir: pathlib.Path,
+                 sample_weeks: int | None = None, seed: int = 42) -> pl.DataFrame:
+    """按 date+code 合并多因子 signal → 宽表。
+
+    - sample_weeks 非 None：先抽 sample_weeks 个交易周再合并（concat+pivot 单次
+      操作——多因子链式 join 在 Windows 上偶发段错误，pivot 规避）。
+    - None：全量 join + 每周降采样护栏（`factor_correlation` 路径）。
+    """
+    if sample_weeks:
+        # 抽样周：先轻量读第一因子 date 列 → 抽周 → 各因子 lazy 过滤读
+        probe = pl.scan_parquet(pathlib.Path(results_dir) / names[0] / "panel.parquet")
+        dates = _sample_dates(probe.select("date").collect(), sample_weeks, seed)
+        long = pl.concat(
+            [_load_signal(results_dir, name, dates=dates)
+             .rename({name: "value"}).with_columns(pl.lit(name).alias("factor"))
+             for name in names],
+            how="vertical_relaxed")
+        joined = long.pivot(index=["date", "code"], columns="factor",
+                            values="value", aggregate_function="first")
+        # 列序固定为 names（pivot 列序可能乱）
+        return joined.select(["date", "code", *names])
+    signals = [_load_signal(results_dir, name) for name in names]
+    joined = signals[0]
+    for d in signals[1:]:
+        joined = joined.join(d, on=["date", "code"], how="inner")
     if joined.height > MAX_JOINED_ROWS:
         # 每周最多 WEEKLY_SAMPLE_STOCKS 只（均匀抽样）——内存护栏
         joined = (joined
@@ -85,14 +118,6 @@ def factor_correlation(names: list[str], results_dir: str | pathlib.Path,
     return pl.DataFrame(rows)
 
 
-def _sample_dates(joined: pl.DataFrame, n: int, seed: int) -> list:
-    """随机抽 n 个交易日（确定性 seed）。"""
-    import random
-    rng = random.Random(seed)
-    dates = joined["date"].unique().to_list()
-    return rng.sample(dates, min(n, len(dates)))
-
-
 def factor_svd(names: list[str] | None, results_dir: str | pathlib.Path,
                sample_weeks: int = 15, seed: int = 42,
                n_components: int = 6) -> dict:
@@ -108,10 +133,8 @@ def factor_svd(names: list[str] | None, results_dir: str | pathlib.Path,
                        pathlib.Path(results_dir).glob("*/panel.parquet"))
     if len(names) < 2:
         raise ValueError("至少需要 2 个因子")
-    joined = _join_panels(names, pathlib.Path(results_dir))
-    if sample_weeks and joined["date"].n_unique() > sample_weeks:
-        dates = _sample_dates(joined, sample_weeks, seed)
-        joined = joined.filter(pl.col("date").is_in(dates))
+    joined = _join_panels(names, pathlib.Path(results_dir),
+                          sample_weeks=sample_weeks or None, seed=seed)
     if joined.height < 30:
         raise ValueError("抽样后样本不足 30 行")
     mat = joined.select(names).to_numpy().astype(np.float64)
