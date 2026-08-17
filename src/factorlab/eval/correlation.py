@@ -58,11 +58,14 @@ def factor_correlation(names: list[str], results_dir: str | pathlib.Path,
         for i in range(n):
             for j in range(i + 1, n):
                 xi, xj = mat[:, i], mat[:, j]
-                pr = np.corrcoef(xi, xj)[0, 1]
-                if not np.isnan(pr):
-                    pearson[i, j] += pr
-                    pearson[j, i] += pr
-                # 秩相关：rank 后 Pearson 等价 Spearman
+                # Pearson：逐对 NaN 过滤（signal 含缺失）
+                mask = ~(np.isnan(xi) | np.isnan(xj))
+                if mask.sum() > 30:
+                    pr = np.corrcoef(xi[mask], xj[mask])[0, 1]
+                    if not np.isnan(pr):
+                        pearson[i, j] += pr
+                        pearson[j, i] += pr
+                # 秩相关：rank 后 Pearson 等价 Spearman（NaN 排末位，近似）
                 ri = np.argsort(np.argsort(xi)).astype(float)
                 rj = np.argsort(np.argsort(xj)).astype(float)
                 rr = np.corrcoef(ri, rj)[0, 1]
