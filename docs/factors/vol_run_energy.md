@@ -149,6 +149,7 @@ formula: |
 |------|-----------|------|---------|---|------|
 | 2026-08-18 | 衍生：`reversal_20d_five_dim_ctfi` | 批次3轮82：F3 五维加法，见 [`reversal_20d_five_dim_ctfi.md`](reversal_20d_five_dim_ctfi.md) | 0.0713 | 6.91 | **无效**：skew 持平 |
 | 2026-08-18 | 衍生：`reversal_20d_four_dim_ctfi` | 批次3轮81：F3 四维加法，见 [`reversal_20d_four_dim_ctfi.md`](reversal_20d_four_dim_ctfi.md) | 0.0717 | 6.77 | 候选：接近全库最强 |
+| 2026-08-18 | 衍生：`reversal_20d_netflow30` | 批次3轮89：F2 netflow30，见 [`reversal_20d_netflow30.md`](reversal_20d_netflow30.md) | 0.0447 | 5.32 | 候选：谱峰 30 日 |
 | 2026-08-18 | 衍生：`reversal_20d_vol_flow` | 批次3轮74：V3 vol×flow，见 [`reversal_20d_vol_flow.md`](reversal_20d_vol_flow.md) | 0.0461 | 6.22 | 候选：IC 超 netflow |
 | 2026-08-18 | 衍生：`reversal_20d_flow_skew` | 批次3轮61：F3 flow×skew，见 [`reversal_20d_flow_skew.md`](reversal_20d_flow_skew.md) | 0.0464 | 5.75 | 候选：IC 超两父本 |
 | 2026-08-18 | 衍生：`reversal_20d_corr_flow_intraday` | 批次3轮59：T3 三维加法，见 [`reversal_20d_corr_flow_intraday.md`](reversal_20d_corr_flow_intraday.md) | 0.0607 | 5.96 | 候选：三维 IC 纪录 |
