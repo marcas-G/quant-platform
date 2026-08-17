@@ -1,0 +1,14 @@
+name: reversal_20d_intraday_flow
+category: custom
+direction: -1
+universe:
+  rules: {exclude_st: true, exchanges: ["SSE", "SZSE"]}
+date:
+  start: "2023-01-01"
+  end: "2026-07-31"
+process:
+  - winsorize(quantile=0.99)
+  - standardize()
+formula: |
+  from polars_ta.prefix.wq import ts_sum, cs_rank
+  signal = cs_rank(ts_sum(close/open - 1, 20)) + cs_rank(ts_sum(amount * sign(returns(close)), 20))
