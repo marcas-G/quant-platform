@@ -124,6 +124,7 @@ formula: |
 
 | 日期 | 变体/版本 | 改动 | IC mean | t | 结论 |
 |------|-----------|------|---------|---|------|
+| 2026-08-17 | 衍生：`momentum_20d_decile` | 挖因子轮 5：H6 连续 → 横截面秩次分档，见 [`momentum_20d_decile.md`](momentum_20d_decile.md) | 0.0406 | 3.45 | **无效**：与连续版完全等价（秩次含全部信息） |
 | 2026-08-17 | 衍生：`momentum_20d_vwap` | 挖因子轮 2：变异 H3（close→日频 VWAP amount/volume）+ H9（方向→反转），见 [`momentum_20d_vwap.md`](momentum_20d_vwap.md) | 0.0390 | 3.45 | 全期显著；spread +78%；近 26 周衰减 |
 | 2026-08-17 | 衍生：`momentum_20d_turnrank` | 挖因子轮 1：变异 H9（方向→反转）+ H5（同质性→换手率条件化 `× cs_rank(turnover)`），见 [`momentum_20d_turnrank.md`](momentum_20d_turnrank.md) | 0.0419 | 3.37 | 全期显著；spread +30%；近 26 周衰减 |
 | 2026-08-16 | `momentum_20d`（初始） | M4b 反向对照 | -0.0409 | -3.47 | 方向语义证伪正确，废弃 |
