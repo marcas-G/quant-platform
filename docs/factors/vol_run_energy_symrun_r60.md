@@ -105,6 +105,7 @@ formula: |
 
 | 日期 | 变体/版本 | 改动 | IC mean | t | 结论 |
 |------|-----------|------|---------|---|------|
+| 2026-08-18 | 衍生：`vol_run_energy_symrun_r30` | 批次4轮9：R2 rl_win=30，见 [`vol_run_energy_symrun_r30.md`](vol_run_energy_symrun_r30.md) | 0.0259 | 8.51 | 观察中：谱平坦 |
 | 2026-08-18 | `vol_run_energy_symrun_r60`（初始） | 批次 3 轮 85：R2 rl_win=60 | 0.0267 | 8.57 | 观察中：t 新纪录 |
 
 ## 6. 风险与备注
