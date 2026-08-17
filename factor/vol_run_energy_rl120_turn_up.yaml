@@ -1,0 +1,23 @@
+name: vol_run_energy_rl120_turn_up
+category: custom
+direction: -1
+params: {win: 200, gain: 2.0, rl_win: 120}
+universe:
+  rules: {exclude_st: true, exchanges: ["SSE", "SZSE"]}
+date:
+  start: "2022-01-01"
+  end: "2026-07-31"
+process:
+  - winsorize(quantile=0.99)
+  - standardize()
+formula: |
+  from polars_ta.prefix.wq import ts_rank, ts_delta, ts_count
+
+  def oi_energy(x, n):
+      _d = ts_delta(x, 1)
+      _e = ts_rank((_d + abs(_d)) / 2, n)  # max(d,0)：只算放量能量
+      return sqrt(_e * (1 - _e))
+
+  _energy = oi_energy(turnover, ${win})
+  _rl = ts_count(sign(ts_delta(turnover, 1)) == 1, ${rl_win})
+  signal = -ts_rank(_rl, ${rl_win}) * _energy * ${gain}

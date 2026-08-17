@@ -263,7 +263,9 @@ combine:
 - 平台薄封装算子（`returns/vwap/adv20`）在解析期**展开为 `ts_` 表达式**再交给
   `expr_codegen`，保证按 asset 分区；`group_rank/group_mean` 自带 `.over(key)`
   分组语义，不展开。import 别名（`returns as ret`）同样生效。
-- 元素级纯函数白名单（与 codegen 作用域核对）：`abs/log/log1p/sqrt/exp/sign/floor/if_else`。
+- 元素级纯函数白名单（与 codegen 作用域核对，**实测**）：`abs/exp/floor/log/log1p/sign/sqrt`——
+  **注意**：白名单不含 `if_else`（用 `(x+abs(x))/2` 表达 `max(x,0)`）；方法链 `.abs()` 等
+  的基表达式不可为裸 Name（如 `_d.abs()` 被拒，需用 `abs(_d)` 函数形式）。
 
 平台薄封装算子从 `factorlab.ops.platform_ops` 导入；注册到注册表的算子可通过
 `factorlab op list` 查看。
