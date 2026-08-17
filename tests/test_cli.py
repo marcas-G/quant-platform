@@ -106,3 +106,39 @@ def test_m1_cli_help_lists_commands():
     assert result.exit_code == 0
     for command in ("version", "lint", "op"):
         assert command in result.stdout
+
+
+def test_corr_command_outputs_matrix(tmp_path, monkeypatch):
+    """factorlab corr 输出两两相关矩阵。"""
+    import types
+    from typer.testing import CliRunner
+    import polars as pl
+    from factorlab.cli.main import app
+    runner = CliRunner()
+    for name, mult in [("a", 1.0), ("b", 2.0)]:
+        d = tmp_path / name
+        d.mkdir()
+        df = pl.DataFrame({
+            "date": [f"2024-01-0{i}" for i in range(1, 4) for _ in range(50)],
+            "code": [f"{j:06d}" for _ in range(3) for j in range(50)],
+            "signal": [float(mult * (i * 100 + j)) for i in range(1, 4) for j in range(50)],
+        })
+        df.write_parquet(d / "panel.parquet")
+    monkeypatch.setattr("factorlab.cli.main.settings",
+                        types.SimpleNamespace(results_dir=tmp_path))
+    result = runner.invoke(app, ["corr", "a", "b"])
+    assert result.exit_code == 0
+    assert "rank_corr" in result.stdout
+    assert "a" in result.stdout and "b" in result.stdout
+
+
+def test_corr_missing_factor(tmp_path, monkeypatch):
+    import types
+    from typer.testing import CliRunner
+    from factorlab.cli.main import app
+    runner = CliRunner()
+    monkeypatch.setattr("factorlab.cli.main.settings",
+                        types.SimpleNamespace(results_dir=tmp_path))
+    result = runner.invoke(app, ["corr", "a", "b"])
+    assert result.exit_code != 0
+    assert "无结果" in result.stdout
