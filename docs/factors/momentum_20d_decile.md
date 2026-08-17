@@ -115,6 +115,7 @@ formula: |
 
 | 日期 | 变体/版本 | 改动 | IC mean | t | 结论 |
 |------|-----------|------|---------|---|------|
+| 2026-08-18 | 衍生：`reversal_20d_wskew_tsv10` | 批次3轮72：W2 skew 双倍，见 [`reversal_20d_wskew_tsv10.md`](reversal_20d_wskew_tsv10.md) | 0.0657 | 7.55 | **无效**：等权更优 |
 | 2026-08-18 | 衍生：`reversal_20d_turn_skew_corr` | 批次3轮63：T3 三维加法，见 [`reversal_20d_turn_skew_corr.md`](reversal_20d_turn_skew_corr.md) | 0.0656 | 6.75 | **强候选**：三维 IC 纪录 |
 | 2026-08-18 | 衍生：`reversal_20d_corr_flow` | 批次3轮58：C3 corr×flow，见 [`reversal_20d_corr_flow.md`](reversal_20d_corr_flow.md) | 0.0531 | 6.25 | 候选：IC 超两父本 |
 | 2026-08-18 | 衍生：`reversal_20d_pricevolcorr10` | 批次3轮44：C2 corr 10 日，见 [`reversal_20d_pricevolcorr10.md`](reversal_20d_pricevolcorr10.md) | 0.0439 | 6.46 | 候选：谱峰 10 日 |
