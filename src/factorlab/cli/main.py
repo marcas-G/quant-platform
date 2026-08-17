@@ -320,11 +320,14 @@ def data_verify(compare: Path | None = None) -> None:
 
 
 @app.command("corr")
-def corr_factors(names: list[str] = typer.Argument(..., min_length=2)) -> None:
+def corr_factors(names: list[str] = typer.Argument(...)) -> None:
     """因子两两相关性：周度横截面秩相关均值 + 全局 Pearson。
 
     用法: factorlab corr <name1> <name2> [<name3>...]
     """
+    if len(names) < 2:
+        console.print("错误: 至少需要 2 个因子", style="red")
+        raise typer.Exit(code=1)
     from factorlab.eval.correlation import factor_correlation
     try:
         m = factor_correlation(names, settings.results_dir)
