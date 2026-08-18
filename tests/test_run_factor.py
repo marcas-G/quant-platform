@@ -21,16 +21,14 @@ def build_db(tmp_path, ex_date: bool = False, n_days: int = 6):
     """平台库风格假库：trade_date 'YYYYMMDD'/ts_code 带后缀/vol（参考 test_source.py 模式）；
     daily/adj_factor/daily_basic/stock_basic/stock_st/trade_cal 齐全。
     ex_date=True 时 000001 第 3 天（01-04）除权：close 11→8、adj 1.0→1.5。
-    n_days 可扩展到 _DATES+_EXTRA_DATES 前缀（ex_date 固定 6 天）。"""
-    if ex_date and n_days != 6:
-        raise ValueError("ex_date 除权序列固定为 6 天")
+    n_days 可扩展到 _DATES+_EXTRA_DATES 前缀；ex_date 序列前 6 天固定，7+ 天延续末尾模式。"""
     dates = (_DATES + _EXTRA_DATES)[:n_days]
     db = duckdb.connect(tmp_path / "q.duckdb")
     db.execute("CREATE TABLE daily (ts_code VARCHAR, trade_date VARCHAR, open DOUBLE, high DOUBLE, low DOUBLE, close DOUBLE, pre_close DOUBLE, change DOUBLE, pct_chg DOUBLE, vol DOUBLE, amount DOUBLE)")
     for symbol, ts_code, base in (_A, _B):
         closes = [base + i + 1 for i in range(len(dates))]
         if ex_date and symbol == "000001":
-            closes = [10.0, 11.0, 8.0, 9.0, 12.0, 13.0]
+            closes = [10.0, 11.0, 8.0, 9.0, 12.0, 13.0] + [13.0 + i for i in range(len(dates) - 6)]
         for i, d in enumerate(dates):
             db.execute("INSERT INTO daily VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
                        (ts_code, d, closes[i] - 1.0, closes[i] - 0.5, closes[i] - 1.5,
@@ -39,7 +37,7 @@ def build_db(tmp_path, ex_date: bool = False, n_days: int = 6):
     for symbol, ts_code, base in (_A, _B):
         adjs = [1.0] * len(dates)
         if ex_date and symbol == "000001":
-            adjs = [1.0, 1.0, 1.5, 1.5, 1.5, 1.5]
+            adjs = [1.0, 1.0, 1.5, 1.5, 1.5, 1.5] + [1.5] * (len(dates) - 6)
         for i, d in enumerate(dates):
             db.execute("INSERT INTO adj_factor VALUES (?, ?, ?)", (ts_code, d, adjs[i]))
     db.execute("CREATE TABLE stock_basic (symbol VARCHAR, ts_code VARCHAR, exchange VARCHAR, list_date VARCHAR, industry VARCHAR)")
@@ -632,3 +630,71 @@ def test_run_factor_chunked_invalid_chunk_days(tmp_path):
     with pytest.raises(ValueError, match="chunk_days"):
         run_factor(spec, RunContext(
             db_path=tmp_path / "q.duckdb", output_dir=tmp_path / "out_bad", chunk_days=0))
+
+
+# ---------- 分块一致性回归 ----------
+
+
+def _chunk_spec(tmp_path):
+    path = tmp_path / "spec_chunk.yaml"
+    path.write_text("""
+name: demo_chunk
+category: custom
+direction: 1
+universe:
+  codes: ["000001.SZ", "600519.SH"]
+date:
+  start: "2024-01-02"
+  end: "2024-01-17"
+process:
+  - standardize()
+formula: |
+  from polars_ta.prefix.wq import ts_mean, ts_std_dev, cs_rank
+  _m = ts_mean(close, 3)
+  _v = ts_std_dev(close, 3)
+  signal = cs_rank(-_m) + log(close) - _v
+""", encoding="utf-8")
+    return load_spec(path)
+
+
+def test_chunked_consistency_with_full_run(tmp_path):
+    # 关键回归：分块（含 qfq 归一）vs 整段跑，signal 逐 cell 相等、forward 非 null 区相等
+    # chunk_days=6（12 天 → 2 块）：块内首行有完整 forward_5d（需未来 5 个交易日），
+    #   非 null 交集 = 块 0 首行 + 块 1 首行 × 2 代码 = 4 行，可验证 forward 一致性
+    build_db(tmp_path, ex_date=True, n_days=12)
+    spec = _chunk_spec(tmp_path)
+    full = run_factor(spec, RunContext(
+        db_path=tmp_path / "q.duckdb", output_dir=tmp_path / "out_full", float32=False))
+    chunked = run_factor(spec, RunContext(
+        db_path=tmp_path / "q.duckdb", output_dir=tmp_path / "out_chunked",
+        float32=False, chunk_days=6, warmup_days=1))
+    joined = full.panel.join(chunked.panel, on=["date", "code"], how="inner", suffix="_c")
+    # 行数一致（12 天 × 2 代码；warmup 段行已在分块内丢弃）
+    assert joined.height == full.panel.height == 12 * 2
+    # signal 逐 cell 相等（float64：1e-9；含 log(close) 绝对水平输入 → 验证 qfq 归一）
+    diff = (joined["signal"] - joined["signal_c"]).abs().max()
+    assert float(diff) < 1e-9
+    # forward：仅两边都非 null 的行可比（块边界 null 是接受的差异）
+    mask = joined["forward_return_5d"].is_not_null() & joined["forward_return_5d_c"].is_not_null()
+    assert mask.sum() == 4  # 块 0 首行 + 块 1 首行 × 2 代码
+    fdiff = (joined.filter(mask)["forward_return_5d"] - joined.filter(mask)["forward_return_5d_c"]).abs().max()
+    assert float(fdiff) < 1e-9
+    # 块边界 forward null 存在但受限：2 块 → 块尾 5 天 × 2 代码
+    null_rows = joined.filter(joined["forward_return_5d"].is_not_null() & joined["forward_return_5d_c"].is_null())
+    assert null_rows.height <= 5 * 2
+
+
+def test_chunked_pure_cs_consistency(tmp_path):
+    # 纯 CS 公式（无 ts_ 窗口）→ warmup 自动=0；分块 vs 整段一致
+    build_db(tmp_path, n_days=12)
+    spec = _chunk_spec(tmp_path)
+    spec.formula = "signal = cs_rank(-close)"
+    full = run_factor(spec, RunContext(
+        db_path=tmp_path / "q.duckdb", output_dir=tmp_path / "out_pure_full", float32=False))
+    chunked = run_factor(spec, RunContext(
+        db_path=tmp_path / "q.duckdb", output_dir=tmp_path / "out_pure_chunked",
+        float32=False, chunk_days=3))
+    joined = full.panel.join(chunked.panel, on=["date", "code"], how="inner", suffix="_c")
+    assert joined.height == full.panel.height == 12 * 2
+    diff = (joined["signal"] - joined["signal_c"]).abs().max()
+    assert float(diff) < 1e-9
