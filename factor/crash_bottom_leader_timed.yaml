@@ -10,7 +10,8 @@ process:
   - winsorize(quantile=0.99)
   - standardize()
 formula: |
-  from polars_ta.prefix.wq import ts_mean, ts_delay, cs_rank
+  from polars_ta.prefix.wq import ts_sum, ts_mean, ts_delay, cs_rank
+  _mkt20 = ts_sum(idx_ret, 20)
+  _crash = sign(sign(-0.08 - _mkt20) + 1) / 2
   _mom = ts_mean(close, 20) / ts_delay(close, 20) - 1
-  _deep = sign(sign(-0.20 - _mom) + 1) / 2
-  signal = (cs_rank(-_mom) + cs_rank(log(circ_mv))) * _deep
+  signal = (cs_rank(-_mom) + cs_rank(log(circ_mv))) * _crash

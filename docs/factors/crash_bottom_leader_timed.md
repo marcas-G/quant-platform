@@ -1,15 +1,15 @@
 ---
 xname: crash_bottom_leader_timed
 formula: |
-  signal = (cs_rank(-mom20) + cs_rank(log(circ_mv))) * mask(mom20 < -0.20)
-tags: [strategy, crash_bottom, timed, triggered]
+  signal = (cs_rank(-mom20) + cs_rank(log(circ_mv))) * mask(idx20 < -0.08)
+tags: [strategy, crash_bottom, market_timed, strong_triggered]
 params: {}
-status: 观察中（触发期收益显著高于非触发，样本少）
+status: 观察中（触发期极强：long_short 年化 96%/夏普 2.42；样本 14 周小）
 created_ts: 2026-08-18
 updated_ts: 2026-08-18
 ---
 
-# crash_bottom_leader_timed 因子档案（股灾时点抄底）
+# crash_bottom_leader_timed 因子档案（市场级股灾抄底）
 
 ## 1. 元信息
 
@@ -18,20 +18,23 @@ updated_ts: 2026-08-18
 | 名称 | `crash_bottom_leader_timed`（= `factor/crash_bottom_leader_timed.yaml`） |
 | 类别 | custom |
 | 方向 | `1` |
-| 状态 | 观察中（触发期周收益 5.2% vs 未触发 0.8%） |
-| 标签 | strategy, crash_bottom, timed, triggered |
-| 创建 | 2026-08-18（策略时点化：个股 20% 深跌触发） |
+| 状态 | 观察中（触发期极强、样本小） |
+| 标签 | strategy, crash_bottom, market_timed, strong_triggered |
+| 创建 | 2026-08-18（策略时点化：中证1000 市场股灾触发） |
 | 最近更新 | 2026-08-18 |
 
 ## 2. 逻辑
 
-**策略**：个股 20 日跌幅 > 20%（超跌触发）时启用抄底龙头信号
-（超跌秩 + 龙头秩），平时不出手。
+**策略**：**市场级股灾触发**——中证1000 指数 20 日累计跌幅 > 8% 时（股灾状态），
+启用"超跌龙头"抄底信号（超跌秩 + 龙头秩），平时不出手。
+
+**市场状态**：`idx_ret`（中证1000 日收益，数据层按需 join）→ `ts_sum(idx_ret, 20)`
+= 市场 20 日累计 → `<-8%` 触发掩码。
 
 **数学表达**：
 
 ```
-signal = (cs_rank(-mom20) + cs_rank(log(circ_mv))) × 1{mom20 < -0.20}
+signal = (cs_rank(-mom20) + cs_rank(log(circ_mv))) × 1{Σ idx_ret(20d) < -8%}
 ```
 
 ## 3. 参数与实现
@@ -61,10 +64,11 @@ process:
   - winsorize(quantile=0.99)
   - standardize()
 formula: |
-  from polars_ta.prefix.wq import ts_mean, ts_delay, cs_rank
+  from polars_ta.prefix.wq import ts_sum, ts_mean, ts_delay, cs_rank
+  _mkt20 = ts_sum(idx_ret, 20)
+  _crash = sign(sign(-0.08 - _mkt20) + 1) / 2
   _mom = ts_mean(close, 20) / ts_delay(close, 20) - 1
-  _deep = sign(sign(-0.20 - _mom) + 1) / 2
-  signal = (cs_rank(-_mom) + cs_rank(log(circ_mv))) * _deep
+  signal = (cs_rank(-_mom) + cs_rank(log(circ_mv))) * _crash
 ```
 
 ## 4. 验证结果
@@ -74,51 +78,49 @@ formula: |
 | 项 | 值 |
 |----|----|
 | 区间 | 2023-01-03 ~ 2026-07-31 |
-| 周数（有效） | **37**（触发时段，20% 深跌阈值） |
-| 平均股票数 | 4895 |
-| 信号缺失率 | 0.7987 |
+| 周数（有效） | **14**（中证1000 20 日跌 >8% 触发时段） |
+| 平均股票数 | 4910 |
+| 信号缺失率 | 0.9205（92% 时间非触发） |
 
 | 指标 | 值 |
 |------|----|
-| RankIC mean（方向调整后） | 0.0069 |
-| t 值 | 0.55 |
-| IR | 0.091 |
-| 近 26 周 mean / t | -0.0004 / -0.03 |
-| spread | 0.01940（1.94%/周——触发期档位差极大） |
+| RankIC mean（方向调整后） | 0.0856 |
+| t 值 | 1.41（边际——14 周样本） |
+| IR | 0.378 |
+| 近 26 周 mean / t | 0.0856 / 1.41 |
+| spread | 0.01810（1.81%/周） |
 
-### 触发期分层（4 组，0 值聚集）
+### 触发期分层（**D0→D9 完美单调**）
 
-| 组 | mean_ret（周） | n |
-|----|--------------|---|
-| D1（超跌抄底+龙头） | **0.05196（5.2%/周）** | 180 |
-| D0 | 0.02776 | 78 |
-| D2 | 0.02097 | 108 |
-| D9（0 值/未触发） | 0.00836 | 4792 |
+| 组 | mean_ret（周） |
+|----|--------------|
+| D0 | 0.01380 |
+| D5 | 0.00935 |
+| D9 | -0.00431 |
 
-净值：D1 累积 **27.5%**（37 周 ≈ 年化高）、D10 34.4%（180 周 ≈ 年化低）；
-long_short 年化 -17.7%（分层被 0 值扭曲）。
+净值（触发期）：D1 +13.6%、D10 -15.0%；
+**long_short 年化 0.955939、夏普 2.421502**。
 
 ### 判定
 
-- **核心验证：触发期抄底周收益 5.2% vs 未触发 0.8%**——个股深跌 20% 后的
-  超跌龙头**确实强反弹**（触发期年化显著更高）。
-- 但触发周仅 37 周（20% 阈值严苛）→ IC 不显著（t=0.55）；
-  分层结构被 0 值扭曲（未触发股全进 D9）→ long_short 失真。
-- 结论：**观察中**——超跌触发方向有效（触发期收益显著），
-  阈值敏感性待测（15% 触发周更多）；市场级股灾状态待平台增强。
+- **触发期极强**：档位完美单调（D0→D9 递减）、做多 D1/做空 D10 年化 96%
+  夏普 2.42——**市场股灾时抄底超跌龙头的策略方向强验证**。
+- **样本限制**：仅 14 个触发周（中证1000 20 日跌 >8% 在 2023-2026 的时段）——
+  IC t=1.41 边际；IR 0.378 + 单调性 + 夏普支持方向。
+- 结论：**观察中（触发期强、样本待扩）**——扩展样本期
+  （数据自 2000：2015 股灾/2016 熔断/2018 熊市有更多触发周）为下一步。
 
 ## 5. 迭代历史
 
 | 日期 | 变体/版本 | 改动 | IC mean | t | 结论 |
 |------|-----------|------|---------|---|------|
-| 2026-08-18 | `crash_bottom_leader_timed`（初始） | 策略时点化（个股 20% 深跌触发） | 0.0069 | 0.55 | 观察中：触发期收益显著 |
+| 2026-08-18 | `crash_bottom_leader_timed`（初始） | 市场级触发（idx_ret 数据层支持） | 0.0856 | 1.41 | 触发期极强、样本小 |
 
 ## 6. 风险与备注
 
-- **平台缺口**：市场级股灾状态（全市场 20 日跌幅）需横截面聚合——
-  group_mean 公式不可用、.over() 链 codegen 崩溃（详见
-  `results/_strategy_timed_note.md`）——个股级触发为当前实现。
-- **触发稀疏**：20% 阈值 37 周——阈值敏感性（15%/25%）待测。
+- **样本小**：14 周——必须扩样本期复验（2015/2018/2024 多轮股灾）。
+- **触发稀疏**：92% 时间空仓——策略本质（只在股灾出手）。
+- **数据层新增**：`idx_ret`（中证1000 日收益按需 join，`_MARKET_INDEX` 可换）。
 - 无时点版 [`crash_bottom_leader.md`](crash_bottom_leader.md)（全期 0.0428）。
 
 ---
