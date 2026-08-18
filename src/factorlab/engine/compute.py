@@ -15,7 +15,7 @@ from expr_codegen import codegen_exec
 
 from factorlab.config import settings as _settings
 from factorlab.data.adjust import view_prices
-from factorlab.data.calendar import fill_suspensions, trading_calendar
+from factorlab.data.calendar import chunk_calendar, fill_suspensions, trading_calendar
 from factorlab.data.source import load_daily
 from factorlab.data.universe import resolve_codes
 from factorlab.engine.forward import compute_forward_returns
@@ -135,13 +135,17 @@ def _ts_window_days(formula: str) -> int:
 @dataclass
 class RunContext:
     """运行上下文。universe_override：6 位代码（如 600519）、universe 引用名或 yaml 文件路径。
-    adjustment：复权视图口径兜底（raw|qfq|hfq|pit_qfq；spec.adjustment 声明时以 spec 为准）。"""
+    adjustment：复权视图口径兜底（raw|qfq|hfq|pit_qfq；spec.adjustment 声明时以 spec 为准）。
+    chunk_days：日期分块（交易日/块；None=单块整段跑）。warmup_days：TS 窗口预热天数
+    （None=按公式自动提取窗口最大值 + 20 安全垫）。"""
 
     db_path: Path = _settings.platform_db
     output_dir: Path = Path("results")
     universe_override: str | None = None
     float32: bool = _settings.use_float32
     adjustment: str = "qfq"
+    chunk_days: int | None = None
+    warmup_days: int | None = None
 
 
 @dataclass
@@ -149,6 +153,65 @@ class FactorResult:
     spec: FactorSpec
     panel: pl.DataFrame
     summary: dict = field(default_factory=dict)
+
+
+_WARMUP_SAFETY_PAD = 20  # 自动 warmup 的安全垫：覆盖 ts_delay 等窗口内偏移
+
+
+def _load_base_adj(con: duckdb.DuckDBPyConnection, date_end: str | None) -> pl.DataFrame:
+    """全局 qfq 复权基准：每代码在 <= date_end 的最新 adj_factor（与整段跑的组内 latest 语义一致）。
+
+    返回 (code, base_adj) 两列 DataFrame；date_end 为 ISO 'YYYY-MM-DD' 或 'YYYYMMDD'。
+    """
+    where, params = "", []
+    if date_end:
+        where, params = " WHERE trade_date <= ?", [date_end.replace("-", "")]
+    return con.execute(
+        f"SELECT substr(ts_code, 1, 6) AS code, "
+        f"last(adj_factor ORDER BY trade_date) AS base_adj "
+        f"FROM adj_factor{where} GROUP BY substr(ts_code, 1, 6)",
+        params,
+    ).pl()
+
+
+def _compute_panel(
+    con: duckdb.DuckDBPyConnection,
+    ctx: RunContext,
+    spec: FactorSpec,
+    formula: str,
+    codes: list[str],
+    date_start: str,
+    date_end: str,
+    cal: pl.Series,
+    base_adj: pl.DataFrame | None = None,
+) -> pl.DataFrame:
+    """单块流水线：load（SQL 按段过滤）→ 停牌补全 → 前向收益 → 复权视图 → 因子 → process。
+
+    base_adj 仅在 qfq 时传入（分块路径）：归一 adj_factor 使组内最新=1 → factor=adj/base_adj，
+    跨块绝对水平因子与整段跑一致。hfq/pit_qfq 不归一（归一会改变 hfq 结果；pit_qfq 分子分母同消）。
+    """
+    cols = _formula_columns(formula) + ["close", "adj_factor"]
+    raw = load_daily(
+        ctx.db_path, codes,
+        date_start=date_start, date_end=date_end,
+        cols=cols, float32=ctx.float32,
+    ).collect()
+    panel = fill_suspensions(raw, cal)
+    if panel.height == 0:
+        raise ValueError("日期段无数据，可运行 data refresh（M3b）")
+    adjustment = getattr(spec, "adjustment", None) or ctx.adjustment
+    if adjustment == "qfq" and base_adj is not None:
+        panel = panel.join(base_adj, on="code", how="left").with_columns(
+            (pl.col("adj_factor") / pl.col("base_adj")).alias("adj_factor")
+        ).drop("base_adj")
+    panel = compute_forward_returns(panel)
+    asof = None
+    if adjustment == "pit_qfq":
+        asof = datetime.date.fromisoformat(spec.date.end) if spec.date.end else panel["date"].max()
+    panel = view_prices(panel, adjustment, asof=asof)
+    panel = panel.join(compute_formula(panel, formula), on=["date", "code"], how="left")
+    panel = run_process_chain(panel, spec.process, ctx=con)
+    return panel
 
 
 def run_factor(spec: FactorSpec, ctx: RunContext) -> FactorResult:
@@ -176,41 +239,36 @@ def run_factor(spec: FactorSpec, ctx: RunContext) -> FactorResult:
         raise FileNotFoundError(f"数据库不存在: {ctx.db_path}（可运行 data refresh 或检查路径）") from exc
     try:
         codes = resolve_codes(spec, con, override=ctx.universe_override)
-        formula_cols = _formula_columns(formula)  # 展开后提取：宏公式内引用的数据列也纳入加载
-        # close/adj_factor 恒加载（forward 依赖 close 列而非公式引用——纯量价因子允许）
-        cols = formula_cols + ["close", "adj_factor"]
-        raw = load_daily(
-            ctx.db_path, codes,
-            date_start=spec.date.start, date_end=spec.date.end,
-            cols=cols, float32=ctx.float32,
-        ).collect()
         cal = trading_calendar(ctx.db_path, date_start=spec.date.start, date_end=spec.date.end)
         # trade_cal 含未来公告日（~94 个到 20261231）：补全面板截断到今天，不产生未来 null 行
         today = datetime.date.today()
         cal = cal.filter(cal <= today)
-        panel = fill_suspensions(raw, cal)
-        if panel.height == 0:
-            raise ValueError("日期段无数据，可运行 data refresh（M3b）")
-        # 前向收益必须在 view_prices 之前计算：total_return = raw close×adj（复权视图已
-        # 缩放 close，再乘 adj 会二次复权——HFQ/QFQ 收益应一致）
-        panel = compute_forward_returns(panel)
-        adjustment = getattr(spec, "adjustment", None) or ctx.adjustment
-        asof = None
-        if adjustment == "pit_qfq":
-            # view_prices 的 asof 是 datetime.date（pit_qfq 分支 filter pl.Date <= asof）——
-            # spec.date.end 是 str，需转 date 对象（str 与 pl.Date 比较会报错）
-            asof = datetime.date.fromisoformat(spec.date.end) if spec.date.end else panel["date"].max()
-        panel = view_prices(panel, adjustment, asof=asof)
-        # compute_formula 仅输出 date/code/signal（M2 约定），把 signal 接回完整面板，
-        # 供 process 链使用；公式引用的 close 等在 view_prices 后为复权值
-        panel = panel.join(compute_formula(panel, formula), on=["date", "code"], how="left")
-        panel = run_process_chain(panel, spec.process, ctx=con)
+        if ctx.chunk_days is None:
+            # 单块整段（现行路径，逐字节不变）：base_adj=None → qfq 组内 latest 基准
+            panel = _compute_panel(con, ctx, spec, formula, codes, spec.date.start, spec.date.end, cal)
+        else:
+            # 日期分块：每块独立跑完整流水线（含 warmup 重叠段），丢弃 warmup 行后拼接。
+            # CS 算子（per-date 横截面）块内完整、TS 窗口由 warmup 覆盖 → 与整段逐 cell 一致；
+            # qfq 时 adj_factor 按全局基准归一，绝对水平因子跨块一致。
+            warmup = ctx.warmup_days if ctx.warmup_days is not None \
+                else _ts_window_days(formula) + _WARMUP_SAFETY_PAD
+            chunks = chunk_calendar(cal, ctx.chunk_days, warmup)
+            base_adj = _load_base_adj(con, spec.date.end)
+            panels = []
+            for load_start, chunk_start, chunk_end in chunks:
+                cal_chunk = cal.filter((cal >= load_start) & (cal <= chunk_end))
+                chunk_panel = _compute_panel(
+                    con, ctx, spec, formula, codes, load_start.isoformat(), chunk_end.isoformat(),
+                    cal_chunk, base_adj)
+                panels.append(chunk_panel.filter(pl.col("date") >= chunk_start))
+            panel = pl.concat(panels)
         # spec 2.5 对齐输出：date, code, signal, forward_return_h, close
         keep = ["date", "code", "signal", "forward_return_5d", "forward_return_20d", "close"]
         panel = panel.select([c for c in keep if c in panel.columns])
     finally:
         con.close()
 
+    adjustment = getattr(spec, "adjustment", None) or ctx.adjustment
     summary = {
         "name": spec.name,
         "category": spec.category,

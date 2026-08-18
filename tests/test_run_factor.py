@@ -609,3 +609,26 @@ def test_formula_columns_assign_intermediate_variable():
     assert _formula_columns("ret = close * 2\nsignal = ret + open") == ["close", "open"]
     # AnnAssign 目标名同样纳入 defined（target 为单个，非 targets 列表）
     assert _formula_columns("ret: float = close * 2\nsignal = ret") == ["close"]
+
+
+def test_run_factor_chunked_smoke(tmp_path):
+    # 分块跑通：12 天日历、chunk 2（6 块）、warmup 1 → panel 行数 = 12 天 × 2 代码
+    build_db(tmp_path, n_days=12)
+    spec = _spec(tmp_path)
+    spec.date.end = "2024-01-17"
+    out_dir = tmp_path / "out_chunked"
+    result = run_factor(spec, RunContext(
+        db_path=tmp_path / "q.duckdb", output_dir=out_dir, chunk_days=2, warmup_days=1))
+    assert result.panel.height == 12 * 2
+    assert result.panel["date"].min() == datetime.date(2024, 1, 2)
+    assert result.panel["date"].max() == datetime.date(2024, 1, 17)
+    assert result.panel["signal"].is_not_null().sum() > 0
+    assert json.loads((out_dir / "summary.json").read_text(encoding="utf-8"))["panel_rows"] == 24
+
+
+def test_run_factor_chunked_invalid_chunk_days(tmp_path):
+    build_db(tmp_path, n_days=12)
+    spec = _spec(tmp_path)
+    with pytest.raises(ValueError, match="chunk_days"):
+        run_factor(spec, RunContext(
+            db_path=tmp_path / "q.duckdb", output_dir=tmp_path / "out_bad", chunk_days=0))
