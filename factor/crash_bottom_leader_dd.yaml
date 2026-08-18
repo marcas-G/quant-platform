@@ -1,0 +1,17 @@
+name: crash_bottom_leader_dd
+category: custom
+direction: 1
+universe:
+  rules: {exclude_st: true, exchanges: ["SSE", "SZSE"]}
+date:
+  start: "2015-01-01"
+  end: "2026-07-31"
+process:
+  - winsorize(quantile=0.99)
+  - standardize()
+formula: |
+  from polars_ta.prefix.wq import ts_sum, ts_max, ts_delay, cs_rank
+  _mkt20 = ts_sum(idx_ret, 20)
+  _crash = sign(sign(-0.08 - _mkt20) + 1) / 2
+  _dd = close / ts_max(ts_delay(close, 1), 250) - 1
+  signal = (cs_rank(-_dd) + cs_rank(log(circ_mv))) * _crash
