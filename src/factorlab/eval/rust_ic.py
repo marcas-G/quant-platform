@@ -10,6 +10,7 @@ def evaluate_factor_weekly(
     factor_name: str,
     direction: int,
     target: str = "forward_return_5d",
+    weekly: pl.DataFrame | None = None,
 ) -> dict:
     """周频评估：日频面板 → 周频对齐 → quant_core.evaluate_factor。
 
@@ -22,6 +23,8 @@ def evaluate_factor_weekly(
       forward 行均属此列，不会进入评估。NaN 不属 null，quant_core 容忍（实测）。
     - 空面板（列齐全）直接透传，quant_core 返回全 nan 结构（实测不崩溃）。
     - direction 原样透传 int（约定 1/-1；0 实测按 -1 处理，属 quant_core 内部语义）。
+    - weekly：调用方已对齐的周频面板（如 CLI 的 align_weekly 结果）——重复对齐
+      大面板（千万行）在低内存机器上 segfault，复用避免。
     """
     import quant_core
 
@@ -30,7 +33,7 @@ def evaluate_factor_weekly(
     if missing:
         raise ValueError(f"评估面板缺少列: {sorted(missing)}")
 
-    weekly = align_weekly(panel)
+    weekly = align_weekly(panel) if weekly is None else weekly
     weekly = weekly.filter(pl.col("signal").is_not_null() & pl.col(target).is_not_null())
 
     dates = weekly["date"].dt.strftime("%Y-%m-%d").to_list()

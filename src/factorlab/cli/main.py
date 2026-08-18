@@ -170,9 +170,10 @@ def run_factor_cli(
         if spec.target != "forward_return_5d":
             console.print(f"提示: quant_core 当前固定评估 forward_return_5d（spec.target={spec.target} 暂未接线，后续里程碑处理）")
         result = run_impl(spec, ctx)
-        # 周频对齐面板：评估与分层回测的实际输入（evaluate_factor_weekly 内部重复对齐——YAGNI 不优化）
+        # 周频对齐面板：评估与分层回测的实际输入（对齐一次，复用给评估——
+        # 千万行面板重复对齐在低内存机器上 segfault）
         weekly = align_weekly(result.panel)
-        evaluation = evaluate_factor_weekly(result.panel, spec.name, spec.direction)
+        evaluation = evaluate_factor_weekly(result.panel, spec.name, spec.direction, weekly=weekly)
         if backtest:
             bt = layered_backtest(weekly, spec.direction, n_groups=groups)
             evaluation["layered_backtest"] = bt

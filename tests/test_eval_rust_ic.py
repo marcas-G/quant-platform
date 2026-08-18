@@ -73,3 +73,17 @@ def test_evaluate_factor_weekly_empty_panel():
     result = evaluate_factor_weekly(panel, "demo", 1)
     assert result["n_weeks"] == 0
     assert result["ic"]["mean"] != result["ic"]["mean"]  # nan
+
+
+def test_evaluate_factor_weekly_reuses_provided_weekly():
+    # 已对齐面板复用：显式 weekly 与内部对齐结果一致（CLI 传 align_weekly 结果，
+    # 避免千万行面板重复对齐在低内存机器上 segfault）
+    panel = _panel()
+    weekly = panel.group_by(pl.col("date").dt.week().alias("_w")).agg(
+        pl.col("date").max().alias("date"))["date"]  # 仅占位——真正对齐用 align_weekly
+    from factorlab.eval.alignment import align_weekly
+    weekly = align_weekly(panel)
+    direct = evaluate_factor_weekly(panel, "demo", 1)
+    reused = evaluate_factor_weekly(panel, "demo", 1, weekly=weekly)
+    assert reused["n_weeks"] == direct["n_weeks"]
+    assert reused["ic"]["mean"] == pytest.approx(direct["ic"]["mean"])
