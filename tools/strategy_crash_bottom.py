@@ -32,11 +32,32 @@ def load_panel(panel_path: Path) -> pl.DataFrame:
     return pl.read_parquet(panel_path)
 
 
+def load_mkt20(db_path: Path) -> pl.DataFrame:
+    """中证1000 20 日累计收益（date/mkt20 两列）：index_daily 单表全段（~2800 行），
+    按触发周买入日 join 用——用于触发强度分级仓位。"""
+    import duckdb
+    with duckdb.connect(str(db_path), read_only=True) as con:
+        idx = con.execute(
+            "SELECT trade_date, pct_chg FROM index_daily "
+            "WHERE ts_code = '000852.SH' ORDER BY trade_date",
+        ).pl()
+    mkt20 = idx.with_columns(
+        pl.col("trade_date").str.strptime(pl.Date, "%Y%m%d").alias("date"),
+        (pl.col("pct_chg") / 100.0).alias("idx_ret"),
+    ).sort("date").with_columns(
+        pl.col("idx_ret").rolling_sum(20).alias("mkt20"),
+    ).select(["date", "mkt20"])
+    return mkt20.drop_nulls()
+
+
 def strategy_backtest(
     panel: pl.DataFrame,
     limit_down: pl.DataFrame | None = None,
     k: int = K_DEFAULT,
     cost_bps: int = COST_BPS_DEFAULT,
+    mkt20: pl.DataFrame | None = None,
+    intensity: bool = False,
+    skip_first_week: bool = False,
 ) -> dict:
     """触发期 top-K 等权周频调仓回测。返回指标 + 每轮触发明细。"""
     weekly = panel.sort(["date", "code"])
@@ -52,6 +73,8 @@ def strategy_backtest(
         weekly = weekly.join(limit_down, on=["date", "code"], how="left")
         weekly = weekly.filter(pl.col("pct_chg").fill_null(0.0) > LIMIT_DOWN)
     active = weekly.filter(pl.col("signal").is_not_null())
+    if mkt20 is not None:
+        active = active.join(mkt20, on="date", how="left")
 
     # 逐周组合：top K 等权，换手 = 与上周持仓的新增比例
     holdings: set[str] = set()
@@ -60,8 +83,22 @@ def strategy_backtest(
     prev_week_end: pl.Date | None = None
     per_episode: dict = {}
     episodes: list[dict] = []
+    seg_first = True  # 触发段首周标记（skip_first_week 用）
 
     for (week_end,), grp in active.sort("date").group_by("date", maintain_order=True):
+        if prev_week_end is not None and week_end - prev_week_end > __import__("datetime").timedelta(days=10):
+            # 触发断档：上一段结束
+            episodes.append({**per_episode, "end": str(prev_week_end)})
+            per_episode = {}
+            seg_first = True
+        # 仓位权重：强度分级（-mkt20/0.16，-8% 半仓、-16% 满仓）与段首缓冲
+        w = 1.0
+        if skip_first_week and seg_first:
+            w = 0.0
+        elif intensity:
+            m = float(grp["mkt20"].first()) if grp["mkt20"].first() is not None else 0.0
+            w = min(1.0, -m / 0.16)
+        seg_first = False
         grp = grp.sort("signal", descending=True).head(k)
         codes = set(grp["code"].to_list())
         new_codes = codes - holdings
@@ -69,20 +106,18 @@ def strategy_backtest(
         cost = turnover * cost_bps / 10000
         fwd = grp["forward_return_5d"].mean()  # 分块块边界 forward null → mean 可为 None
         ret = float(fwd) if fwd is not None else 0.0
-        if prev_week_end is not None and week_end - prev_week_end > __import__("datetime").timedelta(days=10):
-            # 触发断档：上一段结束
-            episodes.append({**per_episode, "end": str(prev_week_end)})
-            per_episode = {}
+        # 净值变化率 = 1 + w×收益 - w×换手×成本率（仓位缩放同时缩放收益与成交额）
+        r_net = w * ret - w * turnover * cost_bps / 10000
         per_episode.setdefault("start", str(week_end))
         per_episode["weeks"] = per_episode.get("weeks", 0) + 1
-        per_episode["cum_ret"] = per_episode.get("cum_ret", 1.0) * (1 + ret - cost)
-        nav *= 1 + ret - cost
-        cost_paid += cost
+        per_episode["cum_ret"] = per_episode.get("cum_ret", 1.0) * (1 + r_net)
+        nav *= 1 + r_net
+        cost_paid += w * cost
         turnover_sum += turnover
         holdings = codes
         prev_week_end = week_end
         weeks.append(week_end)
-        rets.append(ret - cost)
+        rets.append(r_net)
         turnovers.append(turnover)
     if per_episode:
         episodes.append({**per_episode, "end": str(prev_week_end)})
@@ -123,6 +158,9 @@ def main() -> None:
     ap.add_argument("--k", type=int, default=K_DEFAULT)
     ap.add_argument("--cost-bps", type=int, default=COST_BPS_DEFAULT)
     ap.add_argument("--no-limit-down", action="store_true", help="关闭跌停过滤")
+    ap.add_argument("--intensity", action="store_true",
+                    help="触发强度分级仓位：w = min(1, -mkt20/0.16)（-8% 半仓、-16% 满仓）")
+    ap.add_argument("--skip-first-week", action="store_true", help="触发段首周空仓缓冲")
     args = ap.parse_args()
 
     panel = load_panel(Path(args.panel))
@@ -144,7 +182,13 @@ def main() -> None:
         limit_down = ld.with_columns(
             pl.col("date").str.strptime(pl.Date, "%Y%m%d")
         ).select(["date", "code", "pct_chg"])
-    result = strategy_backtest(panel, limit_down, k=args.k, cost_bps=args.cost_bps)
+    mkt20 = None
+    if args.intensity:
+        mkt20 = load_mkt20(Path(args.db))
+    result = strategy_backtest(
+        panel, limit_down, k=args.k, cost_bps=args.cost_bps,
+        mkt20=mkt20, intensity=args.intensity, skip_first_week=args.skip_first_week,
+    )
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 

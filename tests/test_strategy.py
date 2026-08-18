@@ -71,3 +71,39 @@ def test_strategy_no_trigger_weeks():
     r = strategy_backtest(empty, k=2, cost_bps=35)
     assert r["weeks"] == 0
     assert "error" in r
+
+
+def test_strategy_skip_first_week_of_episode():
+    # 触发段首周空仓：3 周连续触发 → 首周 w=0，净值 = 1.035^2（周 2/3 正常）
+    r = strategy_backtest(_panel(), k=2, cost_bps=0, skip_first_week=True)
+    assert r["nav"] == pytest.approx(1.035 ** 2, rel=1e-9)
+    assert r["weeks"] == 3  # 仍计 3 个触发周（首周空仓但属于触发段）
+
+
+def test_strategy_skip_first_week_resets_per_episode():
+    # 断档后新触发段的首周再次跳过：3 周 + 断档 + 1 周 → 段 1 首周跳过、段 2 首周跳过
+    rows = []
+    for w, gap in ((0, 0), (1, 0), (2, 0), (4, 1)):  # 第 4 周与第 3 周断档（gap>10 天）
+        d = datetime.date(2024, 1, 5) + datetime.timedelta(weeks=w + gap)
+        for i, code in enumerate(("A", "B", "C", "D")):
+            rows.append({
+                "date": d, "code": code,
+                "signal": 4.0 - i, "forward_return_5d": 0.02,
+            })
+    r = strategy_backtest(pl.DataFrame(rows), k=2, cost_bps=0, skip_first_week=True)
+    # 段 1（3 周）：首周跳过 → 2 周收益；段 2（1 周）：首周跳过 → 0 收益
+    assert r["nav"] == pytest.approx(1.02 ** 2, rel=1e-9)
+
+
+def test_strategy_intensity_scales_position():
+    # 强度分级：-8% → w=0.5、-16% → w=1.0；净值 = ∏(1 + w×ret)
+    mkt20 = pl.DataFrame({
+        "date": [datetime.date(2024, 1, 5),
+                 datetime.date(2024, 1, 12),
+                 datetime.date(2024, 1, 19)],
+        "mkt20": [-0.08, -0.16, -0.08],
+    })
+    r = strategy_backtest(_panel(), k=2, cost_bps=0, mkt20=mkt20, intensity=True)
+    expected = (1 + 0.5 * 0.035) * (1 + 1.0 * 0.035) * (1 + 0.5 * 0.035)
+    assert r["nav"] == pytest.approx(expected, rel=1e-9)
+    assert r["total_cost"] == 0.0
