@@ -106,6 +106,32 @@ def _formula_columns(formula: str) -> list[str]:
     return sorted(c for c in cols if not c.startswith("_") and c not in {"date", "code"})
 
 
+_WINDOW_PREFIXES = ("ts_", "ta_")  # 窗口参数在第二位置的算子族（tdx_* 参数语义不同，不提取）
+
+
+def _ts_window_days(formula: str) -> int:
+    """AST 提取公式中所有 ts_*/ta_* 窗口算子的窗口参数最大值（第二位置参数，int 字面量）；
+    无窗口算子 → 0（纯 CS/元素级公式不需要 warmup）。窗口参数非常量时忽略该项。"""
+    tree = ast.parse(formula)
+    windows = []
+    for node in ast.walk(tree):
+        if not isinstance(node, ast.Call) or len(node.args) < 2:
+            continue
+        if isinstance(node.func, ast.Name):
+            name = node.func.id
+        elif isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name) \
+                and node.func.value.id in ("wq", "ta"):
+            name = node.func.attr
+        else:
+            continue
+        if not name.startswith(_WINDOW_PREFIXES):
+            continue
+        arg = node.args[1]
+        if isinstance(arg, ast.Constant) and isinstance(arg.value, int) and not isinstance(arg.value, bool):
+            windows.append(arg.value)
+    return max(windows) if windows else 0
+
+
 @dataclass
 class RunContext:
     """运行上下文。universe_override：6 位代码（如 600519）、universe 引用名或 yaml 文件路径。

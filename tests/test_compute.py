@@ -1,7 +1,7 @@
 import pytest
 import polars as pl
 
-from factorlab.engine.compute import compute_formula
+from factorlab.engine.compute import _ts_window_days, compute_formula
 
 
 def test_compute_formula_returns_signal_column():
@@ -149,3 +149,36 @@ def test_compute_partitions_aliased_platform_op_by_asset():
     })
     r = compute_formula(df, "from factorlab.ops.platform_ops import returns as ret\nsignal = ret(close)")
     assert r["signal"].null_count() == 2  # 别名后的薄封装同样按资产分区
+
+
+# ---------- _ts_window_days ----------
+
+
+def test_ts_window_single():
+    assert _ts_window_days("signal = ts_mean(close, 20)") == 20
+
+
+def test_ts_window_takes_max_of_multiple():
+    formula = """
+_a = ts_mean(close, 5)
+_b = ts_std_dev(close, 60)
+signal = _a + _b
+"""
+    assert _ts_window_days(formula) == 60
+
+
+def test_ts_window_no_window_ops_returns_zero():
+    assert _ts_window_days("signal = cs_rank(-close)") == 0
+
+
+def test_ts_window_variable_window_ignored():
+    # 参数化 ${w} 已在展开链替换为字面量；未替换的变量窗口不参与提取
+    assert _ts_window_days("signal = ts_mean(close, w)") == 0
+
+
+def test_ts_window_float_window_ignored():
+    assert _ts_window_days("signal = ts_mean(close, 2.5)") == 0
+
+
+def test_ts_window_qualified_name_and_ta_family():
+    assert _ts_window_days("signal = wq.ts_sum(close, 10) + ta_MA(close, 5)") == 10
