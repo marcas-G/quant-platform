@@ -117,6 +117,9 @@ formula: |
 | 2026-08-18 | 分块计算扩样 | `--chunk-days 500` 扩到 2015-2026（平台内存优化落地） | 0.0321 | **2.84** | 统计显著，升候选 |
 | 2026-08-18 | [`crash_bottom_leader_dd`](crash_bottom_leader_dd.md) | 超跌度量 mom20 → dd250 | 0.0207 | 1.56 | 证伪——超跌是时效性急跌非长期回撤 |
 | 2026-08-18 | [`crash_bottom_leader_timed_stable`](crash_bottom_leader_timed_stable.md) | 加回稳健成分（三层） | 0.0178 | 1.20 | 证伪——触发期稳健与超跌冗余稀释 |
+| 2026-08-18 | [`crash_bottom_leader_mom10`](crash_bottom_leader_mom10.md) | 超跌窗口 20→10 | 0.0193 | 1.77 | 证伪——10 日噪声主导（20 日为平衡点） |
+| 2026-08-18 | [`crash_bottom_leader_adv20`](crash_bottom_leader_adv20.md) | 龙头 市值→成交额 | 0.0284 | 2.77 | 观察中——LS 夏普 2.45 更优、IC 略低，等价替代 |
+| 2026-08-18 | [`crash_bottom_leader_adv_mv`](crash_bottom_leader_adv_mv.md) | 市值+成交额叠加 | 0.0081 | 0.68 | 证伪——维度冗余（正交性规则二次验证） |
 
 ## 6. 风险与备注
 

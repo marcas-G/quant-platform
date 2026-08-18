@@ -1,0 +1,17 @@
+name: crash_bottom_leader_adv20
+category: custom
+direction: 1
+universe:
+  rules: {exclude_st: true, exchanges: ["SSE", "SZSE"]}
+date:
+  start: "2015-01-01"
+  end: "2026-07-31"
+process:
+  - winsorize(quantile=0.99)
+  - standardize()
+formula: |
+  from polars_ta.prefix.wq import ts_sum, ts_mean, ts_delay, cs_rank
+  _mkt20 = ts_sum(idx_ret, 20)
+  _crash = sign(sign(-0.08 - _mkt20) + 1) / 2
+  _mom = ts_mean(close, 20) / ts_delay(close, 20) - 1
+  signal = (cs_rank(-_mom) + cs_rank(log(adv20(volume)))) * _crash
