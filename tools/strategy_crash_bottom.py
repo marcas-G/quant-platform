@@ -232,6 +232,146 @@ def strategy_backtest(
     }
 
 
+def strategy_long_backtest(
+    panel: pl.DataFrame,
+    limit_down: pl.DataFrame | None = None,
+    k: int = K_DEFAULT,
+    cost_bps: int = COST_BPS_DEFAULT,
+    mkt20: pl.DataFrame | None = None,
+    batches: int = 4,
+    batch_gap: int = 2,
+    repair_threshold: float = 0.0,
+) -> dict:
+    """危机修复策略（v3.0 原型）：分批左侧建仓 + 持有到指数修复。
+
+    - 触发（mkt20 < -8% 或掩码激活）→ 建仓计划：每 batch_gap 周买入一批
+      （batches 批，每批 1/batches 仓位），批次买入当周信号 top K；
+    - 持有到修复（mkt20 >= repair_threshold）→ 全仓退出；
+    - 持仓期内**每周轮动换仓**（按最新信号重选 top K——保留轮动 alpha，
+      与周频模式一致；分批只控制仓位建立节奏）；
+    - 修复前即使掩码短暂恢复也继续持有（长周期修复视角——掩码恢复 ≠ 修复完成）。
+    """
+    if mkt20 is None:
+        raise ValueError("strategy_long_backtest 需要 mkt20（指数 20 日累计，load_mkt20）")
+    # 主循环用完整周对齐面板（非触发周 signal 为 null，但持仓收益需要该周全部股票行）；
+    # signal 仅用于触发周选股。mkt20 判断触发/修复——标准化的 signal 在非触发周为 null，
+    # 不能作为主循环（修复日恰恰是非触发日，会被过滤掉——致命 bug）。
+    weekly = panel.sort("date").with_columns(
+        pl.col("date").max().over(
+            pl.col("date").dt.iso_year().alias("_y"),
+            pl.col("date").dt.week().alias("_w"),
+        ).alias("_week_end"),
+    ).filter(pl.col("date") == pl.col("_week_end")).drop("_week_end").sort("date")
+    weekly = weekly.join(mkt20, on="date", how="left")
+
+    nav, cost_paid, turnover_sum = 1.0, 0.0, 0.0
+    weeks, rets, turnovers = [], [], []
+    in_episode = False
+    batches_bought = 0
+    weeks_since_buy = 0
+    holdings: set[str] = set()
+    position = 0.0  # 累计仓位比例（0~1）
+    prev_week_end: pl.Date | None = None
+    per_episode: dict = {}
+    episodes: list[dict] = []
+
+    for (week_end,), grp in weekly.sort("date").group_by("date", maintain_order=True):
+        m = float(grp["mkt20"].first()) if grp["mkt20"].first() is not None else 0.0
+        triggered = m < -0.08
+        repaired = not triggered and m >= repair_threshold
+        if in_episode and repaired:
+            # 修复完成：全仓退出，段结束
+            episodes.append({**per_episode, "end": str(week_end)})
+            per_episode = {}
+            in_episode = False
+            batches_bought = 0
+            holdings = set()
+            position = 0.0
+            r_net = 0.0
+            turnover = 0.0
+        else:
+            if not in_episode and triggered:
+                in_episode = True
+                per_episode = {"start": str(week_end)}
+                batches_bought = 0
+                weeks_since_buy = batch_gap  # 触发当周即买第一批
+                holdings = set()
+                position = 0.0
+            # 分批建仓：仍在触发中（越跌越买）且每 batch_gap 周买一批（买入当周信号 top K）；
+            # 掩码恢复（-8% 以内）即停止加仓，持有等待修复
+            turnover = 0.0
+            if in_episode and triggered and batches_bought < batches and weeks_since_buy >= batch_gap:
+                slot = 1.0 / batches
+                sel = grp.filter(pl.col("signal").is_not_null()).sort("signal", descending=True).head(k)
+                add = [c for c in sel["code"].to_list() if c not in holdings]
+                # 新买入股票进入持仓池（当周收益从下周起计）
+                holdings |= set(add)
+                turnover = len(add) / k
+                position += slot
+                batches_bought += 1
+                weeks_since_buy = 0
+                cost_paid += slot * turnover * cost_bps / 10000
+            elif in_episode and position > 0 and triggered:
+                # 触发期轮动：每周按最新信号重选 top K（保留轮动 alpha——
+                # 卖出信号变弱的、换入新超跌股，与周频模式同机制）；
+                # 非触发周（掩码恢复未修复）持仓不动，等待修复
+                sel = grp.filter(pl.col("signal").is_not_null()).sort("signal", descending=True).head(k)
+                target = set(sel["code"].to_list())
+                new_codes = target - holdings
+                holdings = target
+                turnover = len(new_codes) / k
+                cost_paid += position * turnover * cost_bps / 10000
+            weeks_since_buy += 1
+            # 周收益 = 持仓池当周 fwd5 均值 × 仓位
+            if position > 0 and holdings:
+                hold_grp = grp.filter(pl.col("code").is_in(holdings))
+                fwd = hold_grp["forward_return_5d"].mean()
+                ret = float(fwd) if fwd is not None else 0.0
+                r_net = position * ret - position * turnover * cost_bps / 10000
+            else:
+                ret = 0.0
+                r_net = 0.0
+            if in_episode:
+                per_episode.setdefault("weeks", 0)
+                per_episode["weeks"] += 1
+                per_episode["cum_ret"] = per_episode.get("cum_ret", 1.0) * (1 + r_net)
+        nav *= 1 + r_net
+        turnover_sum += turnover
+        prev_week_end = week_end
+        weeks.append(week_end)
+        rets.append(r_net)
+        turnovers.append(turnover)
+    if in_episode:
+        episodes.append({**per_episode, "end": str(prev_week_end)})
+
+    n = len(rets)
+    if n == 0 or nav <= 0:
+        return {"weeks": n, "error": "无触发周"}
+    years = n / 52.0
+    ann = nav ** (1 / years) - 1 if years > 0 else 0.0
+    mean_r = sum(rets) / n
+    var = sum((r - mean_r) ** 2 for r in rets) / max(n - 1, 1)
+    vol = var ** 0.5 * (52 ** 0.5)
+    sharpe = ann / vol if vol > 0 else 0.0
+    peak, mdd = 1.0, 0.0
+    for r in rets:
+        peak = max(peak, peak * (1 + r))
+        mdd = max(mdd, (peak - peak * (1 + r)) / peak)
+    return {
+        "mode": "long",
+        "weeks": n,
+        "nav": nav,
+        "annual_return": ann,
+        "annual_vol": vol,
+        "sharpe": sharpe,
+        "max_drawdown": mdd,
+        "total_cost": cost_paid,
+        "avg_turnover": turnover_sum / n,
+        "episodes": episodes,
+        "weekly_returns": rets,
+    }
+
+
 def monte_carlo(
     weekly_returns: list[float],
     episodes: list[dict],
@@ -329,6 +469,12 @@ def main() -> None:
                     help="个股最长持有周数（到期强制卖出）")
     ap.add_argument("--k-buy", type=int, default=None,
                     help="买入门槛（<=k）：补仓只买信号排名前 k_buy 的强股，缺口空仓")
+    ap.add_argument("--long", action="store_true",
+                    help="危机修复模式：分批左侧建仓 + 持有到指数修复（v3.0）")
+    ap.add_argument("--batches", type=int, default=4, help="分批建仓批数（--long）")
+    ap.add_argument("--batch-gap", type=int, default=2, help="批次间隔周数（--long）")
+    ap.add_argument("--repair-threshold", type=float, default=0.0,
+                    help="修复退出阈值：mkt20 >= 该值全仓退出（--long）")
     args = ap.parse_args()
 
     panel = load_panel(Path(args.panel))
@@ -353,13 +499,21 @@ def main() -> None:
     mkt20 = None
     if args.intensity:
         mkt20 = load_mkt20(Path(args.db))
-    result = strategy_backtest(
-        panel, limit_down, k=args.k, cost_bps=args.cost_bps,
-        mkt20=mkt20, intensity=args.intensity, skip_first_week=args.skip_first_week,
-        stop_loss=args.stop_loss, rebalance_weeks=args.rebalance,
-        take_profit=args.take_profit, stock_stop_loss=args.stock_stop_loss,
-        max_hold=args.max_hold, k_buy=args.k_buy,
-    )
+    if args.long:
+        result = strategy_long_backtest(
+            panel, limit_down, k=args.k, cost_bps=args.cost_bps,
+            mkt20=load_mkt20(Path(args.db)),
+            batches=args.batches, batch_gap=args.batch_gap,
+            repair_threshold=args.repair_threshold,
+        )
+    else:
+        result = strategy_backtest(
+            panel, limit_down, k=args.k, cost_bps=args.cost_bps,
+            mkt20=mkt20, intensity=args.intensity, skip_first_week=args.skip_first_week,
+            stop_loss=args.stop_loss, rebalance_weeks=args.rebalance,
+            take_profit=args.take_profit, stock_stop_loss=args.stock_stop_loss,
+            max_hold=args.max_hold, k_buy=args.k_buy,
+        )
     if args.mc:
         result["monte_carlo"] = monte_carlo(
             result["weekly_returns"], result["episodes"],

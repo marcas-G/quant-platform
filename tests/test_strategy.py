@@ -266,3 +266,52 @@ def test_strategy_k_buy_gate_keeps_cash_when_no_strong_signals():
     # 周 2：补仓池 = 信号前 1 且未持仓未卖出 → D（A 排除、B 已持）→ 收益 (B 1% + D 1%)/2
     expected = (1 + 0.03) * (1 - 0.07) * (1 + 0.01)
     assert r["nav"] == pytest.approx(expected, rel=1e-9)
+
+
+def test_strategy_long_batch_entry_and_repair_exit():
+    # 危机修复模式：触发 2 周（mkt20<-8%）→ 每周买 1/2 仓（batches=2, gap=1）；
+    # 修复（mkt20>=0）→ 全仓退出
+    from tools.strategy_crash_bottom import strategy_long_backtest
+    rows = []
+    mkt = []
+    for w, m in ((0, -0.10), (1, -0.09), (2, 0.01)):
+        d = datetime.date(2024, 1, 5) + datetime.timedelta(weeks=w)
+        mkt.append({"date": d, "mkt20": m})
+        for i, code in enumerate(("A", "B", "C", "D")):
+            rows.append({
+                "date": d, "code": code,
+                "signal": 4.0 - i, "forward_return_5d": 0.02,
+            })
+    panel = pl.DataFrame(rows)
+    mkt20 = pl.DataFrame(mkt)
+    r = strategy_long_backtest(panel, k=2, cost_bps=0, mkt20=mkt20,
+                               batches=2, batch_gap=1, repair_threshold=0.0)
+    # 周 0：触发，买批 1（A/B，半仓）→ 收益 0.5×2% = 1%
+    # 周 1：仍触发，买批 2（满仓）→ 收益 1.0×2% = 2%
+    # 周 2：修复退出 → 0
+    assert r["nav"] == pytest.approx(1.01 * 1.02, rel=1e-9)
+    assert r["episodes"][0]["weeks"] == 2
+
+
+def test_strategy_long_stops_adding_when_trigger_ends():
+    # 掩码恢复（-4%）但未修复（<0）：停止加仓、继续持有（不退出）
+    from tools.strategy_crash_bottom import strategy_long_backtest
+    rows = []
+    mkt = []
+    for w, m in ((0, -0.10), (1, -0.04), (2, -0.02)):
+        d = datetime.date(2024, 1, 5) + datetime.timedelta(weeks=w)
+        mkt.append({"date": d, "mkt20": m})
+        for i, code in enumerate(("A", "B", "C", "D")):
+            rows.append({
+                "date": d, "code": code,
+                "signal": 4.0 - i, "forward_return_5d": 0.02,
+            })
+    r = strategy_long_backtest(pl.DataFrame(rows), k=2, cost_bps=0,
+                               mkt20=pl.DataFrame(mkt),
+                               batches=4, batch_gap=1, repair_threshold=0.0)
+    # 周 0：触发买批 1（半仓？batches=4 → 25%）收益 0.25×2%
+    # 周 1：掩码恢复（-4% > -8%）→ 不加仓，持仓 25% 继续：收益 0.25×2%
+    # 周 2：仍持有：收益 0.25×2%
+    expected = (1 + 0.25 * 0.02) ** 3
+    assert r["nav"] == pytest.approx(expected, rel=1e-9)
+    assert r["episodes"][0]["weeks"] == 3
