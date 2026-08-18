@@ -107,3 +107,34 @@ def test_strategy_intensity_scales_position():
     expected = (1 + 0.5 * 0.035) * (1 + 1.0 * 0.035) * (1 + 0.5 * 0.035)
     assert r["nav"] == pytest.approx(expected, rel=1e-9)
     assert r["total_cost"] == 0.0
+
+
+def test_strategy_stop_loss_exits_episode():
+    # 段内回撤止损：周 1 组合 -20%（>15%）→ 周 2 起空仓；止损后段内不再入场
+    rows = []
+    for w, fwd in ((0, 0.05), (1, -0.20), (2, 0.05)):  # 周 2 反弹但已止损
+        d = datetime.date(2024, 1, 5) + datetime.timedelta(weeks=w)
+        for i, code in enumerate(("A", "B", "C", "D")):
+            rows.append({
+                "date": d, "code": code,
+                "signal": 4.0 - i, "forward_return_5d": fwd,
+            })
+    r = strategy_backtest(pl.DataFrame(rows), k=2, cost_bps=0, stop_loss=0.15)
+    # 周 0 +5%、周 1 -20% → 回撤 20%>15% → 止损；周 2 空仓（w=0）
+    assert r["nav"] == pytest.approx(1.05 * 0.80, rel=1e-9)
+    assert any(ep.get("stopped") for ep in r["episodes"])
+
+
+def test_strategy_stop_loss_below_threshold_holds():
+    # 回撤未达阈值（-10% < 15%）不触发止损：3 周全部持仓
+    rows = []
+    for w, fwd in ((0, 0.05), (1, -0.10), (2, 0.05)):
+        d = datetime.date(2024, 1, 5) + datetime.timedelta(weeks=w)
+        for i, code in enumerate(("A", "B", "C", "D")):
+            rows.append({
+                "date": d, "code": code,
+                "signal": 4.0 - i, "forward_return_5d": fwd,
+            })
+    r = strategy_backtest(pl.DataFrame(rows), k=2, cost_bps=0, stop_loss=0.15)
+    assert r["nav"] == pytest.approx(1.05 * 0.90 * 1.05, rel=1e-9)
+    assert not any(ep.get("stopped") for ep in r["episodes"])

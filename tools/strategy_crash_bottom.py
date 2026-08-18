@@ -58,6 +58,7 @@ def strategy_backtest(
     mkt20: pl.DataFrame | None = None,
     intensity: bool = False,
     skip_first_week: bool = False,
+    stop_loss: float | None = None,
 ) -> dict:
     """触发期 top-K 等权周频调仓回测。返回指标 + 每轮触发明细。"""
     weekly = panel.sort(["date", "code"])
@@ -84,6 +85,8 @@ def strategy_backtest(
     per_episode: dict = {}
     episodes: list[dict] = []
     seg_first = True  # 触发段首周标记（skip_first_week 用）
+    seg_peak = 1.0  # 段内净值峰值（止损用）
+    stopped = False  # 本段已止损退出（等下次触发段）
 
     for (week_end,), grp in active.sort("date").group_by("date", maintain_order=True):
         if prev_week_end is not None and week_end - prev_week_end > __import__("datetime").timedelta(days=10):
@@ -91,10 +94,14 @@ def strategy_backtest(
             episodes.append({**per_episode, "end": str(prev_week_end)})
             per_episode = {}
             seg_first = True
+            seg_peak = 1.0
+            stopped = False
         # 仓位权重：强度分级（-mkt20/0.16，-8% 半仓、-16% 满仓）与段首缓冲
         w = 1.0
         if skip_first_week and seg_first:
             w = 0.0
+        elif stopped:
+            w = 0.0  # 段内已止损：本段剩余周空仓，等指数修复重新触发
         elif intensity:
             m = float(grp["mkt20"].first()) if grp["mkt20"].first() is not None else 0.0
             w = min(1.0, -m / 0.16)
@@ -108,10 +115,16 @@ def strategy_backtest(
         ret = float(fwd) if fwd is not None else 0.0
         # 净值变化率 = 1 + w×收益 - w×换手×成本率（仓位缩放同时缩放收益与成交额）
         r_net = w * ret - w * turnover * cost_bps / 10000
+        nav *= 1 + r_net
+        if w > 0 and stop_loss is not None:
+            seg_peak = max(seg_peak, nav)
+            if nav / seg_peak < 1 - stop_loss:
+                stopped = True  # 段内组合回撤超阈值：退出本段，剩余周空仓
         per_episode.setdefault("start", str(week_end))
         per_episode["weeks"] = per_episode.get("weeks", 0) + 1
         per_episode["cum_ret"] = per_episode.get("cum_ret", 1.0) * (1 + r_net)
-        nav *= 1 + r_net
+        if stopped:
+            per_episode["stopped"] = True
         cost_paid += w * cost
         turnover_sum += turnover
         holdings = codes
@@ -161,6 +174,8 @@ def main() -> None:
     ap.add_argument("--intensity", action="store_true",
                     help="触发强度分级仓位：w = min(1, -mkt20/0.16)（-8% 半仓、-16% 满仓）")
     ap.add_argument("--skip-first-week", action="store_true", help="触发段首周空仓缓冲")
+    ap.add_argument("--stop-loss", type=float, default=None,
+                    help="段内组合回撤止损（如 0.15 = 从段内峰值回撤 15% 退出该段）")
     args = ap.parse_args()
 
     panel = load_panel(Path(args.panel))
@@ -188,6 +203,7 @@ def main() -> None:
     result = strategy_backtest(
         panel, limit_down, k=args.k, cost_bps=args.cost_bps,
         mkt20=mkt20, intensity=args.intensity, skip_first_week=args.skip_first_week,
+        stop_loss=args.stop_loss,
     )
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
