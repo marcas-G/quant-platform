@@ -125,6 +125,10 @@ def run_factor_cli(
     backtest: bool = True,
     groups: int = typer.Option(10, min=2),
     set_params: list[str] = typer.Option(None, "--set", help="覆盖 spec.params（k=v，可多次，生成 name_kv 变体）"),
+    chunk_days: int | None = typer.Option(None, "--chunk-days", min=1,
+                                          help="日期分块（交易日/块；缺省=单块整段跑）"),
+    warmup_days: int | None = typer.Option(None, "--warmup-days", min=0,
+                                           help="TS 窗口预热天数（缺省=按公式自动提取窗口+20）"),
 ) -> None:
     """计算因子并评估（平台库）。--backtest 默认产出分层回测；--no-backtest 关闭（快速评估）。
     --groups 分层档数（>=2）。--set k=v 覆盖 spec.params 生成变体（results 独立目录）。
@@ -156,6 +160,8 @@ def run_factor_cli(
         output_dir=output_dir or (settings.results_dir / variant),
         universe_override=universe or settings.default_universe,
         float32=float32,
+        chunk_days=chunk_days,
+        warmup_days=warmup_days,
     )
     # load_daily 在调用时读取 settings.default_max_memory——临时覆盖并在结束后恢复
     original_memory = settings.default_max_memory

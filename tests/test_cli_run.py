@@ -367,3 +367,37 @@ formula: |
         assert result.exit_code != 0, kv
         assert "--set" in result.output
         assert kv in result.output
+
+
+def test_run_help_chunk_options():
+    result = runner.invoke(app, ["run", "--help"])
+    assert result.exit_code == 0
+    for opt in ("--chunk-days", "--warmup-days"):
+        assert opt in result.stdout
+
+
+def test_run_chunked_end_to_end(tmp_path, monkeypatch):
+    # --chunk-days 接线：分块跑通并落盘（9 天、chunk 2 → 5 块）
+    build_db(tmp_path, n_days=9)
+    spec_path = tmp_path / "demo_chunk.yaml"
+    spec_path.write_text("""
+name: demo_chunk
+category: custom
+direction: 1
+universe:
+  codes: ["000001.SZ", "600519.SH"]
+date:
+  start: "2024-01-02"
+  end: "2024-01-12"
+formula: |
+  signal = close / ts_delay(close, 1) - 1
+""", encoding="utf-8")
+    monkeypatch.setattr("factorlab.config.settings.platform_db", tmp_path / "q.duckdb")
+    out_dir = tmp_path / "results" / "demo_chunk"
+    result = runner.invoke(app, [
+        "run", str(spec_path), "--chunk-days", "2", "--warmup-days", "1",
+        "--output-dir", str(out_dir), "--no-backtest"])
+    assert result.exit_code == 0, result.output
+    assert (out_dir / "panel.parquet").exists()
+    summary = json.loads((out_dir / "summary.json").read_text(encoding="utf-8"))
+    assert summary["panel_rows"] == 9 * 2
