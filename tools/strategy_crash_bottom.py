@@ -60,6 +60,11 @@ def strategy_backtest(
     intensity: bool = False,
     skip_first_week: bool = False,
     stop_loss: float | None = None,
+    rebalance_weeks: int = 1,
+    take_profit: float | None = None,
+    stock_stop_loss: float | None = None,
+    max_hold: int | None = None,
+    k_buy: int | None = None,
 ) -> dict:
     """触发期 top-K 等权周频调仓回测。返回指标 + 每轮触发明细。"""
     weekly = panel.sort(["date", "code"])
@@ -79,7 +84,9 @@ def strategy_backtest(
         active = active.join(mkt20, on="date", how="left")
 
     # 逐周组合：top K 等权，换手 = 与上周持仓的新增比例
-    holdings: set[str] = set()
+    # holdings: set[str]（周频模式）或 dict[code, (cum_ret, weeks_held)]（止盈止损模式）
+    use_rules = take_profit is not None or stock_stop_loss is not None or max_hold is not None
+    holdings: set[str] | dict[str, tuple[float, int]] = set() if not use_rules else {}
     nav, cost_paid, turnover_sum = 1.0, 0.0, 0.0
     weeks, rets, turnovers, entry_weeks = [], [], [], []
     prev_week_end: pl.Date | None = None
@@ -88,6 +95,7 @@ def strategy_backtest(
     seg_first = True  # 触发段首周标记（skip_first_week 用）
     seg_peak = 1.0  # 段内净值峰值（止损用）
     stopped = False  # 本段已止损退出（等下次触发段）
+    cycle_week = 0  # 调仓周期内周数（rebalance_weeks：0=调仓周）
 
     for (week_end,), grp in active.sort("date").group_by("date", maintain_order=True):
         if prev_week_end is not None and week_end - prev_week_end > __import__("datetime").timedelta(days=10):
@@ -107,13 +115,69 @@ def strategy_backtest(
             m = float(grp["mkt20"].first()) if grp["mkt20"].first() is not None else 0.0
             w = min(1.0, -m / 0.16)
         seg_first = False
-        grp = grp.sort("signal", descending=True).head(k)
-        codes = set(grp["code"].to_list())
-        new_codes = codes - holdings
-        turnover = len(new_codes) / k
+        if use_rules and w > 0:
+            # 止盈止损持仓管理：周收益 = 周初持仓（卖出决策前）的当周 fwd5 均值；
+            # 周末检查累计收益（止盈/止损/最长持有）→ 卖出 → 按信号补仓
+            if not holdings:
+                # 空仓入场：按信号买入 top K（段首缓冲后首周）
+                sel = grp.sort("signal", descending=True).head(k)
+                holdings = {c: (1.0, 0) for c in sel["code"].to_list()}
+                turnover = 1.0
+                hold_grp = sel
+                fwd = hold_grp["forward_return_5d"].mean()
+                ret = float(fwd) if fwd is not None else 0.0
+            else:
+                # 周收益先算：基于周初持仓（含本周将卖出股——它们持有到周末）
+                hold_grp = grp.filter(pl.col("code").is_in(holdings))
+                fwd = hold_grp["forward_return_5d"].mean()
+                ret = float(fwd) if fwd is not None else 0.0
+                sold: list[str] = []
+                for code, (cum, held) in list(holdings.items()):
+                    row = grp.filter(pl.col("code") == code)
+                    if row.height:
+                        fwd_val = row["forward_return_5d"][0]
+                        r = float(fwd_val) if fwd_val is not None else 0.0  # 边界 null 视为无变动
+                        cum2 = cum * (1 + r)
+                    else:
+                        cum2 = cum
+                    held2 = held + 1
+                    if (take_profit is not None and cum2 >= 1 + take_profit) \
+                            or (stock_stop_loss is not None and cum2 <= 1 - stock_stop_loss) \
+                            or (max_hold is not None and held2 >= max_hold):
+                        sold.append(code)
+                    else:
+                        holdings[code] = (cum2, held2)
+                turnover = len(sold) / k
+                if sold:
+                    for c in sold:
+                        del holdings[c]
+                    # 补仓：信号最强的未持仓股票（排除本周卖出——避免止损-买回循环损耗）。
+                    # k_buy 买入门槛（<=k）：只买信号排名前 k_buy 的强股，缺口宁可空仓——
+                    # 买入要求高于卖出要求 → 反弹末端信号转弱自动减仓、换手稳定
+                    pool = grp.filter(
+                        ~pl.col("code").is_in(holdings) & ~pl.col("code").is_in(sold),
+                    ).sort("signal", descending=True).head(k_buy or k)
+                    for c in pool["code"].to_list()[:len(sold)]:
+                        holdings[c] = (1.0, 0)
+        elif w > 0 and cycle_week == 0:
+            # 调仓周：按最新 signal 重选 top K（换手 = 与上周持仓的新增比例）
+            grp = grp.sort("signal", descending=True).head(k)
+            codes = set(grp["code"].to_list())
+            new_codes = codes - holdings
+            turnover = len(new_codes) / k
+            holdings = codes
+        elif w > 0:
+            # 非调仓周：持仓不动（吃更完整反弹），只计持仓股票收益
+            grp = grp.filter(pl.col("code").is_in(list(holdings)))
+            turnover = 0.0
+        else:
+            turnover = 0.0  # 空仓周（段首缓冲/止损/强度 0）：不换仓
         cost = turnover * cost_bps / 10000
-        fwd = grp["forward_return_5d"].mean()  # 分块块边界 forward null → mean 可为 None
-        ret = float(fwd) if fwd is not None else 0.0
+        if not use_rules:
+            fwd = grp["forward_return_5d"].mean()  # 分块块边界 forward null → mean 可为 None
+            ret = float(fwd) if fwd is not None else 0.0
+        elif w == 0:
+            ret = 0.0  # 规则模式下空仓周（段首缓冲/止损）：无持仓无收益
         # 净值变化率 = 1 + w×收益 - w×换手×成本率（仓位缩放同时缩放收益与成交额）
         r_net = w * ret - w * turnover * cost_bps / 10000
         nav *= 1 + r_net
@@ -129,7 +193,8 @@ def strategy_backtest(
             per_episode["stopped"] = True
         cost_paid += w * cost
         turnover_sum += turnover
-        holdings = codes
+        if w > 0:
+            cycle_week = (cycle_week + 1) % max(rebalance_weeks, 1)  # 空仓周不消耗调仓周期
         prev_week_end = week_end
         weeks.append(week_end)
         rets.append(r_net)
@@ -254,6 +319,16 @@ def main() -> None:
     ap.add_argument("--mc-mode", choices=["week", "episode"], default="episode",
                     help="bootstrap 采样单元：week=触发周 iid；episode=触发段 block（默认）")
     ap.add_argument("--mc-seed", type=int, default=42)
+    ap.add_argument("--rebalance", type=int, default=1,
+                    help="调仓间隔（周；1=每周调仓，2=持 2 周再调，吃更完整反弹）")
+    ap.add_argument("--take-profit", type=float, default=None,
+                    help="个股止盈（累计收益 ≥ 该比例卖出，如 0.15）——启用止盈止损持仓管理")
+    ap.add_argument("--stock-stop-loss", type=float, default=None,
+                    help="个股止损（累计收益 ≤ -该比例卖出，如 0.10）")
+    ap.add_argument("--max-hold", type=int, default=None,
+                    help="个股最长持有周数（到期强制卖出）")
+    ap.add_argument("--k-buy", type=int, default=None,
+                    help="买入门槛（<=k）：补仓只买信号排名前 k_buy 的强股，缺口空仓")
     args = ap.parse_args()
 
     panel = load_panel(Path(args.panel))
@@ -281,7 +356,9 @@ def main() -> None:
     result = strategy_backtest(
         panel, limit_down, k=args.k, cost_bps=args.cost_bps,
         mkt20=mkt20, intensity=args.intensity, skip_first_week=args.skip_first_week,
-        stop_loss=args.stop_loss,
+        stop_loss=args.stop_loss, rebalance_weeks=args.rebalance,
+        take_profit=args.take_profit, stock_stop_loss=args.stock_stop_loss,
+        max_hold=args.max_hold, k_buy=args.k_buy,
     )
     if args.mc:
         result["monte_carlo"] = monte_carlo(
