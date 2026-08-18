@@ -1,0 +1,14 @@
+name: quality_defensive
+category: custom
+direction: 1
+universe:
+  rules: {exclude_st: true, exchanges: ["SSE", "SZSE"]}
+date:
+  start: "2023-01-01"
+  end: "2026-07-31"
+process:
+  - winsorize(quantile=0.99)
+  - standardize()
+formula: |
+  from polars_ta.prefix.wq import ts_std_dev, cs_rank
+  signal = cs_rank(dv_ratio) + cs_rank(-ts_std_dev(returns(close), 20))
