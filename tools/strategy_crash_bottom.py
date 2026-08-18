@@ -17,6 +17,7 @@ from __future__ import annotations
 
 import argparse
 import json
+import random
 from pathlib import Path
 
 import polars as pl
@@ -123,6 +124,7 @@ def strategy_backtest(
         per_episode.setdefault("start", str(week_end))
         per_episode["weeks"] = per_episode.get("weeks", 0) + 1
         per_episode["cum_ret"] = per_episode.get("cum_ret", 1.0) * (1 + r_net)
+        per_episode.setdefault("returns", []).append(r_net)  # 段内周收益（蒙特卡洛 block 单元）
         if stopped:
             per_episode["stopped"] = True
         cost_paid += w * cost
@@ -161,6 +163,78 @@ def strategy_backtest(
         "total_cost": cost_paid,
         "avg_turnover": turnover_sum / n,
         "episodes": episodes,
+        "weekly_returns": rets,  # 触发周净收益序列（蒙特卡洛周级 bootstrap 单元）
+    }
+
+
+def monte_carlo(
+    weekly_returns: list[float],
+    episodes: list[dict],
+    n_sims: int = 1000,
+    seed: int = 42,
+    mode: str = "episode",
+) -> dict:
+    """bootstrap 蒙特卡洛：从采样单元（周 或 触发段）有放回抽，拼接 109 触发周路径。
+
+    - mode="week"：109 个触发周 iid 有放回（忽略段内序列相关，分布偏乐观）
+    - mode="episode"：33 个触发段为块，整段有放回（保留段内相关，更真实）
+    年化口径与真实路径一致（109 触发周分布在 11.5 年：ann = nav^(1/11.5)-1）。
+    """
+    rng = random.Random(seed)
+    n_weeks = len(weekly_returns)
+    if mode == "week":
+        units = [[r] for r in weekly_returns]
+    elif mode == "episode":
+        units = [ep["returns"] for ep in episodes]
+    else:
+        raise ValueError(f"未知 mc 模式: {mode}（支持 week|episode）")
+
+    sims = []
+    for _ in range(n_sims):
+        rets: list[float] = []
+        while len(rets) < n_weeks:
+            rets.extend(rng.choice(units))
+        rets = rets[:n_weeks]
+        nav = 1.0
+        peak, mdd = 1.0, 0.0
+        for r in rets:
+            nav *= 1 + r
+            peak = max(peak, nav)
+            mdd = max(mdd, (peak - nav) / peak)
+        # 双口径年化：触发期（109 周/52 ≈ 2.1 年，策略"用钱时"的资金效率）与
+        # 全期（11.5 年，总资金回报——空仓 86% 时间的资金闲置成本）
+        ann_active = nav ** (1 / (n_weeks / 52)) - 1
+        ann_total = nav ** (1 / 11.5) - 1
+        mean_r = sum(rets) / n_weeks
+        var = sum((r - mean_r) ** 2 for r in rets) / max(n_weeks - 1, 1)
+        vol = var ** 0.5 * (52 ** 0.5)
+        sharpe = ann_active / vol if vol > 0 else 0.0
+        sims.append({
+            "nav": nav, "annual_return_active": ann_active,
+            "annual_return_total": ann_total, "sharpe": sharpe, "max_drawdown": mdd,
+        })
+
+    def q(key: str, p: float) -> float:
+        vals = sorted(s[key] for s in sims)
+        return vals[min(int(p * n_sims), n_sims - 1)]
+
+    dist = {
+        k: [q(k, p) for p in (0.05, 0.25, 0.50, 0.75, 0.95)]
+        for k in ("nav", "annual_return_active", "annual_return_total", "sharpe", "max_drawdown")
+    }
+    return {
+        "mode": mode,
+        "n_sims": n_sims,
+        "seed": seed,
+        "n_units": len(units),
+        "dist": dist,
+        "risk": {
+            "p_active_negative": sum(1 for s in sims if s["annual_return_active"] <= 0) / n_sims,
+            "p_active_below_10pct": sum(1 for s in sims if s["annual_return_active"] < 0.10) / n_sims,
+            "p_total_below_10pct": sum(1 for s in sims if s["annual_return_total"] < 0.10) / n_sims,
+            "p_mdd_above_30pct": sum(1 for s in sims if s["max_drawdown"] > 0.30) / n_sims,
+            "p_sharpe_below_1": sum(1 for s in sims if s["sharpe"] < 1.0) / n_sims,
+        },
     }
 
 
@@ -176,6 +250,10 @@ def main() -> None:
     ap.add_argument("--skip-first-week", action="store_true", help="触发段首周空仓缓冲")
     ap.add_argument("--stop-loss", type=float, default=None,
                     help="段内组合回撤止损（如 0.15 = 从段内峰值回撤 15% 退出该段）")
+    ap.add_argument("--mc", type=int, default=0, help="蒙特卡洛模拟次数（0=关闭）")
+    ap.add_argument("--mc-mode", choices=["week", "episode"], default="episode",
+                    help="bootstrap 采样单元：week=触发周 iid；episode=触发段 block（默认）")
+    ap.add_argument("--mc-seed", type=int, default=42)
     args = ap.parse_args()
 
     panel = load_panel(Path(args.panel))
@@ -205,6 +283,11 @@ def main() -> None:
         mkt20=mkt20, intensity=args.intensity, skip_first_week=args.skip_first_week,
         stop_loss=args.stop_loss,
     )
+    if args.mc:
+        result["monte_carlo"] = monte_carlo(
+            result["weekly_returns"], result["episodes"],
+            n_sims=args.mc, seed=args.mc_seed, mode=args.mc_mode,
+        )
     print(json.dumps(result, ensure_ascii=False, indent=2))
 
 

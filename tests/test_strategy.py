@@ -138,3 +138,32 @@ def test_strategy_stop_loss_below_threshold_holds():
     r = strategy_backtest(pl.DataFrame(rows), k=2, cost_bps=0, stop_loss=0.15)
     assert r["nav"] == pytest.approx(1.05 * 0.90 * 1.05, rel=1e-9)
     assert not any(ep.get("stopped") for ep in r["episodes"])
+
+
+def test_monte_carlo_deterministic_with_seed():
+    # 固定 seed → 结果确定；n_sims 与分位数结构完整
+    from tools.strategy_crash_bottom import monte_carlo
+    r = strategy_backtest(_panel(), k=2, cost_bps=0)
+    mc1 = monte_carlo(r["weekly_returns"], r["episodes"], n_sims=50, seed=7)
+    mc2 = monte_carlo(r["weekly_returns"], r["episodes"], n_sims=50, seed=7)
+    assert mc1 == mc2
+    for k in ("nav", "annual_return_active", "annual_return_total", "sharpe", "max_drawdown"):
+        assert len(mc1["dist"][k]) == 5  # p5/p25/p50/p75/p95
+    assert mc1["risk"]["p_active_negative"] <= 1.0
+
+
+def test_monte_carlo_episode_mode_uses_episode_blocks():
+    # episode 模式采样单元 = 段数；week 模式 = 周数
+    from tools.strategy_crash_bottom import monte_carlo
+    r = strategy_backtest(_panel(), k=2, cost_bps=0)
+    mc_ep = monte_carlo(r["weekly_returns"], r["episodes"], n_sims=20, mode="episode")
+    mc_wk = monte_carlo(r["weekly_returns"], r["episodes"], n_sims=20, mode="week")
+    assert mc_ep["n_units"] == len(r["episodes"])
+    assert mc_wk["n_units"] == r["weeks"]
+    assert mc_ep["risk"]["p_active_negative"] <= 1.0
+
+
+def test_monte_carlo_unknown_mode_raises():
+    from tools.strategy_crash_bottom import monte_carlo
+    with pytest.raises(ValueError, match="mc"):
+        monte_carlo([0.01], [{"returns": [0.01]}], n_sims=5, mode="bad")
