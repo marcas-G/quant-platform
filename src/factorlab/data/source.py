@@ -17,7 +17,9 @@ _DAILY_BASIC_MAP = {
     "pe_ttm": "pe_ttm", "pb": "pb", "dv_ratio": "dv_ratio",
     "volume_ratio": "volume_ratio",
 }
-_KNOWN_COLS = {"date", "code", "adj_factor", *_PLATFORM_COLS, *_DAILY_BASIC_MAP}
+_KNOWN_COLS = {"date", "code", "adj_factor", "idx_ret", *_PLATFORM_COLS, *_DAILY_BASIC_MAP}
+# 市场状态代理：指数日收益（cols 含 idx_ret 时 join；默认中证 1000——股灾时段最丰富）
+_MARKET_INDEX = "000852.SH"
 
 
 def load_daily(
@@ -65,10 +67,14 @@ def load_daily(
         select_items.append("a.adj_factor")
     select_items += [f"d.{_COL_MAP.get(c, c)} AS {c}" for c in daily_cols]
     select_items += [f"b.{_DAILY_BASIC_MAP[c]} AS {c}" for c in basic_cols]
+    if "idx_ret" in requested:
+        select_items.append("(m.pct_chg / 100.0) AS idx_ret")
     sql = "SELECT " + ", ".join(select_items) + " FROM daily d"
     sql += " JOIN adj_factor a ON d.trade_date = a.trade_date AND d.ts_code = a.ts_code"
     if basic_cols:
         sql += " LEFT JOIN daily_basic b ON d.trade_date = b.trade_date AND d.ts_code = b.ts_code"
+    if "idx_ret" in requested:
+        sql += f" LEFT JOIN index_daily m ON d.trade_date = m.trade_date AND m.ts_code = '{_MARKET_INDEX}'"
     sql += f" WHERE {' AND '.join(where)} ORDER BY d.ts_code, d.trade_date"
 
     with duckdb.connect(str(db_path), read_only=True) as con:

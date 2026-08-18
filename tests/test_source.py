@@ -224,3 +224,19 @@ def test_daily_basic_extended_columns_loaded(tmp_path):
     assert df["pe_ttm"].to_list() == pytest.approx([12.0] * 3)
     assert df["pb"].to_list() == pytest.approx([1.5] * 3)
     assert df["dv_ratio"].to_list() == pytest.approx([0.02] * 3)
+
+
+def test_market_index_ret_loaded(tmp_path):
+    """idx_ret（市场指数日收益）按需 join 加载。"""
+    db = tmp_path / "t.duckdb"
+    con = duckdb.connect(str(db))
+    con.execute("create table daily (trade_date varchar, ts_code varchar, open double, high double, low double, close double, vol double, amount double)")
+    con.execute("create table adj_factor (trade_date varchar, ts_code varchar, adj_factor double)")
+    con.execute("create table index_daily (ts_code varchar, trade_date varchar, close double, open double, high double, low double, pre_close double, change double, pct_chg double, vol double, amount double)")
+    for d in ["20240102", "20240103", "20240104"]:
+        con.execute("insert into daily values (?, ?, 10, 11, 9, 10.5, 1000, 100000)", [d, "000001.SZ"])
+        con.execute("insert into adj_factor values (?, ?, 1.0)", [d, "000001.SZ"])
+        con.execute("insert into index_daily values ('000852.SH', ?, 1000, 1001, 999, 1000.5, 1000, 10, 1.0, 0, 0)", [d])
+    con.close()
+    df = load_daily(db, ["000001"], cols=["close", "idx_ret"]).collect()
+    assert df["idx_ret"].to_list() == pytest.approx([0.01] * 3)  # pct_chg=1.0 → 0.01
