@@ -156,6 +156,8 @@ class FactorResult:
 
 
 _WARMUP_SAFETY_PAD = 20  # 自动 warmup 的安全垫：覆盖 ts_delay 等窗口内偏移
+# spec 2.5 对齐输出列（分块路径每块算完即裁剪到这些列再累积，避免全列面板堆叠 OOM）
+_CHUNK_KEEP = ["date", "code", "signal", "forward_return_5d", "forward_return_20d", "close"]
 
 
 def _load_base_adj(con: duckdb.DuckDBPyConnection, date_end: str | None) -> pl.DataFrame:
@@ -260,11 +262,12 @@ def run_factor(spec: FactorSpec, ctx: RunContext) -> FactorResult:
                 chunk_panel = _compute_panel(
                     con, ctx, spec, formula, codes, load_start.isoformat(), chunk_end.isoformat(),
                     cal_chunk, base_adj)
-                panels.append(chunk_panel.filter(pl.col("date") >= chunk_start))
+                # 每块算完即裁剪到对齐输出列：全列面板堆叠会让峰值内存 = 所有块之和（OOM）
+                chunk_panel = chunk_panel.filter(pl.col("date") >= chunk_start)
+                panels.append(chunk_panel.select([c for c in _CHUNK_KEEP if c in chunk_panel.columns]))
             panel = pl.concat(panels)
         # spec 2.5 对齐输出：date, code, signal, forward_return_h, close
-        keep = ["date", "code", "signal", "forward_return_5d", "forward_return_20d", "close"]
-        panel = panel.select([c for c in keep if c in panel.columns])
+        panel = panel.select([c for c in _CHUNK_KEEP if c in panel.columns])
     finally:
         con.close()
 
