@@ -64,7 +64,7 @@ M4a 打通「平台库数据 → 因子计算 → 复权视图 → 周频评估�
 |------|------|
 | `factorlab version` | 打印包版本 |
 | `factorlab lint <spec.yaml>` | 校验 Spec 与因子脚本 AST，失败时以非 0 退出 |
-| `factorlab run <spec.yaml> [--universe U] [--max-memory M] [--output-dir DIR] [--no-float32] [--backtest/--no-backtest] [--groups N] [--set k=v ...]` | 计算因子并周频评估 + 分层回测（默认），落盘 `results/<name>/`（`--set` 生成 `results/<name>_<k><v>.../` 参数变体） |
+| `factorlab run <spec.yaml> [--universe U] [--max-memory M] [--output-dir DIR] [--no-float32] [--backtest/--no-backtest] [--groups N] [--set k=v ...] [--chunk-days N] [--warmup-days N]` | 计算因子并周频评估 + 分层回测（默认），落盘 `results/<name>/`（`--set` 生成 `results/<name>_<k><v>.../` 参数变体；`--chunk-days` 日期分块，见 §运行-分块计算） |
 | `factorlab list` | 列出已保存因子与最近运行摘要（扫描 `results_dir/*/summary.json`，按运行时间倒序） |
 | `factorlab show <name>` | 查看单因子完整摘要（spec 原文/评估/分层回测） |
 | `factorlab corr <name1> <name2> ...` | 因子两两相关性（≥2 个）：周度横截面秩相关均值 + 全局 Pearson；任一因子无 results 报错（数据源 `results/<name>/panel.parquet` 的 signal，按 date+code inner join；join 后超 2000 万行每周降采样 5000 只） |
@@ -96,6 +96,11 @@ M4a 打通「平台库数据 → 因子计算 → 复权视图 → 周频评估�
   独立目录，与默认变体（`results/<name>/`）并存不覆盖。值类型解析
   int → float → bool（`true/false`）→ str；格式错误（缺 `=` 或空值）以非 0
   退出提示。`--output-dir` 显式给出时优先于变体目录。
+- `--chunk-days N`：日期分块（交易日/块，`N >= 1`；缺省单块整段跑）。长样本
+  （2015+ 全市场）超过 16GB 内存护栏时使用，语义保证与整段跑逐 cell 一致
+  （见下方"分块计算"）。
+- `--warmup-days N`：TS 窗口预热天数（`N >= 0`；缺省按公式自动提取窗口最大值
+  + 20 安全垫）。
 - 落盘：`panel.parquet`（run_factor 日频面板）、`weekly.parquet`（周频对齐面板——
   评估/回测输入）、`summary.json`（run_factor 摘要 + `evaluation` 字段——quant_core
   周频评估 + `layered_backtest` 分层回测，CLI 层追加后重写）。
@@ -110,7 +115,34 @@ factorlab run factor/demo.yaml --groups 5          # 5 档分层回测
 factorlab run factor/demo.yaml --no-backtest       # 仅评估，不产分层回测
 factorlab run factor/demo.yaml --set win=100       # 参数变体（results/demo_win100/）
 factorlab run factor/demo.yaml --set win=100 --set gain=1.5   # 多变体参数
+factorlab run factor/crash_bottom_leader_timed.yaml --chunk-days 500   # 2015-2026 分块计算
 ```
+
+### 分块计算（`--chunk-days`）
+
+长样本（2015+）全市场面板的 date×code 全网格超过 16GB 无页面文件内存护栏时
+（实测 ~850 交易日可跑、再长段错误），按交易日分块计算：日历切成
+`--chunk-days` 交易日/块，每块独立跑完整流水线（加载→停牌补全→前向收益→
+复权视图→因子→process），块间无数据依赖，最后拼接。
+
+**语义保证**（与单块整段跑逐 cell 一致，回归测试验证）：
+
+- TS 窗口（`ts_*`/`ta_*`）：每块带 warmup 重叠段（自动提取公式窗口最大值
+  + 20 天安全垫，覆盖 `ts_delay` 等偏移；纯横截面公式 warmup=0），窗口历史完整；
+- CS 算子（`cs_rank`/process 链的 winsorize/standardize 等 per-date 横截面）：
+  块内每日期全市场股票完整，结果与整段跑一致；
+- qfq 复权：块内 `adj_factor` 按全局基准（样本末每代码最新 adj）归一，绝对水平
+  类因子（直接用 close 值的公式）跨块一致；hfq/pit_qfq 无需处理（hfq 无基准；
+  pit_qfq 的 asof 全局固定）。
+
+**已知限制**：
+
+- 每块块尾的 `forward_return_h` 为 null（块尾无未来数据；单块跑只有样本末如此），
+  周频评估时该周跳过，块大小 500 天时损失 <1%；
+- process 链的 `fillna(method="forward")` 在块首重新填充，块边界前几行与单块跑
+  略异（低频使用）；
+- 块大小 + warmup 应控制在约 850 交易日以内（单块内存 ≈ 已验证可跑的
+  3.5 年量级）。
 
 ### `factorlab list` / `factorlab show <name>`
 
