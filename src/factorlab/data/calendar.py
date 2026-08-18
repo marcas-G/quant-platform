@@ -43,3 +43,31 @@ def fill_suspensions(df: pl.DataFrame, calendar: pl.Series) -> pl.DataFrame:
     codes = pl.DataFrame({"code": df["code"].unique()})
     grid = pl.DataFrame({"date": calendar}).join(codes, how="cross")
     return grid.join(df, on=["date", "code"], how="left")
+
+
+def chunk_calendar(
+    cal: pl.Series,
+    chunk_days: int,
+    warmup_days: int = 0,
+) -> list[tuple[datetime.date, datetime.date, datetime.date]]:
+    """日历切块：(load_start, chunk_start, chunk_end) 三元组（日期含两端，升序）。
+
+    chunk_days：每块交易日数（>=1）；warmup_days：块首向前多取的预热天数
+    （TS 窗口历史，>=0；首块越界自动截断）。load 段 = chunk 段 + warmup 段，
+    相邻块 load 段重叠 warmup_days 天（每块独立重取，无块间依赖）。
+    cal 需升序去重。空日历 → []。
+    """
+    if chunk_days < 1:
+        raise ValueError(f"chunk_days 必须 >= 1（收到 {chunk_days}）")
+    if warmup_days < 0:
+        raise ValueError(f"warmup_days 必须 >= 0（收到 {warmup_days}）")
+    dates = cal.to_list()
+    n = len(dates)
+    if n == 0:
+        return []
+    chunks = []
+    for start in range(0, n, chunk_days):
+        end = min(start + chunk_days, n) - 1
+        load_start = max(start - warmup_days, 0)
+        chunks.append((dates[load_start], dates[start], dates[end]))
+    return chunks

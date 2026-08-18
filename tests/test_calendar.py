@@ -5,7 +5,7 @@ import polars as pl
 import pytest
 from polars.exceptions import ColumnNotFoundError
 
-from factorlab.data.calendar import fill_suspensions, trading_calendar
+from factorlab.data.calendar import chunk_calendar, fill_suspensions, trading_calendar
 
 
 # ---------- trading_calendar ----------
@@ -169,3 +169,65 @@ def test_fill_suspensions_missing_columns_raises():
     df = pl.DataFrame({"date": [datetime.date(2024, 1, 2)], "close": [10.0]})  # 缺 code
     with pytest.raises(ColumnNotFoundError):
         fill_suspensions(df, calendar)
+
+
+# ---------- chunk_calendar ----------
+
+
+def _cal(days: list[str]) -> pl.Series:
+    return pl.Series("date", [datetime.date.fromisoformat(d) for d in days], dtype=pl.Date)
+
+
+def test_chunk_calendar_basic_chunks():
+    cal = _cal(["2024-01-02", "2024-01-03", "2024-01-04", "2024-01-05",
+                "2024-01-08", "2024-01-09", "2024-01-10", "2024-01-11",
+                "2024-01-12", "2024-01-15", "2024-01-16", "2024-01-17"])
+    chunks = chunk_calendar(cal, chunk_days=5)
+    assert chunks == [
+        (datetime.date(2024, 1, 2), datetime.date(2024, 1, 2), datetime.date(2024, 1, 8)),
+        (datetime.date(2024, 1, 9), datetime.date(2024, 1, 9), datetime.date(2024, 1, 15)),
+        (datetime.date(2024, 1, 16), datetime.date(2024, 1, 16), datetime.date(2024, 1, 17)),
+    ]
+
+
+def test_chunk_calendar_warmup_overlaps_previous_chunk():
+    # 12 天日历、chunk 5、warmup 2：块 1/2 的 load 段向块首前推 2 个交易日
+    cal = _cal(["2024-01-02", "2024-01-03", "2024-01-04", "2024-01-05",
+                "2024-01-08", "2024-01-09", "2024-01-10", "2024-01-11",
+                "2024-01-12", "2024-01-15", "2024-01-16", "2024-01-17"])
+    chunks = chunk_calendar(cal, chunk_days=5, warmup_days=2)
+    assert chunks[1] == (
+        datetime.date(2024, 1, 5), datetime.date(2024, 1, 9), datetime.date(2024, 1, 15),
+    )
+    assert chunks[2] == (
+        datetime.date(2024, 1, 12), datetime.date(2024, 1, 16), datetime.date(2024, 1, 17),
+    )
+
+
+def test_chunk_calendar_warmup_truncated_at_head():
+    # 首块 load 段越界（warmup 超过日历起点）→ 截断到日历首日
+    cal = _cal(["2024-01-02", "2024-01-03", "2024-01-04"])
+    chunks = chunk_calendar(cal, chunk_days=2, warmup_days=10)
+    assert chunks[0] == (datetime.date(2024, 1, 2), datetime.date(2024, 1, 2), datetime.date(2024, 1, 3))
+    assert chunks[1] == (datetime.date(2024, 1, 2), datetime.date(2024, 1, 4), datetime.date(2024, 1, 4))
+
+
+def test_chunk_calendar_exact_division():
+    cal = _cal(["2024-01-02", "2024-01-03", "2024-01-04", "2024-01-05", "2024-01-08", "2024-01-09"])
+    chunks = chunk_calendar(cal, chunk_days=3)
+    assert chunks == [
+        (datetime.date(2024, 1, 2), datetime.date(2024, 1, 2), datetime.date(2024, 1, 4)),
+        (datetime.date(2024, 1, 5), datetime.date(2024, 1, 5), datetime.date(2024, 1, 9)),
+    ]
+
+
+def test_chunk_calendar_empty_calendar_returns_empty():
+    assert chunk_calendar(pl.Series("date", [], dtype=pl.Date), chunk_days=5) == []
+
+
+def test_chunk_calendar_invalid_params_raise():
+    cal = _cal(["2024-01-02", "2024-01-03"])
+    with pytest.raises(ValueError, match="chunk_days"):
+        chunk_calendar(cal, chunk_days=0)
+    with pytest.raises(ValueError, match="warmup_days"):
+        chunk_calendar(cal, chunk_days=5, warmup_days=-1)
