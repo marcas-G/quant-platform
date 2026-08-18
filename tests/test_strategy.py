@@ -315,3 +315,63 @@ def test_strategy_long_stops_adding_when_trigger_ends():
     expected = (1 + 0.25 * 0.02) ** 3
     assert r["nav"] == pytest.approx(expected, rel=1e-9)
     assert r["episodes"][0]["weeks"] == 3
+
+
+# ---------- 死等股灾（知乎战法） ----------
+
+
+def _wait_df(rows: list[dict]) -> pl.DataFrame:
+    """构造 wait_crash 输入：date/idx_ret/semi_ret/total_vol/limit_down_cnt。"""
+    return pl.DataFrame(rows)
+
+
+def test_wait_crash_trigger_requires_panic_confirmation():
+    from tools.strategy_wait_crash import prepare
+    rows = []
+    for i in range(25):
+        rows.append({
+            "date": datetime.date(2024, 1, 2) + datetime.timedelta(days=i),
+            "idx_ret": -0.01, "semi_ret": -0.01,
+            "total_vol": 100.0, "limit_down_cnt": 10,
+        })
+    df = prepare(_wait_df(rows))
+    # 20 日累计 -20% 但无反弹（idx 全阴线）→ 不触发
+    assert df["triggered"].sum() == 0
+    # 加入反弹日 + 缩量 → 触发
+    rows.append({
+        "date": datetime.date(2024, 1, 2) + datetime.timedelta(days=25),
+        "idx_ret": 0.02, "semi_ret": 0.02,
+        "total_vol": 80.0, "limit_down_cnt": 10,
+    })
+    df2 = prepare(_wait_df(rows))
+    assert df2["triggered"].sum() >= 1
+
+
+def test_wait_crash_stop_loss_and_cash_preserved():
+    from tools.strategy_wait_crash import wait_crash_backtest
+    # 触发买入后标的连跌到 -10% → 止损；现金保留（非投入部分不损失）
+    rows = []
+    for i in range(28):
+        rows.append({"date": datetime.date(2024, 1, 2) + datetime.timedelta(days=i),
+                     "idx_ret": -0.02, "semi_ret": -0.03,
+                     "total_vol": 100.0, "limit_down_cnt": 10})
+    rows[22]["idx_ret"] = 0.03; rows[22]["total_vol"] = 80.0  # 触发日（窗口满后，反弹+缩量）
+    r = wait_crash_backtest(_wait_df(rows))
+    # 批 1 = 30% 仓，标的跌到 -10% → 止损：净值 = 0.7 + 0.3×0.9 = 0.97（近似）
+    assert r["nav"] < 1.0
+    assert any(ep["exit"] == "stop_loss" for ep in r["episodes"])
+
+
+def test_wait_crash_take_profit_sells_in_two_days():
+    from tools.strategy_wait_crash import wait_crash_backtest
+    # 触发买入后标的反弹 → 盈利确认 → 1 日卖 70%、2 日清仓
+    rows = []
+    for i in range(28):
+        rows.append({"date": datetime.date(2024, 1, 2) + datetime.timedelta(days=i),
+                     "idx_ret": -0.02, "semi_ret": -0.01,
+                     "total_vol": 100.0, "limit_down_cnt": 10})
+    rows[22]["idx_ret"] = 0.03; rows[22]["total_vol"] = 80.0  # 20 日窗口满后触发
+    for i in (23, 24):  # 买入后两天反弹
+        rows[i]["semi_ret"] = 0.03
+    r = wait_crash_backtest(_wait_df(rows))
+    assert any(ep["exit"] == "take_profit" for ep in r["episodes"])
