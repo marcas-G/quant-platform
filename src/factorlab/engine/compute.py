@@ -266,6 +266,8 @@ def run_factor(spec: FactorSpec, ctx: RunContext) -> FactorResult:
                 chunk_panel = chunk_panel.filter(pl.col("date") >= chunk_start)
                 panels.append(chunk_panel.select([c for c in _CHUNK_KEEP if c in chunk_panel.columns]))
             panel = pl.concat(panels)
+            # 立即释放全部块级引用（含循环残留的最后一块全列面板）：评估阶段需要剩余内存
+            del panels, chunk_panel, cal_chunk, base_adj
         # spec 2.5 对齐输出：date, code, signal, forward_return_h, close
         panel = panel.select([c for c in _CHUNK_KEEP if c in panel.columns])
     finally:
