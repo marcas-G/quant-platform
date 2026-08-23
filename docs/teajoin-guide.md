@@ -1,7 +1,9 @@
 # teajoin Tushare 代理使用指南（2026-08-16 存档）
 
 > 来源：`https://teajoin.com/g` 使用指南页（访问验证后内容）。
-> 平台配置：API Key 存于项目 `.env`（`FACTORLAB_TEAJOIN_TOKEN`，gitignored），到期 2026-08-22。
+> 平台配置：API Key 存于项目 `.env`（`FACTORLAB_TEAJOIN_TOKEN`，gitignored）。
+> **状态（2026-08-23）：API Key 已于 2026-08-22 到期，live 集成测试因此 skip；
+> 续期需按第 1 节重新兑换 API Key 并更新 `.env`。**
 
 ## 使用前必读
 

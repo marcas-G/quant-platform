@@ -5,6 +5,19 @@
 
 ## 硬性要求
 
+### 分支约定：研究不污染平台主线（最高优先级）
+
+- `main` 只收**平台改动**：`src/factorlab/`、`tests/`（平台测试）、`docs/interface.md`、
+  `docs/superpowers/`（平台设计与计划）、`docs/data-ops-playbook.md`、`docs/teajoin-guide.md`、
+  README、pyproject 等。
+- **研究内容**（因子定义与档案 `factor/`、`docs/factors/`、挖掘轮次 `results/`、
+  策略回测 `tools/`、`docs/strategies/`、factor-mine 技能与 playbook）一律提交到
+  **`research` 分支**（独立 worktree，见 `.claude/worktrees/`），绝不进 `main`。
+- 远程仓库结构与本地一致：`main` 纯平台，`research` 存研究。
+- 若某项改动同时涉及平台与研究（如数据层新增字段被因子使用）：平台部分提交到
+  `main`（提交信息用平台前缀 `feat(data)`/`fix(engine)` 等），研究部分提交到 `research`。
+- 禁止以研究主题（`feat(factor)`/`feat(strategy)` 等）作为 `main` 提交信息。
+
 ### 文档和测试必须做好、写全面（最高优先级）
 
 任何代码改动，验收时同时检查文档与测试是否同步、全面，不满足不算完成：
