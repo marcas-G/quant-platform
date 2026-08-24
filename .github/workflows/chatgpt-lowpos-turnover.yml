@@ -5,7 +5,7 @@ on:
     branches: [main]
     paths:
       - 'research/segment_structure_diagnostic.py'
-      - 'research/gradual_turnover_recall.py'
+      - 'research/miss_m123_diagnostic.py'
       - '.github/workflows/chatgpt-lowpos-turnover.yml'
 
 jobs:
@@ -27,14 +27,21 @@ jobs:
           done
       - name: Rebuild structural target events
         run: python research/segment_structure_diagnostic.py
-      - name: Run gradual turnover recall diagnostic
-        run: python research/gradual_turnover_recall.py
-      - name: Print gradual recall grid
+      - name: Run M1 M2 M3 miss decomposition
+        run: python research/miss_m123_diagnostic.py
+      - name: Print M123 summaries
         run: |
-          cat bt_out/gradual_miss_feature_summary.csv
-          echo '--- GRID HEAD ---'
-          head -40 bt_out/gradual_recall_grid.csv
+          echo '--- CLASS SUMMARY ---'
+          cat bt_out/m123_class_summary.csv
+          echo '--- M2 POSITION BANDS ---'
+          cat bt_out/m2_position_bands.csv
+          echo '--- POSITION CAP SENSITIVITY ---'
+          cat bt_out/m2_poscap_sensitivity.csv
+          echo '--- M1 TIMING ---'
+          cat bt_out/m1_timing_offsets.csv
+          echo '--- M3 TOP POS20 ---'
+          head -20 bt_out/m3_gradual_rank_poscap_20.csv
       - uses: actions/upload-artifact@v4
         with:
-          name: lowpos-turnover-gradual-recall
+          name: lowpos-turnover-m123-diagnostic
           path: bt_out/
