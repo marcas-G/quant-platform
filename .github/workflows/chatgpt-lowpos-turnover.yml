@@ -4,6 +4,7 @@ on:
   pull_request:
     branches: [main]
     paths:
+      - 'research/lowpos_turnover-backtest.py'
       - 'research/lowpos_turnover_backtest.py'
       - 'research/recall_diagnostic.py'
       - '.github/workflows/chatgpt-lowpos-turnover.yml'
@@ -25,22 +26,12 @@ jobs:
           for f in kline_000.parquet kline_002.parquet kline_300.parquet kline_600.parquet kline_688.parquet kline_other.parquet; do
             curl -L --fail --retry 3 -o "bt_data/$f" "https://raw.githubusercontent.com/newbiestring-lang/astock/main/$f"
           done
-          ls -lh bt_data
       - name: Run backtest
         run: python research/lowpos_turnover_backtest.py
       - name: Run recall diagnostic
         run: python research/recall_diagnostic.py
-      - name: Print summaries
-        run: |
-          cat bt_out/meta.json
-          echo '--- summary ---'
-          cat bt_out/summary.csv
-          echo '--- date-ew ---'
-          cat bt_out/summary_date_ew.csv
-          echo '--- yearly ---'
-          cat bt_out/summary_by_year.csv
-          echo '--- recall mfe60 ---'
-          cat bt_out/recall_mfe60.csv
+      - name: Print recall
+        run: cat bt_out/recall_mfe60.csv
       - uses: actions/upload-artifact@v4
         with:
           name: lowpos-turnover-backtest-results
