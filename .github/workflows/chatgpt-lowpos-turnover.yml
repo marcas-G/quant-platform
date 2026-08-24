@@ -24,6 +24,18 @@ jobs:
           for f in kline_000.parquet kline_002.parquet kline_300.parquet kline_600.parquet kline_688.parquet kline_other.parquet; do
             curl -L --fail --retry 3 -o "bt_data/$f" "https://raw.githubusercontent.com/newbiestring-lang/astock/main/$f"
           done
+      - name: Patch cooldown alignment
+        run: |
+          python - <<'PY'
+          from pathlib import Path
+          p = Path('research/precision_preentry_diagnostic.py')
+          s = p.read_text()
+          old = "sig['episode_keep'] = sig.groupby('code', group_keys=False).apply(cooldown_events).reset_index(level=0, drop=True)\nepi = sig[sig['episode_keep']].copy()"
+          new = "episode_keep = pd.Series(False, index=sig.index, dtype=bool)\nfor _, x in sig.groupby('code', sort=False):\n    episode_keep.loc[x.index] = cooldown_events(x).astype(bool)\nsig['episode_keep'] = episode_keep\nepi = sig[sig['episode_keep']].copy()"
+          if old not in s:
+              raise SystemExit('cooldown patch target not found')
+          p.write_text(s.replace(old, new))
+          PY
       - name: Run strict pre-entry precision experiment
         run: python research/precision_preentry_diagnostic.py
       - name: Print precision summaries
