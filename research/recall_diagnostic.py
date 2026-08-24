@@ -21,29 +21,31 @@ for c in df.columns:
 df=df.rename(columns=rename)[['date','code','open','high','low','close','turnover']].copy()
 df['date']=pd.to_datetime(df['date'])
 df['code']=df['code'].astype(str).str.replace('.0','',regex=False).str.zfill(6)
-for c in ['open','high','low','close','turnover']: df[c]=pd.to_numeric(df[c],errors='coerce')
+for c in ['open','high','low','close','turnover']:
+    df[c]=pd.to_numeric(df[c],errors='coerce')
 df=df.dropna().sort_values(['code','date']).reset_index(drop=True)
 g=df.groupby('code',group_keys=False)
+
 df['low250']=g['low'].transform(lambda s:s.rolling(250,min_periods=250).min())
 df['high250']=g['high'].transform(lambda s:s.rolling(250,min_periods=250).max())
 df['pos250']=(df['close']-df['low250'])/(df['high250']-df['low250'])
 df['to_ma10_prior']=g['turnover'].transform(lambda s:s.shift(1).rolling(10,min_periods=10).mean())
 df['to_ratio']=df['turnover']/df['to_ma10_prior']
 df['entry_open']=g['open'].shift(-1)
-df['exit_close20']=g['close'].shift(-20)
-df['ret20']=df['exit_close20']/df['entry_open']-1
-# Max high over the next 20 trading days (t+1 ... t+20)
-df['future_high20']=g['high'].transform(lambda s:s.shift(-1).iloc[::-1].rolling(20,min_periods=20).max().iloc[::-1])
-df['mfe20']=df['future_high20']/df['entry_open']-1
+
+# Future maximum high over t+1 ... t+60, measured from executable T+1 open.
+df['future_high60']=g['high'].transform(lambda s:s.shift(-1).iloc[::-1].rolling(60,min_periods=60).max().iloc[::-1])
+df['mfe60']=df['future_high60']/df['entry_open']-1
+
 base=df[df['entry_open'].notna() & df['pos250'].notna() & df['to_ratio'].notna()].copy()
 base['stock_idx']=base.groupby('code').cumcount()
 base['low']=base['pos250'].le(.20)
 base['signal']=base['low'] & base['to_ratio'].ge(1.5)
 
-# signal stock_idx arrays, used for opportunity-level recall within +5 trading days
 sig_idx={c:grp['stock_idx'].to_numpy() for c,grp in base[base.signal].groupby('code')}
 
-def cooldown_positive(frame, mask, cooldown=20):
+def cooldown_positive(frame, mask, cooldown=60):
+    # Count a long trend opportunity once per stock per 60 trading days.
     x=frame[mask].sort_values(['code','stock_idx']).copy()
     keep=[]; last={}
     for r in x.itertuples(index=False):
@@ -55,30 +57,46 @@ def cooldown_positive(frame, mask, cooldown=20):
 
 def captured_within(row, days):
     arr=sig_idx.get(row.code)
-    if arr is None or len(arr)==0: return False
+    if arr is None or len(arr)==0:
+        return False
     p=int(row.stock_idx)
     j=np.searchsorted(arr,p,side='left')
     return j<len(arr) and arr[j] <= p+days
 
 rows=[]
-for metric in ['ret20','mfe20']:
-    valid=base['low'] & base[metric].notna()
-    for thr in [0.10,0.15,0.20]:
-        positive=valid & base[metric].ge(thr)
-        n_pos=int(positive.sum())
-        n_hit=int((positive & base['signal']).sum())
-        same_recall=n_hit/n_pos if n_pos else np.nan
-        sig_valid=base['signal'] & base[metric].notna()
-        precision=float((base.loc[sig_valid,metric]>=thr).mean()) if sig_valid.any() else np.nan
-        opp=cooldown_positive(base,positive,20)
-        cap0=int(sum(captured_within(r,0) for r in opp.itertuples(index=False)))
-        cap5=int(sum(captured_within(r,5) for r in opp.itertuples(index=False)))
-        rows.append(dict(metric=metric,threshold=thr,positive_low_days=n_pos,signal_hits_same_day=n_hit,
-                         recall_same_day=same_recall,precision_same_day=precision,
-                         opportunity_events=len(opp),captured_day0=cap0,recall_opportunity_day0=cap0/len(opp) if len(opp) else np.nan,
-                         captured_within_5d=cap5,recall_opportunity_5d=cap5/len(opp) if len(opp) else np.nan))
+valid=base['low'] & base['mfe60'].notna()
+for thr in [0.30,0.40,0.50,0.60]:
+    positive=valid & base['mfe60'].ge(thr)
+    n_pos=int(positive.sum())
+    n_hit=int((positive & base['signal']).sum())
+    sig_valid=base['signal'] & base['mfe60'].notna()
+    precision=float((base.loc[sig_valid,'mfe60']>=thr).mean()) if sig_valid.any() else np.nan
+    opp=cooldown_positive(base,positive,60)
+    rec={}
+    cap={}
+    for days in [0,5,10,20]:
+        cap[days]=int(sum(captured_within(r,days) for r in opp.itertuples(index=False)))
+        rec[days]=cap[days]/len(opp) if len(opp) else np.nan
+    rows.append(dict(
+        metric='mfe60', threshold=thr,
+        positive_low_days=n_pos,
+        signal_hits_same_day=n_hit,
+        recall_same_day=n_hit/n_pos if n_pos else np.nan,
+        precision_same_day=precision,
+        opportunity_events=len(opp),
+        captured_day0=cap[0], recall_opportunity_day0=rec[0],
+        captured_within_5d=cap[5], recall_opportunity_5d=rec[5],
+        captured_within_10d=cap[10], recall_opportunity_10d=rec[10],
+        captured_within_20d=cap[20], recall_opportunity_20d=rec[20],
+    ))
 res=pd.DataFrame(rows)
-res.to_csv(OUT/'recall_diagnostic.csv',index=False)
-print('--- RECALL DIAGNOSTIC ---')
+res.to_csv(OUT/'recall_mfe60.csv',index=False)
+print('--- MFE60 RECALL DIAGNOSTIC ---')
 print(res.to_string(index=False))
-(OUT/'recall_meta.json').write_text(json.dumps({'definition':'low=pos250<=20%; signal=low and turnover_t/prior10d_mean>=1.5; opportunity cooldown=20 trading days; within5d allows signal from opportunity day through +5 trading days'},ensure_ascii=False,indent=2))
+(OUT/'recall_mfe60_meta.json').write_text(json.dumps({
+    'target':'MFE60 = max(high[t+1:t+60]) / open[t+1] - 1',
+    'low':'pos250 <= 20%',
+    'signal':'low and turnover_t / prior10d_mean >= 1.5',
+    'opportunity_cooldown':'60 trading days per stock',
+    'capture_windows':'signal on opportunity day or within +5/+10/+20 trading days'
+},ensure_ascii=False,indent=2))
