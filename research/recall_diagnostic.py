@@ -93,4 +93,4 @@ print(res.to_string(index=False))
     'opportunity_cooldown':'60 trading days per stock',
     'capture_windows':'signal on opportunity day or within +5/+10/+20 trading days'
 },ensure_ascii=False,indent=2))
-# ci trigger marker: maxup60 target v2
+# ci trigger marker: maxup60 final run
