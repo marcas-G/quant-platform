@@ -33,7 +33,6 @@ df['to_ma10_prior']=g['turnover'].transform(lambda s:s.shift(1).rolling(10,min_p
 df['to_ratio']=df['turnover']/df['to_ma10_prior']
 df['entry_open']=g['open'].shift(-1)
 
-# Future maximum high over t+1 ... t+60, measured from executable T+1 open.
 df['future_high60']=g['high'].transform(lambda s:s.shift(-1).iloc[::-1].rolling(60,min_periods=60).max().iloc[::-1])
 df['mfe60']=df['future_high60']/df['entry_open']-1
 
@@ -45,7 +44,6 @@ base['signal']=base['low'] & base['to_ratio'].ge(1.5)
 sig_idx={c:grp['stock_idx'].to_numpy() for c,grp in base[base.signal].groupby('code')}
 
 def cooldown_positive(frame, mask, cooldown=60):
-    # Count a long trend opportunity once per stock per 60 trading days.
     x=frame[mask].sort_values(['code','stock_idx']).copy()
     keep=[]; last={}
     for r in x.itertuples(index=False):
@@ -72,23 +70,18 @@ for thr in [0.30,0.40,0.50,0.60]:
     sig_valid=base['signal'] & base['mfe60'].notna()
     precision=float((base.loc[sig_valid,'mfe60']>=thr).mean()) if sig_valid.any() else np.nan
     opp=cooldown_positive(base,positive,60)
-    rec={}
-    cap={}
+    rec={}; cap={}
     for days in [0,5,10,20]:
         cap[days]=int(sum(captured_within(r,days) for r in opp.itertuples(index=False)))
         rec[days]=cap[days]/len(opp) if len(opp) else np.nan
-    rows.append(dict(
-        metric='mfe60', threshold=thr,
-        positive_low_days=n_pos,
-        signal_hits_same_day=n_hit,
+    rows.append(dict(metric='mfe60', threshold=thr,
+        positive_low_days=n_pos, signal_hits_same_day=n_hit,
         recall_same_day=n_hit/n_pos if n_pos else np.nan,
-        precision_same_day=precision,
-        opportunity_events=len(opp),
+        precision_same_day=precision, opportunity_events=len(opp),
         captured_day0=cap[0], recall_opportunity_day0=rec[0],
         captured_within_5d=cap[5], recall_opportunity_5d=rec[5],
         captured_within_10d=cap[10], recall_opportunity_10d=rec[10],
-        captured_within_20d=cap[20], recall_opportunity_20d=rec[20],
-    ))
+        captured_within_20d=cap[20], recall_opportunity_20d=rec[20]))
 res=pd.DataFrame(rows)
 res.to_csv(OUT/'recall_mfe60.csv',index=False)
 print('--- MFE60 RECALL DIAGNOSTIC ---')
