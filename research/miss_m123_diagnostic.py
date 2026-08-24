@@ -57,15 +57,15 @@ for thr in [1.15, 1.20, 1.25]:
     df[col] = flag.groupby(df['code']).transform(lambda s: s.rolling(5, min_periods=5).sum())
 
 # Future 60-trading-day max upside from T+1 open. This is LABEL ONLY.
-def add_forward_60(x):
-    x = x.copy()
-    fut_high = x['high'].shift(-1)
-    x['fwd_high60'] = fut_high.iloc[::-1].rolling(60, min_periods=60).max().iloc[::-1].to_numpy()
-    x['next_open'] = x['open'].shift(-1)
-    x['maxup60_from_signal'] = x['fwd_high60'] / x['next_open'] - 1.0
-    return x
+def forward_high60(s):
+    # At original t: max(high[t+1:t+60]). Reverse rolling avoids building 60 shifted columns.
+    out = s.shift(-1).iloc[::-1].rolling(60, min_periods=60).max().iloc[::-1]
+    out.index = s.index
+    return out
 
-df = df.groupby('code', group_keys=False).apply(add_forward_60).reset_index(drop=True)
+df['fwd_high60'] = g['high'].transform(forward_high60)
+df['next_open'] = g['open'].shift(-1)
+df['maxup60_from_signal'] = df['fwd_high60'] / df['next_open'] - 1.0
 df['stock_idx'] = df.groupby('code').cumcount()
 
 # -----------------------------------------------------------------------------
@@ -156,7 +156,6 @@ for ev in targets.itertuples(index=False):
             'raw_lowband_shock_count': int((raw['pos250'] <= 0.20).sum()),
         })
     if not eff.empty:
-        # Closest-to-low-band effective shock is the one most relevant to testing the 20% boundary.
         chosen = eff.sort_values('pos250').iloc[0]
         rec.update({
             'effective_shock_count_anypos': len(eff),
@@ -179,7 +178,6 @@ for ev in targets.itertuples(index=False):
 events = pd.DataFrame(rows)
 events.to_csv(OUT / 'm123_event_decomposition.csv', index=False)
 
-# Main class counts
 class_order = [
     'HIT_effective_lowband_R1',
     'M1_timing_raw_shock_too_early',
@@ -216,8 +214,7 @@ else:
     m2_band = pd.DataFrame(columns=['band', 'n', 'share_M2'])
 m2_band.to_csv(OUT / 'm2_position_bands.csv', index=False)
 
-# Direct sensitivity: how much target recall would rise if ONLY the position cap changed,
-# while keeping r1>=1.5 and MaxUp60-from-signal>=50% unchanged.
+# Direct sensitivity: change ONLY the position cap; keep r1>=1.5 and remaining +50% label fixed.
 poscap_rows = []
 for cap in [0.20, 0.25, 0.30, 0.40, 1.00]:
     hit_count = 0
@@ -234,7 +231,7 @@ for cap in [0.20, 0.25, 0.30, 0.40, 1.00]:
 pd.DataFrame(poscap_rows).to_csv(OUT / 'm2_poscap_sensitivity.csv', index=False)
 
 # -----------------------------------------------------------------------------
-# M1: timing profile — shocks exist but are too early to leave +50% within next 60d
+# M1 timing profile
 # -----------------------------------------------------------------------------
 m1 = events[events['class'] == 'M1_timing_raw_shock_too_early'].copy()
 if len(m1):
@@ -262,8 +259,6 @@ pd.DataFrame(m1_metrics).to_csv(OUT / 'm1_timing_feature_summary.csv', index=Fal
 
 # -----------------------------------------------------------------------------
 # M3: true no-single-day-shock cases. Test gradual turnover channels.
-# A candidate is counted as an effective gradual capture only if, on that rule day,
-# pos250 is under a chosen cap AND MaxUp60 from T+1 is still >=50%.
 # -----------------------------------------------------------------------------
 gradual_rules = {}
 for thr in [1.10, 1.15, 1.20, 1.25, 1.30]:
@@ -275,7 +270,6 @@ for base_thr in [1.15, 1.20, 1.25]:
     for n in [2, 3, 4]:
         gradual_rules[f'R4_count5_r1ge{str(base_thr).replace(".","p")}_ge{n}'] = lambda x, c=col, n=n: x[c] >= n
 
-# Global low-band signal-day counts to understand noise/candidate inflation.
 base_r1_global = int(((df['pos250'] <= 0.20) & (df['r1'] >= 1.50)).sum())
 global_gradual = {}
 for name, fn in gradual_rules.items():
@@ -312,14 +306,10 @@ for cap in [0.20, 0.25, 0.30]:
 grad = pd.DataFrame(grad_rows)
 grad.to_csv(OUT / 'm3_gradual_rule_grid.csv', index=False)
 
-# Pareto-ish views: prefer high M3 coverage with lower global signal inflation.
 for cap in [0.20, 0.25, 0.30]:
     show = grad[grad['pos_cap'] == cap].sort_values(['m3_coverage', 'global_rule_days_vs_R1_days'], ascending=[False, True])
     show.to_csv(OUT / f'm3_gradual_rank_poscap_{int(cap*100)}.csv', index=False)
 
-# -----------------------------------------------------------------------------
-# Human-readable console output
-# -----------------------------------------------------------------------------
 print('--- M1 / M2 / M3 CLASS SUMMARY ---')
 print(class_summary.to_string(index=False))
 print('\n--- M2 EFFECTIVE SHOCK POSITION BANDS ---')
