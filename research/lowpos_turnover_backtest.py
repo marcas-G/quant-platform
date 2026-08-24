@@ -99,8 +99,25 @@ for f,l in [(sig_ev,'signal_cooldown20'),(low_ev,'low_only_cooldown20')]:
             if len(s): rows.append(dict(group=l,year=y,horizon=h,n=len(s),mean=s.mean(),median=s.median(),win_rate=(s>0).mean()))
 pd.DataFrame(rows).to_csv(OUT/'summary_by_year.csv',index=False)
 
+# Same-date paired control: on each signal date, compare signal stocks vs other low-position stocks
+paired=[]
+for h in H:
+    c=f'ret_{h}d'
+    s=sig_all.groupby('date')[c].mean().rename('signal_mean')
+    ctrl=base[base['low_only'] & ~base['signal']].groupby('date')[c].mean().rename('control_mean')
+    p=pd.concat([s,ctrl],axis=1).dropna()
+    p['alpha']=p['signal_mean']-p['control_mean']
+    a=p['alpha']
+    sd=a.std(ddof=1) if len(a)>1 else np.nan
+    t=a.mean()/(sd/np.sqrt(len(a))) if len(a)>1 and sd>0 else np.nan
+    paired.append(dict(horizon=h,n_dates=len(a),signal_mean=s.loc[p.index].mean(),control_mean=ctrl.loc[p.index].mean(),
+                       alpha_mean=a.mean(),alpha_median=a.median(),alpha_win_rate=(a>0).mean(),t_stat=t))
+pd.DataFrame(paired).to_csv(OUT/'same_date_paired_alpha.csv',index=False)
+
 meta=dict(rows=len(df),stocks=int(df.code.nunique()),date_min=str(df.date.min().date()),date_max=str(df.date.max().date()),
           signal_days=len(sig_all),signal_events=len(sig_ev),low_only_days=len(low_all),low_only_events=len(low_ev))
 (OUT/'meta.json').write_text(json.dumps(meta,ensure_ascii=False,indent=2))
 print(json.dumps(meta,ensure_ascii=False,indent=2))
 print(pd.DataFrame(summary).to_string(index=False))
+print('--- SAME-DATE PAIRED ALPHA ---')
+print(pd.DataFrame(paired).to_string(index=False))
