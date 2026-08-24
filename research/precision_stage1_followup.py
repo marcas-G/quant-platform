@@ -2,7 +2,7 @@ import numpy as np
 import pandas as pd
 
 # Importing re-runs the strict pre-entry experiment and exposes epi/train/val.
-import research.precision_preentry_diagnostic as m
+import precision_preentry_diagnostic as m
 
 OUT = m.OUT
 epi = m.epi.copy()
