@@ -4,8 +4,7 @@ on:
   pull_request:
     branches: [main]
     paths:
-      - 'research/segment_structure_diagnostic.py'
-      - 'research/miss_m123_diagnostic_v2.py'
+      - 'research/precision_preentry_diagnostic.py'
       - '.github/workflows/chatgpt-lowpos-turnover.yml'
 
 jobs:
@@ -25,22 +24,17 @@ jobs:
           for f in kline_000.parquet kline_002.parquet kline_300.parquet kline_600.parquet kline_688.parquet kline_other.parquet; do
             curl -L --fail --retry 3 -o "bt_data/$f" "https://raw.githubusercontent.com/newbiestring-lang/astock/main/$f"
           done
-      - name: Rebuild structural target events
-        run: python research/segment_structure_diagnostic.py
-      - name: Run M1 M2 M3 V2
-        run: python research/miss_m123_diagnostic_v2.py
-      - name: Print M123 V2 summaries
+      - name: Run strict pre-entry precision experiment
+        run: python research/precision_preentry_diagnostic.py
+      - name: Print precision summaries
         run: |
-          cat bt_out/m123_v2_class_summary.csv
-          echo '--- M2 BANDS ---'
-          cat bt_out/m123_v2_m2_bands.csv
-          echo '--- POSCAP ---'
-          cat bt_out/m123_v2_poscap.csv
-          echo '--- M1 OFFSETS ---'
-          cat bt_out/m123_v2_m1_offsets.csv
-          echo '--- M3 GRADUAL TOP ---'
-          head -20 bt_out/m123_v2_m3_gradual.csv
+          echo '--- BASELINES ---'
+          cat bt_out/precision_preentry_baselines.csv
+          echo '--- TOP UNIVARIATE ---'
+          head -21 bt_out/precision_preentry_univariate.csv
+          echo '--- TOP PAIRS ---'
+          head -21 bt_out/precision_preentry_pairs.csv
       - uses: actions/upload-artifact@v4
         with:
-          name: lowpos-turnover-m123-v2
+          name: lowpos-turnover-preentry-precision
           path: bt_out/
