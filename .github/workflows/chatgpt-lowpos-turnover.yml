@@ -4,7 +4,6 @@ on:
   pull_request:
     branches: [main]
     paths:
-      - 'research/lowpos_turnover-backtest.py'
       - 'research/lowpos_turnover_backtest.py'
       - 'research/recall_diagnostic.py'
       - '.github/workflows/chatgpt-lowpos-turnover.yml'
@@ -30,9 +29,9 @@ jobs:
         run: python research/lowpos_turnover_backtest.py
       - name: Run recall diagnostic
         run: python research/recall_diagnostic.py
-      - name: Print recall
-        run: cat bt_out/recall_mfe60.csv
+      - name: Print corrected recall
+        run: cat bt_out/recall_mfe60_corrected.csv
       - uses: actions/upload-artifact@v4
         with:
-          name: lowpos-turnover-backtest-results
+          name: lowpos-turnover-backtest-results-corrected
           path: bt_out/
