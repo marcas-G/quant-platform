@@ -84,7 +84,7 @@ for ev in targets.itertuples(index=False):
         'max_r3_10_pre20_0':pre['r3_10'].max(),
         'max_r5_20_pre20_0':pre['r5_20'].max(),
         'max_cnt5_1p15_pre20_0':pre['cnt5_1p15'].max(),
-        'max_cnt5_1p20_pre20_0':pre['cnt5_1p20'].max(),
+        'max_cnt5_1p2_pre20_0':pre['cnt5_1p2'].max(),
         'r1_hit_pre20_0':bool((pre['r1']>=1.5).any()),
     })
     for wname,(a,b) in windows.items():
@@ -118,7 +118,7 @@ miss=missfeat[~missfeat['r1_hit_pre20_0']]
 hit=missfeat[missfeat['r1_hit_pre20_0']]
 summary=[]
 for grpname,sub in [('R1_hit',hit),('R1_miss',miss)]:
-    for c in ['max_r1_pre20_0','max_r3_10_pre20_0','max_r5_20_pre20_0','max_cnt5_1p15_pre20_0','max_cnt5_1p20_pre20_0']:
+    for c in ['max_r1_pre20_0','max_r3_10_pre20_0','max_r5_20_pre20_0','max_cnt5_1p15_pre20_0','max_cnt5_1p2_pre20_0']:
         s=pd.to_numeric(sub[c],errors='coerce').dropna()
         summary.append({'group':grpname,'feature':c,'n':len(s),'mean':s.mean(),'median':s.median(),'p25':s.quantile(.25),'p75':s.quantile(.75),'p90':s.quantile(.90)})
 pd.DataFrame(summary).to_csv(OUT/'gradual_miss_feature_summary.csv',index=False)
@@ -129,4 +129,4 @@ for wname in ['pre20_0','pre20_p5']:
     show=res[(res.window==wname)&(res.rule!='R1_1d10_ge1p50')].sort_values(['union_recall','global_signal_inflation_vs_r1'],ascending=[False,True])
     print(f'\n--- TOP GRADUAL RECALL CANDIDATES: {wname} ---')
     print(show[['rule','rule_recall','incremental_recall_over_r1','union_recall','global_signal_inflation_vs_r1']].head(20).to_string(index=False))
-# trigger marker 2
+# trigger marker 3
