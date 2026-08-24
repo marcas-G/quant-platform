@@ -4,10 +4,8 @@ on:
   pull_request:
     branches: [main]
     paths:
-      - 'research/lowpos_turnover_backtest.py'
-      - 'research/recall_diagnostic.py'
       - 'research/segment_structure_diagnostic.py'
-      - 'research/segment_precision_diagnostic.py'
+      - 'research/gradual_turnover_recall.py'
       - '.github/workflows/chatgpt-lowpos-turnover.yml'
 
 jobs:
@@ -27,11 +25,16 @@ jobs:
           for f in kline_000.parquet kline_002.parquet kline_300.parquet kline_600.parquet kline_688.parquet kline_other.parquet; do
             curl -L --fail --retry 3 -o "bt_data/$f" "https://raw.githubusercontent.com/newbiestring-lang/astock/main/$f"
           done
-      - name: Run deep-bottom precision diagnostic
-        run: python research/segment_precision_diagnostic.py
-      - name: Print precision summary
-        run: cat bt_out/deep_bottom_precision_recall_15pct.csv
+      - name: Rebuild structural target events
+        run: python research/segment_structure_diagnostic.py
+      - name: Run gradual turnover recall diagnostic
+        run: python research/gradual_turnover_recall.py
+      - name: Print gradual recall grid
+        run: |
+          cat bt_out/gradual_miss_feature_summary.csv
+          echo '--- GRID HEAD ---'
+          head -40 bt_out/gradual_recall_grid.csv
       - uses: actions/upload-artifact@v4
         with:
-          name: lowpos-turnover-deep-bottom-precision
+          name: lowpos-turnover-gradual-recall
           path: bt_out/
