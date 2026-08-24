@@ -40,3 +40,5 @@ jobs:
         with:
           name: inventory-rotation-precision
           path: bt_out_inventory_rotation/
+
+# manual rerun marker: inventory-rotation precision experiment
