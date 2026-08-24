@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - 'research/precision_preentry_diagnostic.py'
+      - 'research/precision_stage1_followup.py'
       - '.github/workflows/chatgpt-lowpos-turnover.yml'
 
 jobs:
@@ -38,6 +39,8 @@ jobs:
           PY
       - name: Run strict pre-entry precision experiment
         run: python research/precision_preentry_diagnostic.py
+      - name: Run year stability and Pareto followup
+        run: python research/precision_stage1_followup.py
       - name: Print precision summaries
         run: |
           echo '--- BASELINES ---'
@@ -46,7 +49,11 @@ jobs:
           head -21 bt_out/precision_preentry_univariate.csv
           echo '--- TOP PAIRS ---'
           head -21 bt_out/precision_preentry_pairs.csv
+          echo '--- YEAR STABILITY ---'
+          cat bt_out/precision_stage1_year_stability.csv
+          echo '--- DD x VOL PARETO ---'
+          cat bt_out/precision_stage1_dd_vol_pareto.csv
       - uses: actions/upload-artifact@v4
         with:
-          name: lowpos-turnover-preentry-precision
+          name: lowpos-turnover-preentry-precision-stage1
           path: bt_out/
