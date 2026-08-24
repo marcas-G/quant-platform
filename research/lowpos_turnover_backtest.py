@@ -13,7 +13,6 @@ if not files: raise SystemExit('no parquet files')
 df=pd.concat([pd.read_parquet(p) for p in files], ignore_index=True)
 print(df.columns.tolist())
 
-# normalize columns
 rename={}
 for c in df.columns:
     lc=str(c).lower()
@@ -50,20 +49,18 @@ for h in H:
 df['low_only']=df['pos250'].le(.20)
 df['signal']=df['low_only'] & df['to_ratio'].ge(1.5)
 
-# require evaluable signal row and remove obvious malformed price rows
 base=df[df['entry_open'].notna() & df['pos250'].notna() & df['to_ratio'].notna()].copy()
+base['stock_idx']=base.groupby('code').cumcount()
 
-# 20-trading-day cooldown per stock, starting from first signal after prior accepted event
-base['_idx']=base.groupby('code').cumcount()
 def cooldown_events(frame, flag, cooldown=20):
     x=frame[frame[flag]].copy()
     keep=[]; last={}
-    for r in x.itertuples():
-        p=int(r._idx); c=r.code
+    for r in x.itertuples(index=False):
+        p=int(r.stock_idx); c=r.code
         ok=c not in last or p-last[c]>cooldown
         keep.append(ok)
         if ok: last[c]=p
-    return x[np.array(keep)]
+    return x.loc[np.array(keep)].copy()
 
 sig_all=base[base.signal].copy(); low_all=base[base.low_only].copy()
 sig_ev=cooldown_events(base,'signal',20); low_ev=cooldown_events(base,'low_only',20)
@@ -86,7 +83,6 @@ for f,l in [(sig_all,'signal_all_days'),(sig_ev,'signal_cooldown20'),(low_all,'l
 pd.DataFrame(summary).to_csv(OUT/'summary.csv',index=False)
 sig_ev[['date','code','pos250','turnover','to_ma10_prior','to_ratio']+[f'ret_{h}d' for h in H]].to_csv(OUT/'signal_events.csv',index=False)
 
-# date-equal-weight summary
 rows=[]
 for f,l in [(sig_ev,'signal_cooldown20'),(low_ev,'low_only_cooldown20')]:
     for h in H:
@@ -94,7 +90,6 @@ for f,l in [(sig_ev,'signal_cooldown20'),(low_ev,'low_only_cooldown20')]:
         rows.append(dict(group=l,horizon=h,n_dates=len(d),mean=d.mean(),median=d.median(),win_rate=(d>0).mean()))
 pd.DataFrame(rows).to_csv(OUT/'summary_date_ew.csv',index=False)
 
-# yearly 20d/60d
 rows=[]
 for f,l in [(sig_ev,'signal_cooldown20'),(low_ev,'low_only_cooldown20')]:
     z=f.copy(); z['year']=z['date'].dt.year
