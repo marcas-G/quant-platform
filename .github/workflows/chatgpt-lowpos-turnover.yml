@@ -7,6 +7,7 @@ on:
       - 'research/lowpos_turnover_backtest.py'
       - 'research/recall_diagnostic.py'
       - 'research/segment_structure_diagnostic.py'
+      - 'research/segment_precision_diagnostic.py'
       - '.github/workflows/chatgpt-lowpos-turnover.yml'
 
 jobs:
@@ -26,21 +27,11 @@ jobs:
           for f in kline_000.parquet kline_002.parquet kline_300.parquet kline_600.parquet kline_688.parquet kline_other.parquet; do
             curl -L --fail --retry 3 -o "bt_data/$f" "https://raw.githubusercontent.com/newbiestring-lang/astock/main/$f"
           done
-      - name: Run backtest
-        run: python research/lowpos_turnover_backtest.py
-      - name: Run corrected recall diagnostic
-        run: python research/recall_diagnostic.py
-      - name: Run structural leg diagnostic
-        run: python research/segment_structure_diagnostic.py
-      - name: Print structural summaries
-        run: |
-          echo '--- old opportunity decomposition ---'
-          cat bt_out/segment_old_opportunity_decomposition.csv
-          echo '--- structural leg summary ---'
-          cat bt_out/segment_structural_leg_summary.csv
-          echo '--- structural recall summary ---'
-          cat bt_out/segment_structural_recall_summary.csv
+      - name: Run deep-bottom precision diagnostic
+        run: python research/segment_precision_diagnostic.py
+      - name: Print precision summary
+        run: cat bt_out/deep_bottom_precision_recall_15pct.csv
       - uses: actions/upload-artifact@v4
         with:
-          name: lowpos-turnover-structural-diagnostic
+          name: lowpos-turnover-deep-bottom-precision
           path: bt_out/
