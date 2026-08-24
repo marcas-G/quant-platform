@@ -6,6 +6,7 @@ on:
     paths:
       - 'research/lowpos_turnover_backtest.py'
       - 'research/recall_diagnostic.py'
+      - 'research/segment_structure_diagnostic.py'
       - '.github/workflows/chatgpt-lowpos-turnover.yml'
 
 jobs:
@@ -27,11 +28,19 @@ jobs:
           done
       - name: Run backtest
         run: python research/lowpos_turnover_backtest.py
-      - name: Run recall diagnostic
+      - name: Run corrected recall diagnostic
         run: python research/recall_diagnostic.py
-      - name: Print corrected recall
-        run: cat bt_out/recall_mfe60_corrected.csv
+      - name: Run structural leg diagnostic
+        run: python research/segment_structure_diagnostic.py
+      - name: Print structural summaries
+        run: |
+          echo '--- old opportunity decomposition ---'
+          cat bt_out/segment_old_opportunity_decomposition.csv
+          echo '--- structural leg summary ---'
+          cat bt_out/segment_structural_leg_summary.csv
+          echo '--- structural recall summary ---'
+          cat bt_out/segment_structural_recall_summary.csv
       - uses: actions/upload-artifact@v4
         with:
-          name: lowpos-turnover-backtest-results-corrected
+          name: lowpos-turnover-structural-diagnostic
           path: bt_out/
