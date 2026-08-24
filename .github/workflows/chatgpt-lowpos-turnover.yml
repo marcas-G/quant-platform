@@ -1,15 +1,9 @@
 name: chatgpt-lowpos-turnover-backtest
 
 on:
-  push:
-    branches:
-      - chatgpt/mfe60-recall
-    paths:
-      - 'research/lowpos_turnover_backtest.py'
-      - 'research/recall_diagnostic.py'
-      - '.github/workflows/chatgpt-lowpos-turnover.yml'
   pull_request:
-    branches: [main]
+    branches:
+      - chatgpt/mfe60-base
     paths:
       - 'research/lowpos_turnover_backtest.py'
       - 'research/recall_diagnostic.py'
