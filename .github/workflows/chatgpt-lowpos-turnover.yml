@@ -5,6 +5,7 @@ on:
     branches: [main]
     paths:
       - 'research/lowpos_turnover_backtest.py'
+      - 'research/recall_diagnostic.py'
       - '.github/workflows/chatgpt-lowpos-turnover.yml'
 
 jobs:
@@ -27,6 +28,8 @@ jobs:
           ls -lh bt_data
       - name: Run backtest
         run: python research/lowpos_turnover_backtest.py
+      - name: Run recall diagnostic
+        run: python research/recall_diagnostic.py
       - name: Print summaries
         run: |
           cat bt_out/meta.json
@@ -36,6 +39,8 @@ jobs:
           cat bt_out/summary_date_ew.csv
           echo '--- yearly ---'
           cat bt_out/summary_by_year.csv
+          echo '--- recall ---'
+          cat bt_out/recall_diagnostic.csv
       - uses: actions/upload-artifact@v4
         with:
           name: lowpos-turnover-backtest-results
