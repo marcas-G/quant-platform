@@ -99,7 +99,6 @@ for f,l in [(sig_ev,'signal_cooldown20'),(low_ev,'low_only_cooldown20')]:
             if len(s): rows.append(dict(group=l,year=y,horizon=h,n=len(s),mean=s.mean(),median=s.median(),win_rate=(s>0).mean()))
 pd.DataFrame(rows).to_csv(OUT/'summary_by_year.csv',index=False)
 
-# Same-date paired control: on each signal date, compare signal stocks vs other low-position stocks
 paired=[]
 for h in H:
     c=f'ret_{h}d'
@@ -121,3 +120,4 @@ print(json.dumps(meta,ensure_ascii=False,indent=2))
 print(pd.DataFrame(summary).to_string(index=False))
 print('--- SAME-DATE PAIRED ALPHA ---')
 print(pd.DataFrame(paired).to_string(index=False))
+# trigger MFE60 recall CI
