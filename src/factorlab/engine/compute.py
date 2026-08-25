@@ -110,26 +110,63 @@ _WINDOW_PREFIXES = ("ts_", "ta_")  # 窗口参数在第二位置的算子族（t
 
 
 def _ts_window_days(formula: str) -> int:
-    """AST 提取公式中所有 ts_*/ta_* 窗口算子的窗口参数最大值（第二位置参数，int 字面量）；
-    无窗口算子 → 0（纯 CS/元素级公式不需要 warmup）。窗口参数非常量时忽略该项。"""
+    """AST 提取公式窗口需求：ts_*/ta_* 窗口算子的窗口参数，**沿变量引用链叠加**。
+
+    嵌套滚动（如 robust_z 的 MAD = ts_median((x - ts_median(y, N)).abs(), N)）时，
+    med 的 N 窗被外层 N 窗消费 → 总需求 = 2N。chunked warmup 只覆盖单层 N 时，
+    每块嵌套滚动全 null（研究轮 204 根因）。窗口参数非常量时忽略该项；无窗口算子 → 0。
+    """
     tree = ast.parse(formula)
-    windows = []
-    for node in ast.walk(tree):
-        if not isinstance(node, ast.Call) or len(node.args) < 2:
-            continue
+    assigns: dict[str, ast.expr] = {}
+    for node in tree.body:
+        if isinstance(node, ast.Assign) and len(node.targets) == 1 \
+                and isinstance(node.targets[0], ast.Name):
+            assigns[node.targets[0].id] = node.value
+
+    def _call_window(node: ast.Call) -> int:
+        name = None
         if isinstance(node.func, ast.Name):
             name = node.func.id
         elif isinstance(node.func, ast.Attribute) and isinstance(node.func.value, ast.Name) \
                 and node.func.value.id in ("wq", "ta"):
             name = node.func.attr
-        else:
-            continue
-        if not name.startswith(_WINDOW_PREFIXES):
-            continue
-        arg = node.args[1]
+        if not name or not name.startswith(_WINDOW_PREFIXES):
+            return 0
+        arg = node.args[1] if len(node.args) >= 2 else None
         if isinstance(arg, ast.Constant) and isinstance(arg.value, int) and not isinstance(arg.value, bool):
-            windows.append(arg.value)
-    return max(windows) if windows else 0
+            return arg.value
+        return 0
+
+    def _need(node: ast.AST) -> int:
+        # DSL 公式无循环引用（变量先赋值后使用）——不做 visited 防呆，同一变量
+        # 在表达式不同位置分别展开（否则 seen 消耗后嵌套链的窗口叠加丢失）
+        if isinstance(node, ast.Call):
+            sub = max((_need(a) for a in node.args), default=0)
+            if isinstance(node.func, ast.Attribute):
+                sub = max(sub, _need(node.func.value))  # 方法链：.abs() 的 BinOp 在 func.value
+            return _call_window(node) + sub
+        if isinstance(node, ast.Name) and node.id in assigns:
+            return _need(assigns[node.id])
+        return max((_need(c) for c in ast.iter_child_nodes(node)), default=0)
+
+    needs = [_need(n) for n in ast.walk(tree) if isinstance(n, ast.Call)]
+    needs += [_need(expr) for expr in assigns.values()]
+    return max(needs) if needs else 0
+
+
+def fill_suspension_values(panel: pl.DataFrame) -> pl.DataFrame:
+    """停牌补全行数值列前值填充（fill 前已算 forward_return，评估样本不变）。
+
+    polars 滚动算子默认 min_samples=window 且 null 计入有效值要求——停牌补全行的
+    1 个 null 使其后 d 天窗口统计全 null（传染），长窗因子（如 360 日）因此失效；
+    嵌套滚动（MAD 等）进一步放大传染至全 null（研究轮 111/204 根因）。
+    前值填充 = 停牌期间价格/成交视为不变（金融惯例），窗口统计不再含 null。
+    """
+    fill_cols = [c for c in panel.columns
+                 if c not in {"date", "code"} and not c.startswith("forward_return")]
+    return panel.with_columns(
+        [pl.col(c).fill_null(strategy="forward").over("code") for c in fill_cols]
+    )
 
 
 @dataclass
@@ -207,6 +244,7 @@ def _compute_panel(
             (pl.col("adj_factor") / pl.col("base_adj")).alias("adj_factor")
         ).drop("base_adj")
     panel = compute_forward_returns(panel)
+    panel = fill_suspension_values(panel)
     asof = None
     if adjustment == "pit_qfq":
         asof = datetime.date.fromisoformat(spec.date.end) if spec.date.end else panel["date"].max()
