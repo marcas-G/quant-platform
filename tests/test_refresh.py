@@ -7,10 +7,28 @@ from factorlab.data.rebuild import RebuildScope, load_manifest, rebuild_all, sav
 from factorlab.data.refresh import refresh
 
 
+def _sb_l():
+    return pl.DataFrame({
+        "ts_code": ["A.SZ"], "symbol": ["A"], "name": ["甲"], "list_status": ["L"],
+        "list_date": ["20240101"], "delist_date": [None], "industry": [None],
+        "market": [None], "act_name": [None], "act_ent_type": [None],
+        "area": [None], "cnspell": [None]})
+
+
+def _sb_d():
+    return pl.DataFrame({
+        "ts_code": ["D.SZ"], "symbol": ["D"], "name": ["丁"], "list_status": ["D"],
+        "list_date": ["20200101"], "delist_date": ["20240601"], "industry": [None],
+        "market": [None], "act_name": [None], "act_ent_type": [None],
+        "area": [None], "cnspell": [None]})
+
+
 def _client(monkeypatch, table_df: pl.DataFrame, fail_dates: set[str] | None = None) -> TeaJoinClient:
     client = TeaJoinClient(token="t", interval=0.0)
 
     def responder(api_name, params, fields=None):
+        if api_name == "stock_basic":
+            return _sb_l() if params.get("list_status") == "L" else _sb_d()
         if api_name == "trade_cal":
             return pl.DataFrame({"exchange": ["SSE", "SSE"], "cal_date": ["20240103", "20240104"], "is_open": [1, 1]})
         if api_name == "daily":
@@ -53,18 +71,21 @@ def test_refresh_after_rebuild_no_deadlock(tmp_path, monkeypatch):
             "is_open": [1, 1, 1],
         }),
         ("stock_basic", ""): pl.DataFrame({
-            "ts_code": ["A.SZ"], "symbol": ["A"], "name": ["甲"], "list_status": ["L"],
-            "list_date": ["20240101"], "delist_date": [None], "industry": [None],
-            "market": [None], "act_name": [None], "act_ent_type": [None],
-            "area": [None], "cnspell": [None]}),
+            "ts_code": ["A.SZ", "D.SZ"], "symbol": ["A", "D"], "name": ["甲", "丁"],
+            "list_status": ["L", "D"], "list_date": ["20240101", "20200101"],
+            "delist_date": [None, "20240601"], "industry": [None, None],
+            "market": [None, None], "act_name": [None, None], "act_ent_type": [None, None],
+            "area": [None, None], "cnspell": [None, None]}),
         ("daily", "20240102"): pl.DataFrame({"trade_date": ["20240102"], "ts_code": ["A.SZ"], "close": [10.0]}),
         ("daily", "20240103"): pl.DataFrame({"trade_date": ["20240103"], "ts_code": ["A.SZ"], "close": [11.0]}),
     }
     rebuild_client = TeaJoinClient(token="t", interval=0.0)
 
     def responder(api_name, params, fields=None):
+        if api_name == "stock_basic":
+            return _sb_l() if params.get("list_status") == "L" else _sb_d()
         if api_name == "stock_basic" and params.get("list_status") == "D":
-            return pl.DataFrame()
+            return tables.get(("stock_basic", ""))
         key = params.get("trade_date") or params.get("cal_date") or ""
         df = tables.get((api_name, key))
         return df if df is not None else pl.DataFrame()
@@ -168,6 +189,8 @@ def test_refresh_indexes_pulls_new_daily_and_month(tmp_path, monkeypatch):
     calls = []
 
     def responder(api_name, params, fields=None):
+        if api_name == "stock_basic":
+            return _sb_l() if params.get("list_status") == "L" else _sb_d()
         calls.append((api_name, dict(params)))
         if api_name == "trade_cal":
             return pl.DataFrame({"exchange": ["SSE", "SSE"], "cal_date": ["20260814", "20260817"], "is_open": [1, 1]})

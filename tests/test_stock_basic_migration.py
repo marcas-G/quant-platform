@@ -39,9 +39,11 @@ def _l_row(**over):
 # ================================================================
 
 def test_fetch_requests_explicit_fields():
-    client = _FakeClient(pl.DataFrame([_l_row()]))
+    client = _FakeClient(pl.DataFrame([_l_row()]),
+                         pl.DataFrame([_l_row(ts_code="600001.SH", symbol="600001",
+                                              list_status="D", delist_date="20240601")]))
     out = fetch_stock_basic_all(client)
-    assert out.height == 1
+    assert out.height == 2
     for fields in client.fields_seen:
         assert "delist_date" in fields and "list_status" in fields and "list_date" in fields
 
@@ -66,20 +68,39 @@ def test_fetch_d_without_delist_date_fails():
 
 
 def test_fetch_duplicate_ts_code_fails():
-    client = _FakeClient(pl.DataFrame([_l_row(), _l_row()]))   # L/D 返回同一表
+    client = _FakeClient(pl.DataFrame([_l_row(), _l_row()]),   # L 内重复
+                         pl.DataFrame([_l_row(ts_code="600001.SH", symbol="600001",
+                                              list_status="D", delist_date="20240601")]))
     with pytest.raises(ValueError, match="重复"):
         fetch_stock_basic_all(client)
 
 
+def test_fetch_bad_date_format_fails():
+    client = _FakeClient(
+        pl.DataFrame([_l_row()]),
+        pl.DataFrame([_l_row(ts_code="600001.SH", symbol="600001", list_status="D",
+                             delist_date="2024-06-01")]))   # 非 YYYYMMDD
+    with pytest.raises(ValueError, match="delist_date 存在非 YYYYMMDD"):
+        fetch_stock_basic_all(client)
+
+
 def test_fetch_missing_required_field_fails():
-    client = _FakeClient(pl.DataFrame([{"ts_code": "A.SZ"}]))
+    client = _FakeClient(pl.DataFrame([{"ts_code": "A.SZ"}]),
+                         pl.DataFrame([{"ts_code": "D.SZ", "list_status": "D"}]))
     with pytest.raises(ValueError, match="缺少字段"):
         fetch_stock_basic_all(client)
 
 
-def test_fetch_empty_returns_empty():
+def test_fetch_l_empty_fails():
     client = _FakeClient(pl.DataFrame())
-    assert fetch_stock_basic_all(client).height == 0
+    with pytest.raises(ValueError, match="L .*返回空"):
+        fetch_stock_basic_all(client)
+
+
+def test_fetch_d_empty_fails():
+    client = _FakeClient(pl.DataFrame([_l_row()]))
+    with pytest.raises(ValueError, match="D .*返回空"):
+        fetch_stock_basic_all(client)
 
 
 # ================================================================
@@ -134,3 +155,85 @@ def test_migration_adds_delist_date_when_missing(tmp_path):
     migrate_stock_basic_pit_fields(db, fetched)
     assert "delist_date" in db.describe("stock_basic")
     assert db.query("SELECT COUNT(*) FROM stock_basic WHERE delist_date IS NULL")[0, 0] == 2
+
+
+# ================================================================
+# M6-07B1：two-phase migration 语义
+# ================================================================
+
+def _db_full(tmp_path):
+    """带非 PIT 字段的 stock_basic（name/industry 应被保留）。"""
+    db = PlatformDB(tmp_path / "t.duckdb")
+    db.upsert("stock_basic", pl.DataFrame({
+        "ts_code": ["A.SZ"],
+        "symbol": ["A"],
+        "name": ["old-name"],
+        "industry": ["old-industry"],
+        "list_date": ["19910403"],
+        "act_name": ["old-act"],
+    }), keys=["ts_code"])
+    return db
+
+
+def _incoming():
+    return pl.DataFrame([
+        {"ts_code": "A.SZ", "symbol": "A", "name": "new-name", "industry": "new-industry",
+         "list_status": "L", "list_date": "19910403", "delist_date": None,
+         "act_name": "old-act", "act_ent_type": None, "area": None, "cnspell": None},
+        {"ts_code": "B.SZ", "symbol": "B", "name": "乙", "industry": "银行",
+         "list_status": "L", "list_date": "20200101", "delist_date": None,
+         "act_name": None, "act_ent_type": None, "area": None, "cnspell": None},
+        {"ts_code": "C.SZ", "symbol": "C", "name": "丙", "industry": "地产",
+         "list_status": "D", "list_date": "20190101", "delist_date": "20240601",
+         "act_name": None, "act_ent_type": None, "area": None, "cnspell": None},
+    ])
+
+
+def test_migration_updates_only_pit_fields(tmp_path):
+    """已有行只更新 list_status/delist_date——name/industry 等不被 source 覆盖。"""
+    db = _db_full(tmp_path)
+    migrate_stock_basic_pit_fields(db, _incoming())
+    row = db.query("SELECT * FROM stock_basic WHERE ts_code='A.SZ'")
+    assert row["name"][0] == "old-name"
+    assert row["industry"][0] == "old-industry"
+    assert row["list_status"][0] == "L"
+    assert row["delist_date"][0] is None
+
+
+def test_migration_inserts_new_codes(tmp_path):
+    db = _db_full(tmp_path)
+    migrate_stock_basic_pit_fields(db, _incoming())
+    codes = db.query("SELECT ts_code FROM stock_basic ORDER BY ts_code")["ts_code"].to_list()
+    assert codes == ["A.SZ", "B.SZ", "C.SZ"]
+    b = db.query("SELECT * FROM stock_basic WHERE ts_code='B.SZ'")
+    assert b["symbol"][0] == "B" and b["list_date"][0] == "20200101"
+    c = db.query("SELECT * FROM stock_basic WHERE ts_code='C.SZ'")
+    assert c["list_status"][0] == "D" and c["delist_date"][0] == "20240601"
+
+
+def test_migration_preserves_codes_not_in_source(tmp_path):
+    """DB 中 source 未包含的旧 code 必须保留（enrichment 非 destructive）。"""
+    db = _db_full(tmp_path)
+    db.upsert("stock_basic", pl.DataFrame({
+        "ts_code": ["Z.SZ"], "symbol": ["Z"], "name": ["老股"], "list_date": ["20000101"],
+    }), keys=["ts_code"])
+    migrate_stock_basic_pit_fields(db, _incoming())
+    codes = db.query("SELECT ts_code FROM stock_basic ORDER BY ts_code")["ts_code"].to_list()
+    assert "Z.SZ" in codes   # 保留
+
+
+def test_migration_rollback_on_validation_failure(tmp_path):
+    """Phase 2 uniqueness validation 失败 → ROLLBACK——非 PIT 字段不被半更新。"""
+    db = _db_full(tmp_path)
+    with db.connect() as con:
+        con.execute("INSERT INTO stock_basic (ts_code, symbol, name, industry, list_date, act_name)"
+                    " VALUES ('A.SZ', 'A-dup', 'dup-name', 'dup-ind', '19910403', 'dup-act')")
+        # 手工制造重复 ts_code（绕过 upsert 的唯一性保护）
+    with pytest.raises(ValueError, match="ts_code 不唯一"):
+        migrate_stock_basic_pit_fields(db, _incoming())
+    # rollback 后非 PIT 字段未被半更新（A 的第一行仍是 original）
+    rows = db.query("SELECT * FROM stock_basic WHERE ts_code='A.SZ' ORDER BY symbol")
+    assert rows["name"][0] == "old-name" and rows["industry"][0] == "old-industry"
+    assert "list_status" in db.describe("stock_basic")   # Phase-1 列已存在（幂等）
+
+

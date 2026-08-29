@@ -900,7 +900,16 @@ integrity 或 immutable run identity（hash/data snapshot 属后续 reproducibil
 
 ## 4.7 Production Data PIT（M6-07）
 
-**M6-07A 审计**：FULL_HISTORY_NO_ST_GATE=READY（2015-01-05→2026-08-14）；ST_AWARE_GATE=READY（2016-08-09→2026-08-14，SAFE_EXCLUDE_ST_START=20160809）；delist_date CASE C（final/staging 均缺失——TARGETED STOCK_BASIC REFRESH REQUIRED）；stock_st raw 10000 组重复（M6-07B 修复）。
+**M6-07A 审计**：MARKET_DATA_COVERAGE_GATE=READY（2015-01-05→2026-08-14，daily/adj_factor 内部无缺日）；SAFE_EXCLUDE_ST_START=20160809（manifest completed 6450 天无 gap）；delist_date CASE C（final/staging 均缺失——TARGETED STOCK_BASIC REFRESH REQUIRED）；stock_st raw 10000 组重复（M6-07B 修复）。
+
+**Gate 状态（M6-07B1 修正——行情覆盖完整 ≠ 完整 PIT universe 可运行）**：
+- `MARKET_DATA_COVERAGE_GATE` = **READY**（2015-01-05→2026-08-14——纯行情覆盖）
+- `FULL_HISTORY_PIT_GATE` = **BLOCKED_BY_DELIST_DATE**——缺 delist_date 时退市股
+  `is_listed` 仍为 true → align_to_listing 保留 stale 行 → fill_suspension_values
+  前值填充 → **stale price 派生的 signal 仍 active**——PIT universe 语义缺失，
+  正式 full-A-share Gate 必须等待 delist_date 迁移
+- `ST_AWARE_GATE` = **NOT_READY**（code-level duplicate-ST repair complete；
+  production smoke pending stock_basic migration / token availability）
 
 **M6-07B PIT 数据修复**：resolve_universe_frame 的 ST join 改为唯一 (trade_date,
 ts_code) projection（raw stock_st 重复行不膨胀 UniverseFrame——is_st 由存在性决定，
@@ -910,6 +919,14 @@ delist_date/list_status）+ fetch_stock_basic_all（L/D 合并、ts_code unique 
 fast、D 行缺 delist_date fail fast）+ migrate_stock_basic_pit_fields（定向迁移：
 ALTER ADD COLUMN + upsert keys=ts_code，保留原字段）。真实迁移依赖
 FACTORLAB_TEAJOIN_TOKEN——未设置时 M6-07B 数据部分 BLOCKED（代码与测试已就绪）。
+
+**M6-07B1 migration hardening**：two-phase（Phase-1 schema 事务外幂等补
+list_status/delist_date；Phase-2 同一 connection 事务：UPDATE 已有行 PIT fields
+（不覆盖 name/industry 等）、INSERT source 新 code、不删旧 code、validation
+（uniqueness/before-preservation/source-completeness/D delist full-match/
+list_status full-match）、COMMIT/ROLLBACK——不调用 db.upsert 不开第二写连接）；
+fetch_stock_basic_all 收紧：L/D 必须非空（D 空更可能代表权限/API/schema 问题）、
+list_date/delist_date YYYYMMDD 校验、symbol 非空。
 
 ## 5. 测试
 

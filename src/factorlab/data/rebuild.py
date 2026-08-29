@@ -86,29 +86,52 @@ STOCK_BASIC_FIELDS = (
 # raw payload（name/type/type_name）保留多行不物理删除。
 ST_DEDUP_TABLE = "stock_st"
 
+# M6-07B1：targeted migration 准备/更新的 PIT 列（旧库缺 list_status 与 delist_date；
+# 与 future full rebuild 的 explicit-fields schema 保持一致）
+STOCK_BASIC_PIT_FIELDS: dict[str, str] = {
+    "list_status": "VARCHAR",
+    "delist_date": "VARCHAR",
+}
+
 
 def fetch_stock_basic_all(client: TeaJoinClient) -> pl.DataFrame:
     """获取完整 stock_basic（list_status=L + D 分页合并）。
 
     - 显式字段（含 delist_date/list_status）
-    - 合并后 ts_code 必须唯一（重复 → fail fast，不静默 unique）
+    - **L 与 D 都必须非空**——真实 A 股历史必有大量退市股，D 空返回更可能代表
+      权限/API/schema/网络问题；禁止当正常空结果继续 rebuild/migration
+    - 合并后 ts_code 必须唯一（重复 → fail fast，不静默 unique）；symbol 非空
+    - list_date/delist_date 必须 YYYYMMDD 8 位数字
     - D 状态行必须非空 delist_date（缺失 → fail fast，不写数据库）
     """
-    parts = []
-    for status in ("L", "D"):
-        df = client.fetch_paged("stock_basic", {"list_status": status},
-                                fields=list(STOCK_BASIC_FIELDS))
-        if df.height:
-            parts.append(df)
-    if not parts:
-        return pl.DataFrame()   # 空返回不建表、不阻塞（旧语义兼容）
-    merged = pl.concat(parts)
+    l_df = client.fetch_paged("stock_basic", {"list_status": "L"},
+                              fields=list(STOCK_BASIC_FIELDS))
+    d_df = client.fetch_paged("stock_basic", {"list_status": "D"},
+                              fields=list(STOCK_BASIC_FIELDS))
+    if l_df.height == 0:
+        raise ValueError("stock_basic L 返回空——source 无效（API/权限/schema 问题）")
+    if d_df.height == 0:
+        raise ValueError("stock_basic D 返回空——source 无效（真实 A 股必有退市股，"
+                         "空返回更可能代表权限/API/schema/网络问题）")
     for col in ("ts_code", "symbol", "list_date", "list_status", "delist_date"):
-        if col not in merged.columns:
+        if col not in l_df.columns or col not in d_df.columns:
             raise ValueError(f"stock_basic fetch 缺少字段: {col}（显式字段未生效）")
-    merged = merged.with_columns(pl.col("delist_date").cast(pl.String))   # Null→String 统一
+    l_df = l_df.with_columns(pl.col("delist_date").cast(pl.String),
+                             pl.col("list_date").cast(pl.String),
+                             pl.col("symbol").cast(pl.String))
+    d_df = d_df.with_columns(pl.col("delist_date").cast(pl.String),
+                             pl.col("list_date").cast(pl.String),
+                             pl.col("symbol").cast(pl.String))
+    merged = pl.concat([l_df, d_df])
     if merged["ts_code"].null_count() or merged["ts_code"].is_duplicated().any():
         raise ValueError("stock_basic 合并后 ts_code 缺失或重复——fail fast")
+    if merged["symbol"].null_count():
+        raise ValueError("stock_basic 存在空 symbol——fail fast")
+    for col in ("list_date", "delist_date"):
+        bad = merged.filter(pl.col(col).is_not_null()
+                            & ~pl.col(col).str.contains("^\\d{8}$"))
+        if bad.height:
+            raise ValueError(f"stock_basic {col} 存在非 YYYYMMDD 格式: {bad.height} 行")
     d_missing = merged.filter((pl.col("list_status") == "D")
                               & pl.col("delist_date").is_null())
     if d_missing.height:
@@ -118,26 +141,78 @@ def fetch_stock_basic_all(client: TeaJoinClient) -> pl.DataFrame:
 
 
 def migrate_stock_basic_pit_fields(db: PlatformDB, stock_basic: pl.DataFrame) -> dict:
-    """定向迁移 stock_basic 的 delist_date（只动静态表，不重建历史）。
+    """Two-phase targeted migration（M6-07B1）。
 
-    单事务：缺 delist_date → ALTER ADD COLUMN；upsert 完整 fetched 数据（keys=ts_code，
-    保留全部原有字段）；验证后 commit。失败 rollback——不留下半迁移表。
+    Phase 1 — schema preparation（事务外、幂等）：补 list_status/delist_date 列
+             （nullable；已存在则不修改）。**不在 Phase-2 DML 事务内**——duckdb
+             同事务 ALTER+DML 冲突；如实记录：schema preparation 幂等但不是
+             Phase-2 DML 事务的一部分。
+    Phase 2 — **同一 connection** 事务：只更新 PIT fields（list_status/delist_date，
+             不覆盖 name/industry 等已有值）、INSERT source 新 code（shared
+             columns）、validation（uniqueness/before-preservation/source-
+             completeness/D delist full-match/list_status full-match）、
+             COMMIT/ROLLBACK。**不删除旧 code**（enrichment 非 destructive
+             replace）；**不调用 db.upsert()**（禁止第二个写 connection）。
     """
-    before = {"rows": db.query("SELECT COUNT(*) FROM stock_basic")[0][0],
+    before = {"rows": db.query("SELECT COUNT(*) FROM stock_basic")[0, 0],
               "cols": db.describe("stock_basic")}
     with db.connect() as con:
-        # duckdb 限制：同一事务内 ALTER + DML 冲突（"altered by a different transaction"）——
-        # ALTER 在事务外先执行（幂等：列已存在即跳过），upsert+验证在事务内（失败 rollback）
-        cols = [r[0] for r in con.execute("DESCRIBE stock_basic").fetchall()]
-        if "delist_date" not in cols:
-            con.execute("ALTER TABLE stock_basic ADD COLUMN delist_date VARCHAR")
+        # Phase 1：schema（幂等）
+        cols = {r[0] for r in con.execute("DESCRIBE stock_basic").fetchall()}
+        for c, typ in STOCK_BASIC_PIT_FIELDS.items():
+            if c not in cols:
+                con.execute(f'ALTER TABLE stock_basic ADD COLUMN "{c}" {typ}')
+        # Phase 2：同一 con 事务（全部 DML 显式 con——不开第二个写连接）
         try:
             con.execute("BEGIN")
-            db.upsert("stock_basic", stock_basic, keys=["ts_code"])
+            con.register("_incoming_stock_basic", stock_basic.to_arrow())
+            con.execute("CREATE TEMP TABLE _before_codes AS SELECT ts_code FROM stock_basic")
+            # UPDATE 已有行 PIT fields（不覆盖非 PIT 列）
+            con.execute("""
+                UPDATE stock_basic AS dst
+                SET list_status = src.list_status,
+                    delist_date = src.delist_date
+                FROM _incoming_stock_basic AS src
+                WHERE dst.ts_code = src.ts_code
+            """)
+            # INSERT source 新 code（目标表列 ∩ source 列；目标表存在但 source 缺的列 → NULL）
+            table_cols = {r[0] for r in con.execute("DESCRIBE stock_basic").fetchall()}
+            shared = [c for c in stock_basic.columns if c in table_cols]
+            cols_sql = ", ".join(f'"{c}"' for c in shared)
+            con.execute(f"""
+                INSERT INTO stock_basic ({cols_sql})
+                SELECT {cols_sql} FROM _incoming_stock_basic AS src
+                WHERE NOT EXISTS (SELECT 1 FROM stock_basic dst WHERE dst.ts_code = src.ts_code)
+            """)
+            # ---- transaction 内 validation ----
             rows = con.execute("SELECT COUNT(*) FROM stock_basic").fetchone()[0]
             distinct = con.execute("SELECT COUNT(DISTINCT ts_code) FROM stock_basic").fetchone()[0]
             if rows != distinct:
                 raise ValueError(f"迁移后 ts_code 不唯一: rows {rows} != distinct {distinct}")
+            before_missing = con.execute("""
+                SELECT COUNT(*) FROM _before_codes bc
+                WHERE NOT EXISTS (SELECT 1 FROM stock_basic dst WHERE dst.ts_code = bc.ts_code)
+            """).fetchone()[0]
+            source_missing = con.execute("""
+                SELECT COUNT(*) FROM _incoming_stock_basic src
+                WHERE NOT EXISTS (SELECT 1 FROM stock_basic dst WHERE dst.ts_code = src.ts_code)
+            """).fetchone()[0]
+            d_delist_mismatch = con.execute("""
+                SELECT COUNT(*) FROM _incoming_stock_basic src
+                JOIN stock_basic dst ON dst.ts_code = src.ts_code
+                WHERE src.list_status = 'D'
+                  AND src.delist_date IS DISTINCT FROM dst.delist_date
+            """).fetchone()[0]
+            status_mismatch = con.execute("""
+                SELECT COUNT(*) FROM _incoming_stock_basic src
+                JOIN stock_basic dst ON dst.ts_code = src.ts_code
+                WHERE src.list_status IS DISTINCT FROM dst.list_status
+            """).fetchone()[0]
+            if before_missing or source_missing or d_delist_mismatch or status_mismatch:
+                raise ValueError(
+                    f"migration validation failed: before_missing={before_missing} "
+                    f"source_missing={source_missing} d_delist_mismatch={d_delist_mismatch} "
+                    f"list_status_mismatch={status_mismatch}")
             con.execute("COMMIT")
         except Exception:
             try:
@@ -145,6 +220,11 @@ def migrate_stock_basic_pit_fields(db: PlatformDB, stock_basic: pl.DataFrame) ->
             except Exception:
                 pass
             raise
+        finally:
+            try:
+                con.execute("DROP TABLE IF EXISTS _before_codes")
+            except Exception:
+                pass
     after = {"rows": db.query("SELECT COUNT(*) FROM stock_basic")[0][0],
              "cols": db.describe("stock_basic")}
     return {"before": before, "after": after}

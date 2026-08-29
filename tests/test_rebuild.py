@@ -9,6 +9,22 @@ from factorlab.data.platform_db import PlatformDB
 from factorlab.data.rebuild import INDEX_CODES, RebuildScope, load_manifest, rebuild_all, save_manifest
 
 
+def _sb_l():
+    return pl.DataFrame({
+        "ts_code": ["A.SZ"], "symbol": ["A"], "name": ["甲"], "list_status": ["L"],
+        "list_date": ["20240101"], "delist_date": [None], "industry": [None],
+        "market": [None], "act_name": [None], "act_ent_type": [None],
+        "area": [None], "cnspell": [None]})
+
+
+def _sb_d():
+    return pl.DataFrame({
+        "ts_code": ["D.SZ"], "symbol": ["D"], "name": ["丁"], "list_status": ["D"],
+        "list_date": ["20200101"], "delist_date": ["20240601"], "industry": [None],
+        "market": [None], "act_name": [None], "act_ent_type": [None],
+        "area": [None], "cnspell": [None]})
+
+
 def _fake_client(monkeypatch, tables, fail=None, calls=None) -> TeaJoinClient:
     """fake client：按 (api_name, 日期参数) 精确匹配返回；未注册接口返回空 DataFrame。
 
@@ -18,12 +34,14 @@ def _fake_client(monkeypatch, tables, fail=None, calls=None) -> TeaJoinClient:
     client = TeaJoinClient(token="t", interval=0.0)
 
     def responder(api_name, params, fields=None):
+        if api_name == "stock_basic":
+            return _sb_l() if params.get("list_status") == "L" else _sb_d()
         if calls is not None:
             calls.append((api_name, dict(params)))
         if fail and api_name in fail:
             raise RuntimeError(f"{api_name} 拉取失败")
         if api_name == "stock_basic" and params.get("list_status") == "D":
-            return pl.DataFrame()   # fake 只模拟 L 上市表（D 空返回——fetch_stock_basic_all 正常路径）
+            return _sb_d()
         key = params.get("trade_date") or params.get("report_date") or params.get("cal_date") or ""
         df = tables.get((api_name, key))
         if df is None:
@@ -42,12 +60,7 @@ def _tables():
             "cal_date": ["20240102", "20240103"],
             "is_open": [1, 1],
         }),
-        ("stock_basic", ""): pl.DataFrame({
-            "ts_code": ["A.SZ"], "symbol": ["A"], "name": ["甲"],
-            "list_status": ["L"], "list_date": ["20240101"], "delist_date": [None],
-            "industry": [None], "market": [None], "act_name": [None], "act_ent_type": [None],
-            "area": [None], "cnspell": [None],
-        }),
+        ("stock_basic", ""): _sb_l(),
         ("daily", "20240102"): pl.DataFrame({"trade_date": ["20240102"], "ts_code": ["A.SZ"], "close": [10.0]}),
         ("daily", "20240103"): pl.DataFrame({"trade_date": ["20240103"], "ts_code": ["A.SZ"], "close": [11.0]}),
         ("daily_basic", "20240102"): pl.DataFrame({"trade_date": ["20240102"], "ts_code": ["A.SZ"], "total_mv": [100.0]}),
@@ -107,15 +120,22 @@ def test_rebuild_empty_calendar_raises(tmp_path, monkeypatch):
     assert db.list_tables() == []
 
 
-def test_rebuild_stock_basic_empty_is_ok(tmp_path, monkeypatch):
+def test_rebuild_stock_basic_empty_fails(tmp_path, monkeypatch):
+    """M6-07B1：stock_basic source 空（L/D 任一为空）→ rebuild fail fast（不建表、不静默继续）。"""
     db = PlatformDB(tmp_path / "staging.duckdb")
     tables = {("trade_cal", ""): _tables()[("trade_cal", "")],
               ("daily", "20240102"): _tables()[("daily", "20240102")]}
-    client = _fake_client(monkeypatch, tables)
-    rebuild_all(db, client, scope=RebuildScope(start="20240102", end="20240103"),
-                manifest_path=tmp_path / "manifest.json")
-    assert "stock_basic" not in db.list_tables()  # 空返回不建表、不阻塞
-    assert db.query("SELECT count(*) AS n FROM daily")["n"][0] == 1
+    client = TeaJoinClient(token="t", interval=0.0)
+    def responder(api_name, params, fields=None):
+        if api_name == "stock_basic":
+            return pl.DataFrame()   # 空 stock_basic（L/D 都空）
+        return tables.get((api_name, params.get("trade_date") or params.get("cal_date") or ""), pl.DataFrame())
+    monkeypatch.setattr(client, "fetch", responder)
+    monkeypatch.setattr(client, "fetch_paged", responder)
+    with pytest.raises(ValueError, match="返回空"):
+        rebuild_all(db, client, scope=RebuildScope(start="20240102", end="20240103"),
+                    manifest_path=tmp_path / "m.json")
+    assert "stock_basic" not in db.list_tables()  # 空返回不建表
 
 
 def test_rebuild_failed_table_does_not_block_others(tmp_path, monkeypatch):
@@ -161,12 +181,7 @@ def test_index_weight_fetches_month_last_trading_day(tmp_path, monkeypatch):
             "cal_date": ["20240102", "20240103", "20240201", "20240202"],
             "is_open": [1, 1, 1, 1],
         }),
-        ("stock_basic", ""): pl.DataFrame({
-            "ts_code": ["A.SZ"], "symbol": ["A"], "name": ["甲"],
-            "list_status": ["L"], "list_date": ["20240101"], "delist_date": [None],
-            "industry": [None], "market": [None], "act_name": [None], "act_ent_type": [None],
-            "area": [None], "cnspell": [None],
-        }),
+        ("stock_basic", ""): _sb_l(),
     }
     calls = []
     db = PlatformDB(tmp_path / "staging.duckdb")
@@ -218,11 +233,7 @@ def test_rebuild_concurrent_fetch_completes_all_dates(tmp_path, monkeypatch):
     tables[("trade_cal", "")] = pl.DataFrame(
         {"exchange": ["SSE"] * len(dates), "cal_date": dates, "is_open": [1] * len(dates)}
     )
-    tables[("stock_basic", "")] = pl.DataFrame({
-        "ts_code": ["A.SZ"], "symbol": ["A"], "name": ["甲"], "list_status": ["L"],
-        "list_date": ["20240101"], "delist_date": [None], "industry": [None],
-        "market": [None], "act_name": [None], "act_ent_type": [None],
-        "area": [None], "cnspell": [None]})
+    tables[("stock_basic", "")] = _sb_l()
     db = PlatformDB(tmp_path / "staging.duckdb")
     client = _fake_client(monkeypatch, tables)
     report = rebuild_all(db, client, scope=RebuildScope(start=dates[0], end=dates[-1]),
@@ -244,7 +255,7 @@ def test_rebuild_concurrent_records_failed(tmp_path, monkeypatch):
     # 20240103 无数据 → fetch 返回空 → 行数 0（不算失败）；再构造抛异常场景：
     def flaky(api_name, params, fields=None):
         if api_name == "stock_basic" and params.get("list_status") == "D":
-            return pl.DataFrame()
+            return _sb_d()
         if api_name == "daily" and params.get("trade_date") == "20240103":
             raise RuntimeError("boom")
         return tables.get((api_name, params.get("trade_date") or params.get("cal_date") or ""), pl.DataFrame())
@@ -265,18 +276,16 @@ def test_rebuild_concurrent_is_faster_than_serial(tmp_path, monkeypatch):
     tables[("trade_cal", "")] = pl.DataFrame(
         {"exchange": ["SSE"] * len(dates), "cal_date": dates, "is_open": [1] * len(dates)}
     )
-    tables[("stock_basic", "")] = pl.DataFrame({
-        "ts_code": ["A.SZ"], "symbol": ["A"], "name": ["甲"], "list_status": ["L"],
-        "list_date": ["20240101"], "delist_date": [None], "industry": [None],
-        "market": [None], "act_name": [None], "act_ent_type": [None],
-        "area": [None], "cnspell": [None]})
+    tables[("stock_basic", "")] = _sb_l()
 
     def make_client(delay):
         client = TeaJoinClient(token="t", interval=0.0)
         def responder(api_name, params, fields=None):
+            if api_name == "stock_basic":
+                return _sb_l() if params.get("list_status") == "L" else _sb_d()
             time.sleep(delay)
             if api_name == "stock_basic" and params.get("list_status") == "D":
-                return pl.DataFrame()
+                return _sb_d()
             return tables.get((api_name, params.get("trade_date") or params.get("cal_date") or ""), pl.DataFrame())
         monkeypatch.setattr(client, "fetch", responder)
         monkeypatch.setattr(client, "fetch_paged", responder)  # stock_basic 走 fetch_paged
@@ -304,11 +313,7 @@ def test_rebuild_accepts_string_is_open(tmp_path, monkeypatch):
         ("trade_cal", ""): pl.DataFrame(
             {"exchange": ["SSE"] * 2, "cal_date": dates, "is_open": ["1", "1"]}  # String 类型
         ),
-        ("stock_basic", ""): pl.DataFrame({
-            "ts_code": ["A.SZ"], "symbol": ["A"], "name": ["甲"], "list_status": ["L"],
-            "list_date": ["20240101"], "delist_date": [None], "industry": [None],
-            "market": [None], "act_name": [None], "act_ent_type": [None],
-            "area": [None], "cnspell": [None]}),
+        ("stock_basic", ""): _sb_l(),
         ("daily", "20240102"): pl.DataFrame({"trade_date": ["20240102"], "ts_code": ["A.SZ"], "close": [10.0]}),
         ("daily", "20240103"): pl.DataFrame({"trade_date": ["20240103"], "ts_code": ["A.SZ"], "close": [11.0]}),
     }
