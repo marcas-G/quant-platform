@@ -726,6 +726,31 @@ DEFAULT_EOD_SIGNAL_TIMING   # CLOSE / AFTER_CLOSE / NEXT_OPEN
 LabelArtifact 供因子研究评估使用（可合法包含未来信息），**不得进入未来
 Strategy Runtime**。Signal / Label 边界是 M6 最重要的 domain invariant。
 
+## 4.2 PIT Universe（M6-02）
+
+两阶段 Universe 模型：**Candidate Universe（数据加载候选集）→ PIT Eligibility（逐日 membership）**。
+Universe membership ≠ tradability（M6-02 不实现 can_buy/can_sell——M8 Execution 职责）。
+
+| API | 语义 |
+|---|---|
+| `resolve_codes()` | **legacy/static**：全期共用一组静态代码（含最新 ST 快照过滤与 date.start 一次性 min_list_days）——候选语义，不用于历史 PIT |
+| `resolve_candidate_codes(spec, db, override=None)` | 候选代码集：复用 override/ref/codes/rules 解析；rules 模式**只应用 exchange 与证券标识合法性**——exclude_st/min_list_days 属动态 PIT 条件，禁止提前应用 |
+| `resolve_universe_frame(spec, db, dates, *, override=None, candidate_codes=None)` | date×code PIT membership——接受显式日期集（chunk 友好，不要求全历史生成） |
+| `align_to_universe(raw, universe)` | active universe LEFT JOIN raw 行情：universe 内正常保留；universe 内无行情 → date/code 保留、行情 null；universe 外排除。duplicate/dtype/缺列 fail fast |
+
+UniverseFrame schema：`date(pl.Date) / code(pl.String) / in_universe / is_listed / list_days / is_st / exchange`，
+`(date, code)` 唯一，按 date/code 稳定排序。
+
+PIT 语义：
+- **listing**：`is_listed = list_date <= t AND (delist_date IS NULL OR t < delist_date)`（`t < delist_date` 平台语义）
+- **list_days**：`date − list_date`（**自然日**年龄，非交易日数）
+- **ST**：当日 `stock_st` 快照出现（`trade_date = date`）；`exclude_st=true` 且缺 stock_st 表 → ValueError（fail fast）；`exclude_st=false` 且缺表 → `is_st = null`
+- **exchange**：ts_code 后缀（.SH→SSE / .SZ→SZSE / .BJ→BSE）；默认池 SSE+SZSE，不意外纳入 BSE
+- 显式 codes 同样尊重上市/退市 PIT 状态（不自动增加 exclude_st/min_list_days 规则）
+
+**PIT invariant**：membership at t 不能依赖 t 之后的数据（ST/listing/delisting 均 PIT；
+平台库 stock_basic 当前无 delist_date 列时退市信息不可用，is_listed 只基于 list_date）。
+
 ## 5. 测试
 
 运行：

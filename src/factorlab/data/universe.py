@@ -4,6 +4,7 @@ from pathlib import Path
 from typing import Any
 
 import duckdb
+import polars as pl
 import yaml
 
 from factorlab.config import settings
@@ -85,14 +86,9 @@ def _codes_from_rules(rules: dict[str, Any], db: duckdb.DuckDBPyConnection, date
     return sorted(r[0] for r in rows)
 
 
-def resolve_codes(
-    spec: FactorSpec,
-    db: duckdb.DuckDBPyConnection,
-    override: str | None = None,
-    settings=settings,
-) -> list[str]:
-    """universe 解析：override > spec 内联（ref/codes/rules）。返回纯数字代码列表（daily.code 格式）。
-    全局默认层（config.default_universe）未接线，保留给 M4 CLI（--universe 默认值）。"""
+def _resolve_universe_data(spec: FactorSpec, override: str | None, settings) -> dict[str, Any]:
+    """解析 universe 数据源：override > spec 内联（ref/codes/rules）。返回 {"codes": [...]} 或
+    {"rules": {...}}。M6-02 起供 resolve_codes / resolve_candidate_codes / resolve_universe_frame 共用。"""
     if override is not None:
         try:
             normalize_code(override)
@@ -108,6 +104,20 @@ def resolve_codes(
         data = {"rules": spec.universe.rules}
     else:
         raise ValueError("universe 解析失败：spec 缺少 ref/codes/rules")
+    return data
+
+
+def resolve_codes(
+    spec: FactorSpec,
+    db: duckdb.DuckDBPyConnection,
+    override: str | None = None,
+    settings=settings,
+) -> list[str]:
+    """universe 解析：override > spec 内联（ref/codes/rules）。返回纯数字代码列表（daily.code 格式）。
+    全局默认层（config.default_universe）未接线，保留给 M4 CLI（--universe 默认值）。
+    **legacy/static candidate semantics**：全期共用一组静态代码（含最新 ST 快照过滤与
+    date.start 一次性 min_list_days）。历史 PIT membership 请用 resolve_universe_frame。"""
+    data = _resolve_universe_data(spec, override, settings)
 
     if "codes" in data:
         # 先按 6 位数字/ts_code 标准化；非标准格式（如 1 字符 symbol 测试数据）原样保留，
@@ -134,3 +144,195 @@ def resolve_codes(
     if not codes:
         raise ValueError("universe 无有效股票，请检查 codes/rules/引用文件")
     return codes
+
+
+# --------------------------------------------------------------------------
+# M6-02: PIT Universe（两阶段模型：Candidate → PIT Eligibility）
+# --------------------------------------------------------------------------
+
+def resolve_candidate_codes(
+    spec: FactorSpec,
+    db: duckdb.DuckDBPyConnection,
+    override: str | None = None,
+    settings=settings,
+) -> list[str]:
+    """候选代码集：整个日期段内"可能参与研究"的证券（数据加载集）。
+
+    复用 override/ref/codes/rules 解析体系；rules 模式**只应用 exchange 与
+    证券标识合法性**——exclude_st / min_list_days 属动态 PIT 条件，禁止提前应用。
+    语义：candidate = 可能出现的股票；membership[t] 由 resolve_universe_frame 决定。
+    """
+    data = _resolve_universe_data(spec, override, settings)
+    if "codes" in data:
+        candidates: list[str] = []
+        for c in data["codes"]:
+            try:
+                candidates.append(normalize_code(c))
+            except ValueError:
+                candidates.append(c)
+        rows = db.execute(
+            "SELECT symbol, ts_code FROM stock_basic"
+            " WHERE symbol IN (SELECT unnest(?)) OR ts_code IN (SELECT unnest(?))",
+            [candidates, candidates],
+        ).fetchall()
+        known_symbols = {r[0] for r in rows}
+        ts_to_symbol = {r[1]: r[0] for r in rows if r[1] is not None}
+        codes = sorted({ts_to_symbol.get(c, c) for c in candidates} & known_symbols)
+    elif "rules" in data:
+        rules = data["rules"]
+        unknown = set(rules) - _ALLOWED_RULES
+        if unknown:
+            raise ValueError(f"未知 universe 规则: {sorted(unknown)}（支持: {sorted(_ALLOWED_RULES)}）")
+        exchanges = rules.get("exchanges")
+        if exchanges:
+            bad = [e for e in exchanges if e not in VALID_EXCHANGES]
+            if bad:
+                raise ValueError(f"不支持的交易所: {bad}（v1 仅支持 {VALID_EXCHANGES}，不含 BSE）")
+            suffixes = [s for s, ex in _EXCHANGE_BY_SUFFIX.items() if ex in exchanges]
+        else:
+            suffixes = [s for s, ex in _EXCHANGE_BY_SUFFIX.items() if ex in VALID_EXCHANGES]
+        codes = sorted(
+            r[0] for r in db.execute(
+                "SELECT symbol FROM stock_basic WHERE substr(ts_code, -2) IN (SELECT unnest(?))",
+                [suffixes],
+            ).fetchall())
+    else:
+        raise ValueError(f"universe 数据必须包含 codes 或 rules: {data}")
+    if not codes:
+        raise ValueError("universe 无有效股票，请检查 codes/rules/引用文件")
+    return codes
+
+
+def _norm_dates(dates) -> list[str]:
+    """日期集统一为 'YYYY-MM-DD'（接受 date 对象或字符串）。"""
+    out = []
+    for d in dates:
+        if isinstance(d, str):
+            out.append(d[:10])
+        else:  # datetime.date
+            out.append(d.isoformat())
+    return out
+
+
+def resolve_universe_frame(
+    spec: FactorSpec,
+    db: duckdb.DuckDBPyConnection,
+    dates: list,
+    *,
+    override: str | None = None,
+    candidate_codes: list[str] | None = None,
+    settings=settings,
+) -> pl.DataFrame:
+    """date×code PIT membership（接受显式日期集——chunk 友好，不要求全历史生成）。
+
+    UniverseFrame schema: date/code/in_universe/is_listed/list_days/is_st/exchange。
+    PIT 语义：is_listed = list_date<=t AND (delist_date IS NULL OR t<delist_date)；
+    list_days = t − list_date（自然日）；is_st = 当日 stock_st 快照出现；
+    exchange = ts_code 后缀（.SH→SSE/.SZ→SZSE/.BJ→BSE）。
+    exclude_st=true 且 stock_st 缺表 → ValueError（fail fast）；false 且缺表 → is_st=null。
+    """
+    data = _resolve_universe_data(spec, override, settings)
+    rules = data.get("rules", {}) if "rules" in data else {}
+    codes = candidate_codes if candidate_codes is not None else resolve_candidate_codes(
+        spec, db, override=override, settings=settings)
+    if not codes:
+        raise ValueError("候选代码集为空")
+    date_strs = _norm_dates(dates)
+    if not date_strs:
+        raise ValueError("dates 不能为空")
+
+    tables = {r[0] for r in db.execute(
+        "SELECT table_name FROM information_schema.tables").fetchall()}
+    if "stock_basic" not in tables:
+        raise ValueError("需要 stock_basic 表（平台库由 data rebuild 生成）")
+    has_st = "stock_st" in tables
+    exclude_st = bool(rules.get("exclude_st"))
+    if exclude_st and not has_st:
+        raise ValueError("exclude_st 需要 stock_st 表（平台库由 data rebuild 生成）——不能默认所有股票非 ST")
+    # delist_date 列探测（旧库可能无此列——退市信息不可用则视为 NULL）
+    sb_cols = {r[0] for r in db.execute(
+        "SELECT column_name FROM information_schema.columns WHERE table_name='stock_basic'").fetchall()}
+    delist_col = "delist_date" if "delist_date" in sb_cols else "NULL"
+
+    select_cols = f"d.date, c.code, b.ts_code, b.list_date, {delist_col} AS delist_date"
+    sql = f"""
+        WITH d AS (SELECT CAST(unnest(?) AS DATE) AS date),
+             c AS (SELECT unnest(?) AS code)
+        SELECT {select_cols}
+        FROM d CROSS JOIN c
+        LEFT JOIN stock_basic b ON b.symbol = c.code
+    """
+    params: list = [date_strs, codes]
+    if has_st:
+        sql = sql.replace("SELECT " + select_cols, "SELECT " + select_cols + ", s.trade_date IS NOT NULL AS is_st")
+        sql += (" LEFT JOIN stock_st s"
+                " ON s.ts_code = b.ts_code AND s.trade_date = strftime(d.date, '%Y%m%d')")
+    rows = db.execute(sql, params).fetchall()
+    schema = ["date", "code", "ts_code", "list_date", "delist_date"] + (["is_st"] if has_st else [])
+    uf = pl.DataFrame(rows, schema=schema, orient="row")
+    uf = uf.with_columns(pl.col("date").cast(pl.Date), pl.col("code").cast(pl.String))
+    # 全 null 的 delist_date 会被 polars 推断为 null dtype——显式 String（null 保留）
+    uf = uf.with_columns(pl.col("delist_date").cast(pl.String))
+    if not has_st:
+        uf = uf.with_columns(pl.lit(None, dtype=pl.Boolean).alias("is_st"))
+    # 上市/退市 PIT
+    uf = uf.with_columns(
+        pl.when(pl.col("list_date").is_null()).then(None)
+        .otherwise(pl.col("list_date").str.strptime(pl.Date, "%Y%m%d")).alias("list_d"),
+        pl.when(pl.col("delist_date").is_null()).then(None)
+        .otherwise(pl.col("delist_date").str.strptime(pl.Date, "%Y%m%d")).alias("delist_d"),
+        pl.col("ts_code").str.slice(-2)
+        .replace_strict({"SH": "SSE", "SZ": "SZSE", "BJ": "BSE"}, default="?").alias("exchange"))
+    uf = uf.with_columns(
+        ((pl.col("date") >= pl.col("list_d"))
+         & pl.when(pl.col("delist_d").is_null()).then(pl.lit(True))
+           .otherwise(pl.col("date") < pl.col("delist_d")))
+        .fill_null(False).alias("is_listed"),
+        (pl.col("date") - pl.col("list_d")).dt.total_days().alias("list_days"))
+    # in_universe
+    cond = pl.col("is_listed")
+    if "codes" not in data:
+        min_days = rules.get("min_list_days")
+        if min_days is not None:
+            min_days = int(min_days)
+            if min_days < 0:
+                raise ValueError(f"min_list_days 不能为负: {min_days}")
+            cond = cond & (pl.col("list_days") >= min_days)
+        exchanges = rules.get("exchanges") or list(VALID_EXCHANGES)
+        bad = [e for e in exchanges if e not in VALID_EXCHANGES]
+        if bad:
+            raise ValueError(f"不支持的交易所: {bad}（v1 仅支持 {VALID_EXCHANGES}，不含 BSE）")
+        cond = cond & pl.col("exchange").is_in(exchanges)
+        if exclude_st:
+            cond = cond & pl.col("is_st").fill_null(False).not_()
+    uf = uf.with_columns(cond.fill_null(False).alias("in_universe"))
+    return uf.select(["date", "code", "in_universe", "is_listed", "list_days",
+                      "is_st", "exchange"]).sort(["date", "code"])
+
+
+def align_to_universe(raw: pl.DataFrame, universe: pl.DataFrame) -> pl.DataFrame:
+    """active universe LEFT JOIN raw 行情：universe 内正常保留行情；
+    universe 内无行情 → date/code 保留、行情 null；universe 外 → 排除。
+    不判断停牌/涨跌停/can_buy/can_sell（M8 Execution 职责）。
+    duplicate/dtype/缺列 fail fast——不静默去重/cast。"""
+    for df, name in ((raw, "raw"), (universe, "universe")):
+        missing = [c for c in ("date", "code") if c not in df.columns]
+        if missing:
+            raise ValueError(f"{name} 缺列: {missing}")
+        if df.schema["date"] != pl.Date:
+            raise ValueError(f"{name} date 列 dtype 必须为 pl.Date，实际 {df.schema['date']}")
+        if df.schema["code"] not in (pl.String, pl.Int32, pl.Int64):
+            raise ValueError(f"{name} code 列 dtype 必须为 String/整数，实际 {df.schema['code']}")
+    # 平台 daily.code 为 Int64——显式映射到 String（文档化兼容，非错误 cast）
+    raw = raw.with_columns(pl.col("code").cast(pl.String))
+    universe = universe.with_columns(pl.col("code").cast(pl.String))
+    for df, name in ((raw, "raw"), (universe, "universe")):
+        dup = df.group_by(["date", "code"]).len().filter(pl.col("len") > 1)
+        if dup.height:
+            raise ValueError(f"{name} (date, code) duplicate rows——(date, code) must be unique，fail fast")
+    # 对齐范围为 raw 出现的日期（universe 全日期不输出——研究只关心 raw 有数据的日期）
+    raw_dates = raw["date"].unique()
+    uni = universe.filter(pl.col("in_universe") & pl.col("date").is_in(raw_dates)) \
+        .select(["date", "code"])
+    out = uni.join(raw, on=["date", "code"], how="left")
+    return out.sort(["date", "code"])
