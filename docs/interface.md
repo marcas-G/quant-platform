@@ -753,6 +753,55 @@ PIT 语义：
 **PIT invariant**：membership at t 不能依赖 t 之后的数据（ST/listing/delisting 均 PIT；
 平台库 stock_basic 当前无 delist_date 列时退市信息不可用，is_listed 只基于 list_date）。
 
+## 4.3 Universe-Aware Signal/Label Runtime（M6-03）
+
+`run_factor()` 拆成两条独立 runtime（M6-01 domain contract 正式接线）：
+
+```
+Listed Market History → Signal Runtime → SignalArtifact
+Listed Market History → Label Runtime  → LabelArtifact
+        （PIT UniverseFrame 在两条路径入口：listed skeleton + active mask/keys）
+```
+
+- **Signal Runtime**（`engine.compute._compute_signal`）：candidate codes →
+  PIT UniverseFrame → load listed market → `align_to_listing`（is_listed skeleton，
+  停牌日保留 null）→ fill → 复权视图 → **universe-aware formula** →
+  filter(in_universe=true) → process chain → SignalArtifact。**绝不计算 forward returns**。
+- **Label Runtime**（`engine.compute._compute_labels`）：listed market →
+  `compute_forward_returns` → active-at-t keys → LabelArtifact。t 的 label 只取决于
+  t 是否 active——**t+h 的未来 universe membership 不参与 censoring**。
+- **legacy panel** = signal LEFT JOIN labels + close（CLI/eval 兼容视图，行为不变）。
+
+### Cross-sectional universe masking（`ops.universe_masking`）
+
+CS/GP 算子的**数据参数**在 AST 层包 `if_else(__universe_active, arg, None)`：
+TS/TA 仍见完整 listed history，CS/GP 只见当日 active 横截面。数据参数位置由
+`_CS_GP_MASK_ARGS` 显式声明（cs_rank 等单参数；cs_resid(y,x) 双参数全 mask；
+group_rank/group_mean 的 group key 不 mask）；**无法确认 mask 语义的 CS/GP
+算子 fail fast（ValueError 含 operator name）**。mask 列 `__universe_active`
+为内部保留列（来源 = PIT in_universe，用户不得定义），最终 SignalArtifact 不含。
+
+### formula future guard
+
+公式显式引用 `forward_*` / `future_*` / `target` / `label` → ValueError
+（"future/label inputs are forbidden in factor formula"）——不等到 load_daily
+unknown column。
+
+### FactorResult
+
+```python
+@dataclass
+class FactorResult:
+    spec: FactorSpec
+    signal_artifact: SignalArtifact
+    label_artifact: LabelArtifact
+    panel: pl.DataFrame        # legacy compatibility view
+    summary: dict
+```
+summary 新增 `candidate_count / signal_rows / label_rows / runtime_semantics`；
+`universe_count` 保留兼容。M6-03 不落盘 signal.parquet/labels.parquet
+（M6-05）；chunk label 尾部缺失保持现状（M6-04）。
+
 ## 5. 测试
 
 运行：

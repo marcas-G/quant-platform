@@ -352,6 +352,30 @@ def resolve_universe_frame(
                       "is_st", "exchange"]).sort(["date", "code"])
 
 
+def _validate_align_inputs(raw: pl.DataFrame, universe: pl.DataFrame,
+                           universe_cols: tuple[str, ...]) -> None:
+    """align_* 共享 fail-fast：date/code 契约 + universe 必填列 + duplicate。"""
+    for df, name, required in ((raw, "raw", ("date", "code")),
+                               (universe, "universe", universe_cols)):
+        missing = [c for c in required if c not in df.columns]
+        if missing:
+            raise ValueError(f"{name} 缺列: {missing}")
+        if df.schema["date"] != pl.Date:
+            raise ValueError(f"{name} date 列 dtype 必须为 pl.Date，实际 {df.schema['date']}")
+        if df.schema["code"] != pl.String:
+            raise ValueError(f"{name} code 列 dtype 必须为 pl.String，实际 {df.schema['code']}")
+    if "in_universe" in universe_cols and universe.schema["in_universe"] != pl.Boolean:
+        raise ValueError(f"universe in_universe 列 dtype 必须为 pl.Boolean，"
+                         f"实际 {universe.schema['in_universe']}")
+    if "is_listed" in universe_cols and universe.schema["is_listed"] != pl.Boolean:
+        raise ValueError(f"universe is_listed 列 dtype 必须为 pl.Boolean，"
+                         f"实际 {universe.schema['is_listed']}")
+    for df, name in ((raw, "raw"), (universe, "universe")):
+        dup = df.group_by(["date", "code"]).len().filter(pl.col("len") > 1)
+        if dup.height:
+            raise ValueError(f"{name} (date, code) duplicate rows——(date, code) must be unique，fail fast")
+
+
 def align_to_universe(raw: pl.DataFrame, universe: pl.DataFrame) -> pl.DataFrame:
     """**Universe 驱动**的 active LEFT JOIN：raw 不能决定日期是否存在。
 
@@ -362,22 +386,21 @@ def align_to_universe(raw: pl.DataFrame, universe: pl.DataFrame) -> pl.DataFrame
     - code 严格 pl.String（证券代码有前导零——整数无法无损表示）
     - duplicate/dtype/缺列 fail fast——不静默去重/cast
     """
-    for df, name, required in ((raw, "raw", ("date", "code")),
-                               (universe, "universe", ("date", "code", "in_universe"))):
-        missing = [c for c in required if c not in df.columns]
-        if missing:
-            raise ValueError(f"{name} 缺列: {missing}")
-        if df.schema["date"] != pl.Date:
-            raise ValueError(f"{name} date 列 dtype 必须为 pl.Date，实际 {df.schema['date']}")
-        if df.schema["code"] != pl.String:
-            raise ValueError(f"{name} code 列 dtype 必须为 pl.String，实际 {df.schema['code']}")
-    if universe.schema["in_universe"] != pl.Boolean:
-        raise ValueError(f"universe in_universe 列 dtype 必须为 pl.Boolean，"
-                         f"实际 {universe.schema['in_universe']}")
-    for df, name in ((raw, "raw"), (universe, "universe")):
-        dup = df.group_by(["date", "code"]).len().filter(pl.col("len") > 1)
-        if dup.height:
-            raise ValueError(f"{name} (date, code) duplicate rows——(date, code) must be unique，fail fast")
+    _validate_align_inputs(raw, universe, ("date", "code", "in_universe"))
     uni = universe.filter(pl.col("in_universe")).select(["date", "code"])
+    out = uni.join(raw, on=["date", "code"], how="left")
+    return out.sort(["date", "code"])
+
+
+def align_to_listing(raw: pl.DataFrame, universe: pl.DataFrame) -> pl.DataFrame:
+    """**is_listed 驱动的 LEFT JOIN**（listed market skeleton，M6-03 Signal/Label runtime 用）。
+
+    - listed + 正常行情 → 保留行情
+    - listed + 无行情（停牌/数据缺失）→ date/code 保留、market fields null
+    - pre-list / post-delist → 不存在（不产生上市前/退市后虚假行）
+    - 纪律与 align_to_universe 一致（date/code String/duplicate/dtype fail fast）
+    """
+    _validate_align_inputs(raw, universe, ("date", "code", "is_listed"))
+    uni = universe.filter(pl.col("is_listed")).select(["date", "code"])
     out = uni.join(raw, on=["date", "code"], how="left")
     return out.sort(["date", "code"])

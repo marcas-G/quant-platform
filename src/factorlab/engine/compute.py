@@ -17,7 +17,9 @@ from factorlab.config import settings as _settings
 from factorlab.data.adjust import view_prices
 from factorlab.data.calendar import chunk_calendar, fill_suspensions, trading_calendar
 from factorlab.data.source import load_daily
-from factorlab.data.universe import resolve_codes
+from factorlab.data.universe import align_to_listing, resolve_candidate_codes, resolve_universe_frame
+from factorlab.domain.frames import LabelArtifact, SignalArtifact, SignalMeta
+from factorlab.domain.timing import DEFAULT_EOD_SIGNAL_TIMING
 from factorlab.engine.forward import compute_forward_returns
 from factorlab.engine.partitions import reject_future_shifts, validate_partition_calls
 from factorlab.factor.ast_gate import validate_formula
@@ -29,8 +31,13 @@ from factorlab.ops.platform_ops import (
     rewrite_expr_methods,
 )
 from factorlab.ops.polars_ta_wrappers import register_polars_ta_ops
+from factorlab.ops.universe_masking import apply_universe_masking
 from factorlab.process.registry import run_process_chain
 from factorlab.spec import FactorSpec
+
+# M6-03：formula 显式引用 future/label 字段 → fail fast（不等到 load_daily unknown column）
+_FUTURE_COL_PREFIXES = ("forward_", "future_")
+_FUTURE_COL_EXACT = {"target", "label"}
 
 
 _PARAM_PATTERN = re.compile(r"\$\{(\w+)\}")
@@ -51,18 +58,34 @@ def _substitute_params(formula: str, params: dict[str, Any]) -> str:
     return _PARAM_PATTERN.sub(_repl, formula)
 
 
+def _check_future_inputs(formula: str) -> None:
+    """M6-03：factor formula 显式引用 forward_*/future_*/target/label → fail fast。"""
+    for col in _formula_columns(formula):
+        if col in _FUTURE_COL_EXACT or col.startswith(_FUTURE_COL_PREFIXES):
+            raise ValueError(
+                f"future/label inputs are forbidden in factor formula: {col!r}")
+
+
 def compute_formula(
     df: pl.DataFrame,
     formula: str,
     asset: str = "code",
     date: str = "date",
+    universe_mask: str | None = None,
 ) -> pl.DataFrame:
     validate_formula(formula)
     formula = inline_defs(formula)  # def 内联（幂等：无 def 原样返回）——窗口算子合法化为顶层 ts_ 调用
     formula = rewrite_expr_methods(formula)  # 元素级方法链 → 函数调用（expr_codegen 不支持属性调用）
     formula = expand_platform_macros(formula)  # 薄封装 → ts_ 表达式，保证按 asset 分区
+    if universe_mask is not None:
+        # M6-03：CS/GP 算子的数据参数包 if_else(mask, arg, None)——TS 仍见完整
+        # listed history，CS 只见当日 active universe。mask 列必须已存在于 df。
+        if universe_mask not in df.columns:
+            raise ValueError(f"universe mask 列 {universe_mask!r} 不在输入数据中（内部保留列）")
+        formula = apply_universe_masking(formula, universe_mask)
     register_polars_ta_ops()  # 幂等；保证分区校验能识别 ts_/cs_/ta_ 算子
     register_platform_ops()
+    _check_future_inputs(formula)
     validate_partition_calls(formula)
     reject_future_shifts(formula)
     result = codegen_exec(
@@ -187,7 +210,10 @@ class RunContext:
 
 @dataclass
 class FactorResult:
+    """M6-03：signal/label runtime 分离产物 + legacy panel 兼容视图。"""
     spec: FactorSpec
+    signal_artifact: SignalArtifact
+    label_artifact: LabelArtifact
     panel: pl.DataFrame
     summary: dict = field(default_factory=dict)
 
@@ -213,21 +239,25 @@ def _load_base_adj(con: duckdb.DuckDBPyConnection, date_end: str | None) -> pl.D
     ).pl()
 
 
-def _compute_panel(
+def _compute_signal(
     con: duckdb.DuckDBPyConnection,
     ctx: RunContext,
     spec: FactorSpec,
     formula: str,
     codes: list[str],
+    uf: pl.DataFrame,
     date_start: str,
     date_end: str,
     cal: pl.Series,
     base_adj: pl.DataFrame | None = None,
 ) -> pl.DataFrame:
-    """单块流水线：load（SQL 按段过滤）→ 停牌补全 → 前向收益 → 复权视图 → 因子 → process。
+    """Signal Runtime（M6-03）：listed market skeleton → fill → 复权视图 →
+    universe-aware formula → filter(active) → process。
 
-    base_adj 仅在 qfq 时传入（分块路径）：归一 adj_factor 使组内最新=1 → factor=adj/base_adj，
-    跨块绝对水平因子与整段跑一致。hfq/pit_qfq 不归一（归一会改变 hfq 结果；pit_qfq 分子分母同消）。
+    - TS/TA 使用 is_listed=true 的完整历史（含 in_universe=false 期间——listing 先行）
+    - CS/GP 经 __universe_active mask 只看到当日 active 横截面
+    - 最终 rows 只保留 in_universe=true（process chain 只见 active）
+    - **本路径绝不计算 forward returns**
     """
     cols = _formula_columns(formula) + ["close", "adj_factor"]
     raw = load_daily(
@@ -235,7 +265,7 @@ def _compute_panel(
         date_start=date_start, date_end=date_end,
         cols=cols, float32=ctx.float32,
     ).collect()
-    panel = fill_suspensions(raw, cal)
+    panel = align_to_listing(raw, uf)   # is_listed skeleton（停牌日保留 null 行）
     if panel.height == 0:
         raise ValueError("日期段无数据，可运行 data refresh（M3b）")
     adjustment = getattr(spec, "adjustment", None) or ctx.adjustment
@@ -243,20 +273,62 @@ def _compute_panel(
         panel = panel.join(base_adj, on="code", how="left").with_columns(
             (pl.col("adj_factor") / pl.col("base_adj")).alias("adj_factor")
         ).drop("base_adj")
-    panel = compute_forward_returns(panel)
     panel = fill_suspension_values(panel)
     asof = None
     if adjustment == "pit_qfq":
         asof = datetime.date.fromisoformat(spec.date.end) if spec.date.end else panel["date"].max()
     panel = view_prices(panel, adjustment, asof=asof)
-    panel = panel.join(compute_formula(panel, formula), on=["date", "code"], how="left")
-    panel = run_process_chain(panel, spec.process, ctx=con)
-    return panel
+    # universe mask 列：来源必须是 PIT in_universe（内部保留列，用户不得定义）
+    panel = panel.join(uf.select(["date", "code", "in_universe"]), on=["date", "code"], how="left")
+    panel = panel.with_columns(pl.col("in_universe").fill_null(False).alias("__universe_active"))
+    result = compute_formula(panel, formula, universe_mask="__universe_active")
+    sig = panel.select(["date", "code", "in_universe", "close"]).join(
+        result, on=["date", "code"], how="left")
+    sig = sig.filter(pl.col("in_universe")).drop("in_universe")
+    sig = run_process_chain(sig, spec.process, ctx=con)
+    return sig.sort(["date", "code"])
+
+
+def _compute_labels(
+    con: duckdb.DuckDBPyConnection,
+    ctx: RunContext,
+    spec: FactorSpec,
+    codes: list[str],
+    uf: pl.DataFrame,
+    date_start: str,
+    date_end: str,
+    cal: pl.Series,
+) -> pl.DataFrame:
+    """Label Runtime（M6-03）：listed market history → compute_forward_returns →
+    active-at-t keys → LabelArtifact frame。
+
+    - 是否生成 t 的 label 取决于 t 是否 active（t+h 的未来 membership 不参与 censoring）
+    - forward endpoint 无真实价格 → label null（chunk 尾部/停牌——保持现有语义）
+    """
+    raw = load_daily(
+        ctx.db_path, codes,
+        date_start=date_start, date_end=date_end,
+        cols=["close", "adj_factor"], float32=ctx.float32,
+    ).collect()
+    panel = align_to_listing(raw, uf)
+    if panel.height == 0:
+        raise ValueError("日期段无数据，可运行 data refresh（M3b）")
+    panel = compute_forward_returns(panel)   # fill 之前（现有顺序——停牌 endpoint null 合法）
+    panel = fill_suspension_values(panel)
+    panel = panel.join(uf.select(["date", "code", "in_universe"]), on=["date", "code"], how="left")
+    panel = panel.filter(pl.col("in_universe"))
+    return panel.select(["date", "code", "forward_return_5d", "forward_return_20d"]).sort(["date", "code"])
 
 
 def run_factor(spec: FactorSpec, ctx: RunContext) -> FactorResult:
-    """装配链路：universe → 加载（含 adj_factor）→ 停牌补全 → 前向收益（total_return，
-    raw close×adj，必须先于复权视图）→ 复权视图（因子计算口径）→ 因子 → process → 落盘。"""
+    """M6-03 装配链路：两条独立 runtime——
+
+        Listed Market History → Signal Runtime → SignalArtifact
+        Listed Market History → Label Runtime → LabelArtifact
+        （PIT UniverseFrame 在两条路径的入口：listed skeleton + active mask/keys）
+
+    Signal 路径绝不计算 forward returns；Label 路径独立调用 compute_forward_returns。
+    legacy panel = signal LEFT JOIN labels（CLI/eval 兼容视图）。"""
     if spec.factors is not None:
         raise NotImplementedError("多因子 factors/combine 组合不在平台范围（平台定位单因子计算与评估）")
     # 展开链（打开数据库前全部完成，语法/参数错误先暴露）：
@@ -273,55 +345,84 @@ def run_factor(spec: FactorSpec, ctx: RunContext) -> FactorResult:
     formula = inline_defs(formula)
     formula = rewrite_expr_methods(formula)
     formula = expand_platform_macros(formula)  # 薄封装 → ts_ 表达式（compute_formula 内部再展开幂等无害）
+    _check_future_inputs(formula)  # future/label 显式引用 → fail fast（AC-09）
     try:
         con = duckdb.connect(str(ctx.db_path), read_only=True)
     except duckdb.IOException as exc:
         raise FileNotFoundError(f"数据库不存在: {ctx.db_path}（可运行 data refresh 或检查路径）") from exc
     try:
-        codes = resolve_codes(spec, con, override=ctx.universe_override)
+        codes = resolve_candidate_codes(spec, con, override=ctx.universe_override)
         cal = trading_calendar(ctx.db_path, date_start=spec.date.start, date_end=spec.date.end)
         # trade_cal 含未来公告日（~94 个到 20261231）：补全面板截断到今天，不产生未来 null 行
         today = datetime.date.today()
         cal = cal.filter(cal <= today)
+        if cal.len() == 0:
+            raise ValueError("日期段无数据，可运行 data refresh（M3b）")
+        warmup = ctx.warmup_days if ctx.warmup_days is not None \
+            else _ts_window_days(formula) + _WARMUP_SAFETY_PAD
         if ctx.chunk_days is None:
-            # 单块整段（现行路径，逐字节不变）：base_adj=None → qfq 组内 latest 基准
-            panel = _compute_panel(con, ctx, spec, formula, codes, spec.date.start, spec.date.end, cal)
+            start_d = datetime.date.fromisoformat(spec.date.start) if spec.date.start else None
+            end_d = datetime.date.fromisoformat(spec.date.end) if spec.date.end else None
+            chunks = [(start_d, start_d, end_d)]
+            base_adj = None   # 单块：qfq 组内 latest 基准（与整段跑一致）
         else:
-            # 日期分块：每块独立跑完整流水线（含 warmup 重叠段），丢弃 warmup 行后拼接。
-            # CS 算子（per-date 横截面）块内完整、TS 窗口由 warmup 覆盖 → 与整段逐 cell 一致；
-            # qfq 时 adj_factor 按全局基准归一，绝对水平因子跨块一致。
-            warmup = ctx.warmup_days if ctx.warmup_days is not None \
-                else _ts_window_days(formula) + _WARMUP_SAFETY_PAD
             chunks = chunk_calendar(cal, ctx.chunk_days, warmup)
             base_adj = _load_base_adj(con, spec.date.end)
-            panels = []
-            for load_start, chunk_start, chunk_end in chunks:
+        sig_parts, lab_parts = [], []
+        for load_start, chunk_start, chunk_end in chunks:
+            if load_start is None or chunk_end is None:
+                cal_chunk = cal          # 单块全历史（spec.date 未设）
+            else:
                 cal_chunk = cal.filter((cal >= load_start) & (cal <= chunk_end))
-                chunk_panel = _compute_panel(
-                    con, ctx, spec, formula, codes, load_start.isoformat(), chunk_end.isoformat(),
-                    cal_chunk, base_adj)
+            # PIT UniverseFrame 覆盖 load_start..chunk_end（含 warmup——CS→TS 混合在
+            # warmup 期间不缺 universe membership，AC-25）
+            uf = resolve_universe_frame(spec, con, dates=cal_chunk.to_list(),
+                                        candidate_codes=codes)
+            sig = _compute_signal(con, ctx, spec, formula, codes, uf,
+                                  load_start.isoformat() if load_start else None,
+                                  chunk_end.isoformat() if chunk_end else None,
+                                  cal_chunk, base_adj)
+            lab = _compute_labels(con, ctx, spec, codes, uf,
+                                  load_start.isoformat() if load_start else None,
+                                  chunk_end.isoformat() if chunk_end else None, cal_chunk)
+            if ctx.chunk_days is not None:
                 # 每块算完即裁剪到对齐输出列：全列面板堆叠会让峰值内存 = 所有块之和（OOM）
-                chunk_panel = chunk_panel.filter(pl.col("date") >= chunk_start)
-                panels.append(chunk_panel.select([c for c in _CHUNK_KEEP if c in chunk_panel.columns]))
-            panel = pl.concat(panels)
-            # 立即释放全部块级引用（含循环残留的最后一块全列面板）：评估阶段需要剩余内存
-            del panels, chunk_panel, cal_chunk, base_adj
-        # spec 2.5 对齐输出：date, code, signal, forward_return_h, close
+                sig = sig.filter(pl.col("date") >= chunk_start)
+                lab = lab.filter(pl.col("date") >= chunk_start)
+            sig_parts.append(sig.select([c for c in _CHUNK_KEEP if c in sig.columns]))
+            lab_parts.append(lab)
+        signal_df = pl.concat(sig_parts)
+        labels_df = pl.concat(lab_parts)
+        if ctx.chunk_days is not None:
+            del sig_parts, lab_parts, cal_chunk, base_adj  # 立即释放块级引用（评估阶段省内存）
+        # M6-01 domain contract 接线
+        adjustment = getattr(spec, "adjustment", None) or ctx.adjustment
+        meta = SignalMeta(name=spec.name, frequency="1d",
+                          timing=DEFAULT_EOD_SIGNAL_TIMING, adjustment=adjustment)
+        signal_artifact = SignalArtifact(
+            frame=signal_df.select(["date", "code", "signal"]), meta=meta)
+        label_artifact = LabelArtifact(
+            frame=labels_df.select(["date", "code", "forward_return_5d", "forward_return_20d"]))
+        # legacy panel：signal LEFT JOIN labels + close（CLI/eval 兼容视图）
+        panel = signal_df.join(labels_df, on=["date", "code"], how="left")
         panel = panel.select([c for c in _CHUNK_KEEP if c in panel.columns])
     finally:
         con.close()
 
-    adjustment = getattr(spec, "adjustment", None) or ctx.adjustment
     summary = {
         "name": spec.name,
         "category": spec.category,
         "direction": spec.direction,
-        "universe_count": len(codes),
+        "universe_count": len(codes),   # 兼容字段（legacy 语义——候选集规模）
+        "candidate_count": len(codes),
         "codes": codes,
         "date_start": str(panel["date"].min()),  # panel.height == 0 已在链路中 raise，无需兜底
         "date_end": str(panel["date"].max()),
         "panel_rows": panel.height,
+        "signal_rows": signal_artifact.frame.height,
+        "label_rows": label_artifact.frame.height,
         "signal_null_ratio": round(panel["signal"].null_count() / panel.height, 4),
+        "runtime_semantics": "pit_universe_signal_label_v1",
         "process": spec.process,
         "adjustment": adjustment,
         "float32": ctx.float32,
@@ -330,4 +431,5 @@ def run_factor(spec: FactorSpec, ctx: RunContext) -> FactorResult:
     ctx.output_dir.mkdir(parents=True, exist_ok=True)
     panel.write_parquet(ctx.output_dir / "panel.parquet")
     (ctx.output_dir / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
-    return FactorResult(spec=spec, panel=panel, summary=summary)
+    return FactorResult(spec=spec, signal_artifact=signal_artifact, label_artifact=label_artifact,
+                        panel=panel, summary=summary)
