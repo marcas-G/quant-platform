@@ -82,12 +82,21 @@ def _meta_from_dict(sig_manifest: dict[str, Any]) -> SignalMeta:
     for key in ("name", "frequency", "timing"):
         if key not in meta:
             raise ValueError(f"signal meta 缺少字段: {key!r}")
+    if not isinstance(meta["name"], str) or not meta["name"]:
+        raise ValueError(f"signal meta name 必须为 non-empty str，实际 {meta['name']!r}")
+    if not isinstance(meta["frequency"], str) or not meta["frequency"]:
+        raise ValueError(f"signal meta frequency 必须为 non-empty str，实际 {meta['frequency']!r}")
+    adjustment = meta.get("adjustment")
+    if adjustment is not None and not isinstance(adjustment, str):
+        raise ValueError(f"signal meta adjustment 必须为 null 或 str，实际 {adjustment!r}")
     timing = meta.get("timing")
     if not isinstance(timing, dict):
         raise ValueError("signal meta timing 非 dict")
     for key in ("information_cutoff", "available_at", "default_earliest_execution"):
         if key not in timing:
             raise ValueError(f"signal meta timing 缺少字段: {key!r}")
+        if not isinstance(timing[key], str):
+            raise ValueError(f"signal meta timing {key} 必须为 str，实际 {timing[key]!r}")
     try:
         info = InformationCutoff(timing["information_cutoff"])
         avail = SignalAvailability(timing["available_at"])
@@ -133,7 +142,9 @@ def build_manifest(signal_artifact: SignalArtifact, label_artifact: LabelArtifac
                 "schema_version": LABEL_SCHEMA_VERSION,
                 "rows": label_artifact.frame.height,
                 "columns": list(label_artifact.frame.columns),
-                "horizons": list(DEFAULT_FORWARD_HORIZONS),
+                # M6-06A：horizons 来自实际 LabelArtifact 列（schema-v1 validation
+                # 已保证 actual == DEFAULT_FORWARD_HORIZONS——不重新硬编码）
+                "horizons": list(extract_forward_horizons(list(label_artifact.frame.columns))),
             },
             "panel": {
                 "file": LEGACY_PANEL_FILE,
@@ -144,6 +155,20 @@ def build_manifest(signal_artifact: SignalArtifact, label_artifact: LabelArtifac
             },
         },
     }
+
+
+def validate_label_schema_v1(labels: LabelArtifact) -> None:
+    """Persistence-side Label schema v1：实际 horizons 必须 == DEFAULT_FORWARD_HORIZONS。
+
+    Domain LabelArtifact 允许任意 horizon（forward_return_60d 合法构造），但
+    schema v1 persistence 固定 (5, 20)——writer 必须在写文件前验证，否则生成
+    自己的 loader 必然拒绝的目录。
+    """
+    actual = extract_forward_horizons(list(labels.frame.columns))
+    if actual != DEFAULT_FORWARD_HORIZONS:
+        raise ValueError(
+            f"Label schema v1 要求 horizons == {DEFAULT_FORWARD_HORIZONS}，"
+            f"实际 {actual}（domain 允许任意 horizon，但不能用 schema v1 落盘）")
 
 
 def validate_signal_label_alignment(signal: SignalArtifact,
@@ -177,10 +202,13 @@ def write_factor_artifacts(output_dir: Path, signal_artifact: SignalArtifact,
     **写任何文件之前**执行：Signal/Label key 对齐验证 + 内部保留列 guard——
     pair mismatch / runtime 泄漏 → 零文件写入。返回加入 manifest 后的 summary。
     """
+    # 全部验证在任何 I/O 之前完成（M6-06A：含 Label schema v1 自洽——
+    # 60d-only LabelArtifact 不能生成自己的 loader 必然拒绝的目录）
     validate_signal_label_alignment(signal_artifact, label_artifact)
     _check_no_internal_columns(signal_artifact.frame, "signal")
     _check_no_internal_columns(label_artifact.frame, "labels")
     _check_no_internal_columns(panel, "panel")
+    validate_label_schema_v1(label_artifact)
     output_dir.mkdir(parents=True, exist_ok=True)
     _atomic_write(output_dir / SIGNAL_FILE,
                   lambda p: signal_artifact.frame.write_parquet(p))
@@ -210,16 +238,24 @@ def _load_summary(result_dir: Path) -> dict:
 
 
 def _check_format_version(summary: dict) -> None:
+    """artifact format version 严格 int（非 bool）——True/1.0/"1"/null/-1 均拒绝。"""
     v = summary.get("artifact_format_version")
     if v is None:
         raise ValueError(_LEGACY_DIR_MSG)
+    if not isinstance(v, int) or isinstance(v, bool) or v < 1:
+        raise ValueError(f"invalid artifact format version type/value: {v!r}"
+                         f"（必须为 >=1 的整数，supported version {ARTIFACT_FORMAT_VERSION}）")
     if v != ARTIFACT_FORMAT_VERSION:
         raise ValueError(f"unsupported artifact format version {v}——"
                          f"supported version {ARTIFACT_FORMAT_VERSION}")
 
 
 def _check_schema_version(manifest: dict, name: str, supported: int) -> None:
+    """schema version 严格 int（非 bool）且 >= 1——True/1.0/"1"/0/-1 均拒绝。"""
     v = manifest.get("schema_version")
+    if not isinstance(v, int) or isinstance(v, bool) or v < 1:
+        raise ValueError(f"invalid {name} schema version type/value: {v!r}"
+                         f"（必须为 >=1 的整数，supported version {supported}）")
     if v != supported:
         raise ValueError(f"unsupported {name} schema version {v}——"
                          f"supported version {supported}")

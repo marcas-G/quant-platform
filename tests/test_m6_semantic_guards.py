@@ -363,3 +363,123 @@ def test_semantic_gate_e2e(tmp_path):
     # disk round-trip
     assert bundle.signal.frame.equals(r.signal_artifact.frame)
     assert bundle.labels.frame.equals(r.label_artifact.frame)
+
+
+# ================================================================
+# M6-06A：persistence schema-v1 self-consistency
+# ================================================================
+
+def _label_60d():
+    return LabelArtifact(frame=pl.DataFrame({
+        "date": pl.Series([datetime.date(2024, 1, 2), datetime.date(2024, 1, 3)], dtype=pl.Date),
+        "code": pl.Series(["000001", "000002"], dtype=pl.String),
+        "forward_return_60d": pl.Series([0.1, 0.2], dtype=pl.Float64),
+    }))
+
+
+def _label_5_60():
+    return LabelArtifact(frame=pl.DataFrame({
+        "date": pl.Series([datetime.date(2024, 1, 2), datetime.date(2024, 1, 3)], dtype=pl.Date),
+        "code": pl.Series(["000001", "000002"], dtype=pl.String),
+        "forward_return_5d": pl.Series([0.1, 0.2], dtype=pl.Float64),
+        "forward_return_60d": pl.Series([0.3, 0.4], dtype=pl.Float64),
+    }))
+
+
+def test_domain_allows_60d_only_label():
+    """Domain 仍允许任意 horizon——只是不能用 schema v1 落盘。"""
+    _label_60d()   # 构造 PASS
+
+
+def test_writer_rejects_60d_only_label(tmp_path):
+    lab = _label_60d()
+    with pytest.raises(ValueError, match="Label schema v1"):
+        write_factor_artifacts(tmp_path / "out", SignalArtifact(frame=_sig_frame(), meta=_meta()),
+                               lab, _sig_frame(), {})
+    for f in (SIGNAL_FILE, LABELS_FILE, LEGACY_PANEL_FILE, SUMMARY_FILE):
+        assert not (tmp_path / "out" / f).exists(), f"{f} 被写出（fail-before-write 违反）"
+
+
+def test_writer_rejects_5_60_label(tmp_path):
+    lab = _label_5_60()
+    with pytest.raises(ValueError, match="Label schema v1"):
+        write_factor_artifacts(tmp_path / "out", SignalArtifact(frame=_sig_frame(), meta=_meta()),
+                               lab, _sig_frame(), {})
+    for f in (SIGNAL_FILE, LABELS_FILE, LEGACY_PANEL_FILE, SUMMARY_FILE):
+        assert not (tmp_path / "out" / f).exists()
+
+
+def test_writer_accepts_normal_5_20_roundtrip(tmp_path):
+    build_db(tmp_path)
+    r = _run(tmp_path, _spec(tmp_path))
+    loaded = load_label_artifact(tmp_path / "out")
+    assert loaded.frame.equals(r.label_artifact.frame)
+
+
+def test_manifest_horizons_from_actual_columns(tmp_path):
+    build_db(tmp_path)
+    _run(tmp_path, _spec(tmp_path))
+    s = _summary(tmp_path)
+    from factorlab.artifacts import extract_forward_horizons
+    lab = pl.read_parquet(tmp_path / "out" / LABELS_FILE)
+    assert s["artifacts"]["labels"]["horizons"] == list(extract_forward_horizons(list(lab.columns)))
+    assert s["artifacts"]["labels"]["horizons"] == [5, 20]
+
+
+@pytest.mark.parametrize("bad", [True, 1.0, "1", -1])
+def test_format_version_strict_type(tmp_path, bad):
+    build_db(tmp_path)
+    _run(tmp_path, _spec(tmp_path))
+    _tamper(tmp_path, "", "artifact_format_version", bad)
+    with pytest.raises(ValueError, match="invalid artifact format version"):
+        load_signal_artifact(tmp_path / "out")
+
+
+@pytest.mark.parametrize("bad", [True, 1.0, "1", 0, -1])
+def test_signal_schema_strict_type(tmp_path, bad):
+    build_db(tmp_path)
+    _run(tmp_path, _spec(tmp_path))
+    _tamper(tmp_path, "artifacts.signal", "schema_version", bad)
+    with pytest.raises(ValueError, match="invalid signal schema version"):
+        load_signal_artifact(tmp_path / "out")
+
+
+@pytest.mark.parametrize("bad", [True, 1.0, "1", 0, -1])
+def test_label_schema_strict_type(tmp_path, bad):
+    build_db(tmp_path)
+    _run(tmp_path, _spec(tmp_path))
+    _tamper(tmp_path, "artifacts.labels", "schema_version", bad)
+    with pytest.raises(ValueError, match="invalid labels schema version"):
+        load_label_artifact(tmp_path / "out")
+
+
+def test_int_unsupported_version_still_unsupported(tmp_path):
+    build_db(tmp_path)
+    _run(tmp_path, _spec(tmp_path))
+    _tamper(tmp_path, "", "artifact_format_version", 2)
+    with pytest.raises(ValueError, match="unsupported artifact format version 2"):
+        load_signal_artifact(tmp_path / "out")
+
+
+def test_meta_name_non_string(tmp_path):
+    build_db(tmp_path)
+    _run(tmp_path, _spec(tmp_path))
+    _tamper(tmp_path, "artifacts.signal.meta", "name", 123)
+    with pytest.raises(ValueError, match="signal meta name 必须为 non-empty str"):
+        load_signal_artifact(tmp_path / "out")
+
+
+def test_meta_adjustment_non_string(tmp_path):
+    build_db(tmp_path)
+    _run(tmp_path, _spec(tmp_path))
+    _tamper(tmp_path, "artifacts.signal.meta", "adjustment", [])
+    with pytest.raises(ValueError, match="adjustment 必须为 null 或 str"):
+        load_signal_artifact(tmp_path / "out")
+
+
+def test_meta_timing_non_string(tmp_path):
+    build_db(tmp_path)
+    _run(tmp_path, _spec(tmp_path))
+    _tamper(tmp_path, "artifacts.signal.meta.timing", "information_cutoff", 1)
+    with pytest.raises(ValueError, match="information_cutoff 必须为 str"):
+        load_signal_artifact(tmp_path / "out")
