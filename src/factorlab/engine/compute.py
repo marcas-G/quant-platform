@@ -464,8 +464,9 @@ def run_factor(spec: FactorSpec, ctx: RunContext) -> FactorResult:
         "float32": ctx.float32,
         "spec_yaml": yaml.safe_dump(spec.model_dump(), allow_unicode=True),
     }
-    ctx.output_dir.mkdir(parents=True, exist_ok=True)
-    panel.write_parquet(ctx.output_dir / "panel.parquet")
-    (ctx.output_dir / "summary.json").write_text(json.dumps(summary, ensure_ascii=False, indent=2), encoding="utf-8")
+    # M6-05：统一 artifact persistence——signal → labels → panel → summary（最后 = 完成标记）
+    from factorlab.artifacts import write_factor_artifacts
+    summary = write_factor_artifacts(ctx.output_dir, signal_artifact, label_artifact,
+                                     panel, summary)
     return FactorResult(spec=spec, signal_artifact=signal_artifact, label_artifact=label_artifact,
                         panel=panel, summary=summary)

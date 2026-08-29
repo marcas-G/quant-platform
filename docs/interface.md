@@ -843,6 +843,34 @@ Label:                [ output chunk | right lookahead ]  ← 结束于 label_en
   skeleton 承载未来市场历史）
 - `DEFAULT_FORWARD_HORIZONS = (5, 20)` 为 horizon 唯一来源（forward.py）
 
+## 4.5 Versioned Result Artifacts（M6-05）
+
+结果目录正式契约（`src/factorlab/artifacts.py` 统一 I/O）：
+
+```
+results/<factor>/
+├── signal.parquet   ← 未来 Strategy Runtime 唯一允许消费的正式 signal artifact
+├── labels.parquet   ← FactorEvaluator 使用的未来标签 artifact（evaluation-only）
+├── panel.parquet    ← legacy compatibility view（CLI/eval/Web 兼容，非正式输出）
+└── summary.json     ← manifest（最后写入 = core artifacts 完成标记）
+```
+
+主从关系：`SignalArtifact → signal.parquet`；`LabelArtifact → labels.parquet`；
+`SignalArtifact + LabelArtifact + 兼容字段 → panel.parquet`（signal 绝不从 panel 派生）。
+
+- **版本**：`ARTIFACT_FORMAT_VERSION = 1`（结果目录 layout）；Signal/Labels/Panel
+  `schema_version = 1`（单 artifact 契约）——整数可比较
+- **文件名常量**：SIGNAL_FILE/LABELS_FILE/LEGACY_PANEL_FILE/SUMMARY_FILE（单一来源）
+- **signal manifest** 含 SignalMeta（timing 以 Enum.value JSON 化：information_cutoff
+  = close / available_at = after_close / default_earliest_execution = next_open——
+  来自 SignalArtifact.meta.timing，非硬编码）；labels manifest 的 horizons 来自
+  DEFAULT_FORWARD_HORIZONS；panel manifest 标记 `role: legacy_compatibility_view`
+- **loaders**：`load_signal_artifact(result_dir)` / `load_label_artifact(result_dir)`——
+  验证 format/schema version、manifest 文件名 == 平台固定名、M6-01 validator 复验
+  磁盘内容。**绝不 fallback 到 panel.parquet**；旧结果目录（无 versioned manifest）
+  明确报错（legacy result directory does not contain versioned Signal/Label artifacts）
+- 单文件 atomic（temp + os.replace）；目录级事务不实现（见风险）
+
 ## 5. 测试
 
 运行：
