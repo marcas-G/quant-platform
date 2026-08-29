@@ -694,6 +694,38 @@ M3b+ 按 ts_code 分批）、`INDEX_CODES`（4 指数）。
   `note`）或对应段跳过（duckdb 错误捕获，不阻塞）。primary 为 `PlatformDB`，
   ref_path 接受 `PlatformDB | Path`。
 
+## 4.1 Domain contracts（M6-01）
+
+统一研究语义层（`factorlab.domain`）——Signal / Label 领域契约与信号时间语义。
+**本层为新增能力，尚未接线到现有因子计算链路**（factorlab run/list/corr/svd/serve
+行为不变）。
+
+### 时间语义（`factorlab.domain.timing`）
+
+```python
+SignalTiming(information_cutoff, available_at, default_earliest_execution)
+DEFAULT_EOD_SIGNAL_TIMING   # CLOSE / AFTER_CLOSE / NEXT_OPEN
+```
+
+含义：**使用 t 日完整 OHLCV 的日频 EOD 信号，在 t 日收盘后才可获得
+（AFTER_CLOSE），因此默认最早只能在 t+1 open 执行（NEXT_OPEN）**。
+对象 frozen 不可变；本阶段不实现 calendar/execution timestamp 计算。
+
+### 领域对象（`factorlab.domain.frames`）
+
+| 对象 | 契约 |
+|---|---|
+| `SignalMeta` | name / frequency（当前仅 `1d`）/ timing / adjustment——frozen |
+| `SignalArtifact` | frame + meta；必需 `date`(pl.Date) / `code`(pl.String) / `signal`(numeric)；`(date, code)` 唯一；允许额外非未来列 |
+| `LabelArtifact` | frame；必需 `date` / `code` + 至少一个 `forward_return_<N>d`（任意 horizon） |
+
+**SignalArtifact 显式禁止 future-return / label 字段**：`forward_*` / `future_*`
+前缀与 `target` / `label` 精确字段一律拒绝（`ValueError`），重复 `(date, code)`
+直接失败（不静默去重），dtype 错误直接失败（不自动 cast）。
+
+LabelArtifact 供因子研究评估使用（可合法包含未来信息），**不得进入未来
+Strategy Runtime**。Signal / Label 边界是 M6 最重要的 domain invariant。
+
 ## 5. 测试
 
 运行：
