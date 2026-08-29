@@ -920,6 +920,14 @@ fast、D 行缺 delist_date fail fast）+ migrate_stock_basic_pit_fields（定�
 ALTER ADD COLUMN + upsert keys=ts_code，保留原字段）。真实迁移依赖
 FACTORLAB_TEAJOIN_TOKEN——未设置时 M6-07B 数据部分 BLOCKED（代码与测试已就绪）。
 
+**M6-07B2 source integrity**：validate_stock_basic_source（纯 validator，唯一正式
+入口）——list_date 非空、endpoint status 分区（L endpoint 全 L / D endpoint 全 D）、
+list_status 仅 L/D、日期真实日历有效（YYYYMMDD）、delist_date >= list_date、
+ts_code 匹配 ^\d{6}\.(SH|SZ|BJ)$、symbol == ts_code 前六位、ts_code
+unique——全部 fail fast 不自动修复。production stock_basic migration requires
+validated L/D source: non-null valid list_date, D delist_date, correct status
+partition, identifier/date temporal consistency.
+
 **M6-07B1 migration hardening**：two-phase（Phase-1 schema 事务外幂等补
 list_status/delist_date；Phase-2 同一 connection 事务：UPDATE 已有行 PIT fields
 （不覆盖 name/industry 等）、INSERT source 新 code、不删旧 code、validation

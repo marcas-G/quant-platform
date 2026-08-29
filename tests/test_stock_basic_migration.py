@@ -80,7 +80,7 @@ def test_fetch_bad_date_format_fails():
         pl.DataFrame([_l_row()]),
         pl.DataFrame([_l_row(ts_code="600001.SH", symbol="600001", list_status="D",
                              delist_date="2024-06-01")]))   # 非 YYYYMMDD
-    with pytest.raises(ValueError, match="delist_date 存在非 YYYYMMDD"):
+    with pytest.raises(ValueError, match="delist_date 非合法日历日期"):
         fetch_stock_basic_all(client)
 
 
@@ -237,3 +237,116 @@ def test_migration_rollback_on_validation_failure(tmp_path):
     assert "list_status" in db.describe("stock_basic")   # Phase-1 列已存在（幂等）
 
 
+
+
+# ================================================================
+# M6-07B2：validate_stock_basic_source 纯 validator（A-L）
+# ================================================================
+
+from factorlab.data.rebuild import validate_stock_basic_source
+
+
+def _vl(**over):
+    row = {"ts_code": "000001.SZ", "symbol": "000001", "name": "甲",
+           "list_status": "L", "list_date": "19910403", "delist_date": None,
+           "industry": "银行", "market": "主板", "act_name": None,
+           "act_ent_type": None, "area": None, "cnspell": None}
+    row.update(over)
+    return row
+
+
+def _vd(**over):
+    row = _vl(ts_code="600001.SH", symbol="600001", name="丁",
+              list_status="D", delist_date="20240601")
+    row.update(over)
+    return row
+
+
+def _valid_pair(l_rows=None, d_rows=None):
+    return (pl.DataFrame(l_rows or [_vl()]),
+            pl.DataFrame(d_rows or [_vd()]))
+
+
+# A. null list_date
+def test_null_list_date_fails():
+    l, d = _valid_pair(l_rows=[_vl(list_date=None)])
+    with pytest.raises(ValueError, match="空 list_date"):
+        validate_stock_basic_source(l, d)
+
+
+# B/C. endpoint status partition
+def test_l_endpoint_returns_d_row_fails():
+    l, d = _valid_pair(l_rows=[_vl(list_status="D")])
+    with pytest.raises(ValueError, match="L endpoint 返回非 L row"):
+        validate_stock_basic_source(l, d)
+
+
+def test_d_endpoint_returns_l_row_fails():
+    l, d = _valid_pair(d_rows=[_vd(list_status="L")])
+    with pytest.raises(ValueError, match="D endpoint 返回非 D row"):
+        validate_stock_basic_source(l, d)
+
+
+# D. unknown status
+def test_unknown_status_fails():
+    """P 状态被拒绝（endpoint 分区检查先拦——语义一致）。"""
+    l, d = _valid_pair(l_rows=[_vl(list_status="P")])
+    with pytest.raises(ValueError, match="非 L row|仅允许 L/D"):
+        validate_stock_basic_source(l, d)
+
+
+# E/F. invalid calendar dates
+@pytest.mark.parametrize("bad_date", ["20240230", "20241301", "00000000"])
+def test_invalid_list_date_fails(bad_date):
+    l, d = _valid_pair(l_rows=[_vl(list_date=bad_date)])
+    with pytest.raises(ValueError, match="list_date 非合法日历日期"):
+        validate_stock_basic_source(l, d)
+
+
+def test_invalid_delist_date_fails():
+    l, d = _valid_pair(d_rows=[_vd(delist_date="20241301")])
+    with pytest.raises(ValueError, match="delist_date 非合法日历日期"):
+        validate_stock_basic_source(l, d)
+
+
+# G. delist before list
+def test_delist_before_list_fails():
+    l, d = _valid_pair(d_rows=[_vd(list_date="20200101", delist_date="20191231")])
+    with pytest.raises(ValueError, match="delist_date < list_date"):
+        validate_stock_basic_source(l, d)
+
+
+# H. invalid ts_code
+@pytest.mark.parametrize("bad_code", ["000001", "1.SZ", "000001.XX", "abc.SZ"])
+def test_invalid_ts_code_fails(bad_code):
+    l, d = _valid_pair(l_rows=[_vl(ts_code=bad_code)])
+    with pytest.raises(ValueError, match="ts_code 必须匹配"):
+        validate_stock_basic_source(l, d)
+
+
+# I. symbol mismatch
+def test_symbol_mismatch_fails():
+    l, d = _valid_pair(l_rows=[_vl(symbol="000002")])
+    with pytest.raises(ValueError, match="symbol 必须匹配 ts_code 前六位"):
+        validate_stock_basic_source(l, d)
+
+
+# J. valid L row with delist=null → PASS
+def test_valid_l_with_null_delist_passes():
+    out = validate_stock_basic_source(*_valid_pair())
+    assert out.height == 2
+
+
+# K. valid D row (list < delist) → PASS
+def test_valid_d_row_passes():
+    out = validate_stock_basic_source(*_valid_pair())
+    d = out.filter(pl.col("list_status") == "D")
+    assert d["delist_date"][0] == "20240601" and d["list_date"][0] == "19910403"
+
+
+# L. normal merge sorted unique
+def test_normal_merge_sorted_unique():
+    l, d = _valid_pair(l_rows=[_vl(), _vl(ts_code="000002.SZ", symbol="000002")])
+    out = validate_stock_basic_source(l, d)
+    assert out["ts_code"].is_sorted()
+    assert out["ts_code"].n_unique() == out.height == 3

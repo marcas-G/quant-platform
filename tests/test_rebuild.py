@@ -11,7 +11,7 @@ from factorlab.data.rebuild import INDEX_CODES, RebuildScope, load_manifest, reb
 
 def _sb_l():
     return pl.DataFrame({
-        "ts_code": ["A.SZ"], "symbol": ["A"], "name": ["甲"], "list_status": ["L"],
+        "ts_code": ["000001.SZ"], "symbol": ["000001"], "name": ["甲"], "list_status": ["L"],
         "list_date": ["20240101"], "delist_date": [None], "industry": [None],
         "market": [None], "act_name": [None], "act_ent_type": [None],
         "area": [None], "cnspell": [None]})
@@ -19,7 +19,7 @@ def _sb_l():
 
 def _sb_d():
     return pl.DataFrame({
-        "ts_code": ["D.SZ"], "symbol": ["D"], "name": ["丁"], "list_status": ["D"],
+        "ts_code": ["600001.SH"], "symbol": ["600001"], "name": ["丁"], "list_status": ["D"],
         "list_date": ["20200101"], "delist_date": ["20240601"], "industry": [None],
         "market": [None], "act_name": [None], "act_ent_type": [None],
         "area": [None], "cnspell": [None]})

@@ -9,7 +9,7 @@ from factorlab.data.refresh import refresh
 
 def _sb_l():
     return pl.DataFrame({
-        "ts_code": ["A.SZ"], "symbol": ["A"], "name": ["甲"], "list_status": ["L"],
+        "ts_code": ["000001.SZ"], "symbol": ["000001"], "name": ["甲"], "list_status": ["L"],
         "list_date": ["20240101"], "delist_date": [None], "industry": [None],
         "market": [None], "act_name": [None], "act_ent_type": [None],
         "area": [None], "cnspell": [None]})
@@ -17,7 +17,7 @@ def _sb_l():
 
 def _sb_d():
     return pl.DataFrame({
-        "ts_code": ["D.SZ"], "symbol": ["D"], "name": ["丁"], "list_status": ["D"],
+        "ts_code": ["600001.SH"], "symbol": ["600001"], "name": ["丁"], "list_status": ["D"],
         "list_date": ["20200101"], "delist_date": ["20240601"], "industry": [None],
         "market": [None], "act_name": [None], "act_ent_type": [None],
         "area": [None], "cnspell": [None]})
@@ -71,7 +71,7 @@ def test_refresh_after_rebuild_no_deadlock(tmp_path, monkeypatch):
             "is_open": [1, 1, 1],
         }),
         ("stock_basic", ""): pl.DataFrame({
-            "ts_code": ["A.SZ", "D.SZ"], "symbol": ["A", "D"], "name": ["甲", "丁"],
+            "ts_code": ["000001.SZ", "600001.SH"], "symbol": ["000001", "600001"], "name": ["甲", "丁"],
             "list_status": ["L", "D"], "list_date": ["20240101", "20200101"],
             "delist_date": [None, "20240601"], "industry": [None, None],
             "market": [None, None], "act_name": [None, None], "act_ent_type": [None, None],

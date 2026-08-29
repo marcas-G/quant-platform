@@ -94,52 +94,94 @@ STOCK_BASIC_PIT_FIELDS: dict[str, str] = {
 }
 
 
-def fetch_stock_basic_all(client: TeaJoinClient) -> pl.DataFrame:
-    """获取完整 stock_basic（list_status=L + D 分页合并）。
+def validate_stock_basic_source(l_df: pl.DataFrame, d_df: pl.DataFrame) -> pl.DataFrame:
+    """纯 source validator（不依赖网络可完整测试；M6-07B2 唯一正式入口）。
 
-    - 显式字段（含 delist_date/list_status）
-    - **L 与 D 都必须非空**——真实 A 股历史必有大量退市股，D 空返回更可能代表
-      权限/API/schema/网络问题；禁止当正常空结果继续 rebuild/migration
-    - 合并后 ts_code 必须唯一（重复 → fail fast，不静默 unique）；symbol 非空
-    - list_date/delist_date 必须 YYYYMMDD 8 位数字
-    - D 状态行必须非空 delist_date（缺失 → fail fast，不写数据库）
+    schema / endpoint status 分区 / identifier / date / temporal consistency /
+    uniqueness 全部 fail fast，返回规范化（String cast + ts_code 排序）merged。
+    **禁止自动修复**（不 drop/fill/去重/改 status/换日期）——生产数据宁可 BLOCKED。
     """
-    l_df = client.fetch_paged("stock_basic", {"list_status": "L"},
-                              fields=list(STOCK_BASIC_FIELDS))
-    d_df = client.fetch_paged("stock_basic", {"list_status": "D"},
-                              fields=list(STOCK_BASIC_FIELDS))
-    if l_df.height == 0:
-        raise ValueError("stock_basic L 返回空——source 无效（API/权限/schema 问题）")
-    if d_df.height == 0:
-        raise ValueError("stock_basic D 返回空——source 无效（真实 A 股必有退市股，"
-                         "空返回更可能代表权限/API/schema/网络问题）")
-    for col in ("ts_code", "symbol", "list_date", "list_status", "delist_date"):
-        if col not in l_df.columns or col not in d_df.columns:
-            raise ValueError(f"stock_basic fetch 缺少字段: {col}（显式字段未生效）")
+
+    def _cal(col_expr) -> pl.Expr:
+        return col_expr.str.strptime(pl.Date, "%Y%m%d", strict=False).is_not_null()
+
+    # ---- schema + 非空（先非空——空 DataFrame 无列，避免误报缺字段） ----
+    for df, name in ((l_df, "L"), (d_df, "D")):
+        if df.height == 0:
+            raise ValueError(f"stock_basic {name} 返回空——source 无效"
+                             f"（真实 A 股必有退市股，空返回更可能代表权限/API/schema/网络问题）")
+        for col in ("ts_code", "symbol", "list_date", "list_status", "delist_date"):
+            if col not in df.columns:
+                raise ValueError(f"stock_basic {name} 缺少字段: {col}")
+    # ---- endpoint status 分区（请求 L 必须全 L，请求 D 必须全 D） ----
+    bad_l = l_df.filter(pl.col("list_status") != "L")
+    if bad_l.height:
+        raise ValueError(f"stock_basic L endpoint 返回非 L row: {bad_l.height} 行")
+    bad_d = d_df.filter(pl.col("list_status") != "D")
+    if bad_d.height:
+        raise ValueError(f"stock_basic D endpoint 返回非 D row: {bad_d.height} 行")
     l_df = l_df.with_columns(pl.col("delist_date").cast(pl.String),
                              pl.col("list_date").cast(pl.String),
-                             pl.col("symbol").cast(pl.String))
+                             pl.col("symbol").cast(pl.String),
+                             pl.col("list_status").cast(pl.String))
     d_df = d_df.with_columns(pl.col("delist_date").cast(pl.String),
                              pl.col("list_date").cast(pl.String),
-                             pl.col("symbol").cast(pl.String))
+                             pl.col("symbol").cast(pl.String),
+                             pl.col("list_status").cast(pl.String))
     merged = pl.concat([l_df, d_df])
+    # ---- status domain（防御：merged 只允许 L/D） ----
+    bad_status = merged.filter(~pl.col("list_status").is_in(["L", "D"]))
+    if bad_status.height:
+        raise ValueError(f"stock_basic list_status 仅允许 L/D，实际含 "
+                         f"{bad_status['list_status'].unique().to_list()}")
+    # ---- identifier ----
+    bad_code = merged.filter(~pl.col("ts_code").str.contains(r"^\d{6}\.(SH|SZ|BJ)$"))
+    if bad_code.height:
+        raise ValueError(f"stock_basic ts_code 必须匹配 ^\d{{6}}\.(SH|SZ|BJ)$: "
+                         f"{bad_code.height} 行")
     if merged["ts_code"].null_count() or merged["ts_code"].is_duplicated().any():
         raise ValueError("stock_basic 合并后 ts_code 缺失或重复——fail fast")
     if merged["symbol"].null_count():
         raise ValueError("stock_basic 存在空 symbol——fail fast")
-    for col in ("list_date", "delist_date"):
-        bad = merged.filter(pl.col(col).is_not_null()
-                            & ~pl.col(col).str.contains("^\\d{8}$"))
-        if bad.height:
-            raise ValueError(f"stock_basic {col} 存在非 YYYYMMDD 格式: {bad.height} 行")
+    bad_sym = merged.filter(pl.col("symbol") != pl.col("ts_code").str.slice(0, 6))
+    if bad_sym.height:
+        raise ValueError(f"stock_basic symbol 必须匹配 ts_code 前六位: {bad_sym.height} 行")
+    # ---- dates ----
+    if merged["list_date"].is_null().any():
+        raise ValueError(f"stock_basic 存在空 list_date: "
+                         f"{merged['list_date'].null_count()} 行（PIT listing 强制字段）")
+    bad_list = merged.filter(~_cal(pl.col("list_date")))
+    if bad_list.height:
+        raise ValueError(f"stock_basic list_date 非合法日历日期: {bad_list.height} 行")
+    bad_delist = merged.filter(pl.col("delist_date").is_not_null()
+                               & ~_cal(pl.col("delist_date")))
+    if bad_delist.height:
+        raise ValueError(f"stock_basic delist_date 非合法日历日期: {bad_delist.height} 行")
     d_missing = merged.filter((pl.col("list_status") == "D")
                               & pl.col("delist_date").is_null())
     if d_missing.height:
         raise ValueError(f"stock_basic 存在退市股票（list_status=D）但 delist_date 为空"
                          f"——{d_missing.height} 行，BLOCKED 不写数据库")
+    # ---- temporal consistency（非空 delist_date >= list_date） ----
+    bad_temporal = merged.filter(pl.col("delist_date").is_not_null()
+                                 & (pl.col("delist_date") < pl.col("list_date")))
+    if bad_temporal.height:
+        raise ValueError(f"stock_basic delist_date < list_date（PIT interval 失效）: "
+                         f"{bad_temporal.height} 行")
     return merged.sort("ts_code")
 
 
+def fetch_stock_basic_all(client: TeaJoinClient) -> pl.DataFrame:
+    """获取完整 stock_basic（list_status=L + D 分页合并）→ validate_stock_basic_source。
+
+    显式字段（含 delist_date/list_status）；L/D 必须非空；唯一正式 source 校验
+    入口（validate_stock_basic_source——全部 fail fast 不自动修复）。
+    """
+    l_df = client.fetch_paged("stock_basic", {"list_status": "L"},
+                              fields=list(STOCK_BASIC_FIELDS))
+    d_df = client.fetch_paged("stock_basic", {"list_status": "D"},
+                              fields=list(STOCK_BASIC_FIELDS))
+    return validate_stock_basic_source(l_df, d_df)
 def migrate_stock_basic_pit_fields(db: PlatformDB, stock_basic: pl.DataFrame) -> dict:
     """Two-phase targeted migration（M6-07B1）。
 
