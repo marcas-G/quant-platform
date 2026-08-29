@@ -114,12 +114,18 @@ def validate_stock_basic_source(l_df: pl.DataFrame, d_df: pl.DataFrame) -> pl.Da
             if col not in df.columns:
                 raise ValueError(f"stock_basic {name} 缺少字段: {col}")
     # ---- endpoint status 分区（请求 L 必须全 L，请求 D 必须全 D） ----
-    bad_l = l_df.filter(pl.col("list_status") != "L")
+    # **显式处理 null**（Polars 三值逻辑：null != "L" → null，filter 不保留——
+    # 不能依赖 null-unsafe comparison；list_status 是强制字段）
+    bad_l = l_df.filter(pl.col("list_status").is_null()
+                        | (pl.col("list_status") != "L"))
     if bad_l.height:
-        raise ValueError(f"stock_basic L endpoint 返回非 L row: {bad_l.height} 行")
-    bad_d = d_df.filter(pl.col("list_status") != "D")
+        raise ValueError(f"stock_basic L endpoint 返回非 L row: {bad_l.height} 行"
+                         f"（含 null/空串/其他值）")
+    bad_d = d_df.filter(pl.col("list_status").is_null()
+                        | (pl.col("list_status") != "D"))
     if bad_d.height:
-        raise ValueError(f"stock_basic D endpoint 返回非 D row: {bad_d.height} 行")
+        raise ValueError(f"stock_basic D endpoint 返回非 D row: {bad_d.height} 行"
+                         f"（含 null/空串/其他值）")
     l_df = l_df.with_columns(pl.col("delist_date").cast(pl.String),
                              pl.col("list_date").cast(pl.String),
                              pl.col("symbol").cast(pl.String),
@@ -129,11 +135,13 @@ def validate_stock_basic_source(l_df: pl.DataFrame, d_df: pl.DataFrame) -> pl.Da
                              pl.col("symbol").cast(pl.String),
                              pl.col("list_status").cast(pl.String))
     merged = pl.concat([l_df, d_df])
-    # ---- status domain（防御：merged 只允许 L/D） ----
-    bad_status = merged.filter(~pl.col("list_status").is_in(["L", "D"]))
+    # ---- status domain（防御：merged 只允许非空 L/D——显式 null guard） ----
+    bad_status = merged.filter(pl.col("list_status").is_null()
+                               | ~pl.col("list_status").is_in(["L", "D"]))
     if bad_status.height:
-        raise ValueError(f"stock_basic list_status 仅允许 L/D，实际含 "
-                         f"{bad_status['list_status'].unique().to_list()}")
+        raise ValueError(f"stock_basic list_status 仅允许非空 L/D，实际含 "
+                         f"{bad_status['list_status'].unique().to_list()}"
+                         f"（含 null——null 不能穿透）")
     # ---- identifier ----
     bad_code = merged.filter(~pl.col("ts_code").str.contains(r"^\d{6}\.(SH|SZ|BJ)$"))
     if bad_code.height:

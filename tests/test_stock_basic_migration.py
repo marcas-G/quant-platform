@@ -350,3 +350,39 @@ def test_normal_merge_sorted_unique():
     out = validate_stock_basic_source(l, d)
     assert out["ts_code"].is_sorted()
     assert out["ts_code"].n_unique() == out.height == 3
+
+
+# ================================================================
+# M6-07B3：null/空串/空白 list_status 显式拒绝
+# ================================================================
+
+def test_l_null_status_fails():
+    l, d = _valid_pair(l_rows=[_vl(list_status=None)])
+    with pytest.raises(ValueError, match="L endpoint 返回非 L row"):
+        validate_stock_basic_source(l, d)
+
+
+def test_d_null_status_fails():
+    l, d = _valid_pair(d_rows=[_vd(list_status=None)])
+    with pytest.raises(ValueError, match="D endpoint 返回非 D row"):
+        validate_stock_basic_source(l, d)
+
+
+def test_l_empty_string_status_fails():
+    l, d = _valid_pair(l_rows=[_vl(list_status="")])
+    with pytest.raises(ValueError, match="L endpoint 返回非 L row"):
+        validate_stock_basic_source(l, d)
+
+
+def test_l_whitespace_status_fails():
+    """' L'（带前导空格）拒绝——不自动 strip。"""
+    l, d = _valid_pair(l_rows=[_vl(list_status=" L")])
+    with pytest.raises(ValueError, match="L endpoint 返回非 L row"):
+        validate_stock_basic_source(l, d)
+
+
+def test_merged_status_null_cannot_penetrate():
+    """正常 valid source 的 merged 输出 list_status 无 null（防御检查生效）。"""
+    out = validate_stock_basic_source(*_valid_pair())
+    assert out["list_status"].null_count() == 0
+    assert set(out["list_status"].unique().to_list()) == {"L", "D"}
