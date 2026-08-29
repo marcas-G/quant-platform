@@ -871,6 +871,33 @@ results/<factor>/
   明确报错（legacy result directory does not contain versioned Signal/Label artifacts）
 - 单文件 atomic（temp + os.replace）；目录级事务不实现（见风险）
 
+## 4.6 Semantic Guards（M6-06）
+
+M6 边界 fail-fast invariants（不再新增计算能力）：
+
+- **SignalArtifact**：future data forbidden（forward_*/future_*/target/label）——保持；
+  合法扩展列（raw_signal/coverage/quality_flag）允许
+- **LabelArtifact v1 contract**：只允许 `date / code / forward_return_<N>d`——
+  signal/close/open/future_price/__factorlab_*/任意普通列 → ValueError；
+  任意 horizon 仍合法（domain 不固定——schema v1 的 [5,20] 在 artifacts loader 层）
+- **core persistence 拒绝内部列**：signal/labels/panel 含 `__factorlab_*` →
+  write_factor_artifacts 写文件前 fail fast（零文件写入——暴露 runtime 泄漏）
+- **manifest integrity**：loader 验证 manifest rows/columns（含顺序）/horizons 与
+  磁盘 parquet 实际一致；meta structural validation（缺字段/非法 Enum → 清晰
+  ValueError 非裸 KeyError）；manifest 类型（rows 非负 int、columns list[str]、
+  horizons positive strictly-increasing）
+- **Signal/Label key 对齐**：`validate_signal_label_alignment()`（行数 + date/code
+  键 + 顺序——Polars-native equals）——persistence 写文件前执行；不自动 sort/inner join
+- **bundle loader**：`load_factor_artifacts(result_dir) -> FactorArtifactBundle`
+  （signal + labels + alignment）——integrity/evaluation API，**不是 strategy-safe**
+  （含未来标签）；Strategy consumer 只用 `load_signal_artifact()`（只加载 signal，
+  不加载 labels）；bundle 不加载 panel
+- **`load_signal_artifact()` 不加载 labels**（性能/职责隔离）
+
+注意：M6-06 验证 manifest/parquet **semantic consistency**，不提供 cryptographic
+integrity 或 immutable run identity（hash/data snapshot 属后续 reproducibility
+里程碑——同改 parquet+manifest 的攻击无法检测，这是正常边界）。
+
 ## 5. 测试
 
 运行：

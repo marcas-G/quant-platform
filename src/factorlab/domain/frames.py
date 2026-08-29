@@ -101,7 +101,10 @@ class SignalArtifact:
 class LabelArtifact:
     """标签产物：因子研究评估用——合法包含未来信息，不得进入 Strategy Runtime。
 
-    必需 date/code + 至少一个 forward_return_<N>d（任意 horizon，不写死 5/20）。
+    **M6-06 v1 contract：只允许 date / code / forward_return_<N>d 列**——
+    任意其他字段（signal/close/industry/__factorlab_*/arbitrary）→ ValueError。
+    必需 date/code + 至少一个 forward_return_<N>d（任意 horizon，不写死 5/20——
+    domain 层不固定 horizon；schema v1 的 [5,20] 约束在 artifacts loader 层）。
     label 尾部 null 合法（样本尾部无未来数据）。
     """
 
@@ -113,6 +116,12 @@ class LabelArtifact:
         if not fwd_cols:
             raise ValueError(
                 "LabelArtifact 必须至少包含一个 forward_return_<N>d 列")
+        extra = [c for c in self.frame.columns
+                 if c not in {"date", "code"} and c not in fwd_cols]
+        if extra:
+            raise ValueError(
+                f"LabelArtifact 不允许非 label 列: {extra}"
+                f"（v1 仅允许 date/code/forward_return_<N>d）")
         for c in fwd_cols:
             if not self.frame.schema[c].is_numeric():
                 raise ValueError(
