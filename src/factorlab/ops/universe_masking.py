@@ -48,6 +48,13 @@ _CS_GP_MASK_ARGS: dict[str, tuple[int, ...]] = {
 # 内部保留前缀：用户定义/赋值/参数/import alias 以该前缀开头 → fail fast
 RESERVED_INTERNAL_PREFIX = "__factorlab_"
 
+# ALLOWED_NODES binding audit（M6-03B）：ast_gate.ALLOWED_NODES 允许的节点中，
+# 会创建用户名字绑定的完整清单 = {Import/ImportFrom(alias), FunctionDef, ClassDef,
+# Assign, AnnAssign, ast.arg}——全部已纳入 validate_reserved_bindings guard。
+# Tuple/List 为 destructuring 容器（不绑定自身，递归展开子 Name）。
+# For/With/Lambda/NamedExpr/comprehension/ExceptHandler 不在 ALLOWED_NODES（gate 拒绝），
+# 无需 guard——审计结论：当前允许 AST 集合内无其他绑定入口。
+
 
 def _alias_map(tree: ast.AST) -> dict[str, str]:
     """收集 import 别名（与 engine/partitions.validate_partition_calls 一致语义）：
@@ -60,9 +67,26 @@ def _alias_map(tree: ast.AST) -> dict[str, str]:
     return aliases
 
 
+def _bound_names(target: ast.AST):
+    """递归枚举 target 中所有绑定 Name（M6-03B：统一 binding extractor）。
+
+    支持 Name / Tuple / List 递归（嵌套 destructuring 全部发现）；
+    其他 target 类型当前 DSL 不产生名字绑定——不扩大语言能力（AST gate 已拒绝
+    For/With/Lambda/NamedExpr/comprehension 等）。
+    """
+    if isinstance(target, ast.Name):
+        yield target.id
+    elif isinstance(target, (ast.Tuple, ast.List)):
+        for elt in target.elts:
+            yield from _bound_names(elt)
+
+
 def validate_reserved_bindings(source: str) -> None:
-    """用户 source 的保留名绑定校验：`__factorlab_*` 前缀不得出现在
-    Assign/AnnAssign target、FunctionDef 名、函数参数名、import alias。
+    """用户 source 的保留名绑定校验：`__factorlab_*` 前缀不得出现在任何用户绑定入口。
+
+    绑定入口（ALLOWED_NODES 审计结论，见模块 docstring）：
+    Assign（含 Tuple/List destructuring，递归） / AnnAssign / FunctionDef /
+    ClassDef / 函数参数（ast.arg）/ import alias。
 
     必须在平台 transformation（apply_universe_masking 插入内部引用）**之前**执行——
     只检查用户 source 的"定义/绑定"，不检查变换后对内部名的读取。
@@ -71,15 +95,20 @@ def validate_reserved_bindings(source: str) -> None:
     for node in ast.walk(tree):
         if isinstance(node, ast.Assign):
             for t in node.targets:
-                if isinstance(t, ast.Name) and t.id.startswith(RESERVED_INTERNAL_PREFIX):
-                    raise ValueError(
-                        f"reserved internal name cannot be assigned by user: {t.id!r}"
-                        f"（{RESERVED_INTERNAL_PREFIX}* 为平台内部保留）")
+                for name in _bound_names(t):
+                    if name.startswith(RESERVED_INTERNAL_PREFIX):
+                        raise ValueError(
+                            f"reserved internal name cannot be assigned by user: {name!r}"
+                            f"（{RESERVED_INTERNAL_PREFIX}* 为平台内部保留）")
         elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) \
                 and node.target.id.startswith(RESERVED_INTERNAL_PREFIX):
             raise ValueError(
                 f"reserved internal name cannot be assigned by user: {node.target.id!r}")
         elif isinstance(node, ast.FunctionDef) \
+                and node.name.startswith(RESERVED_INTERNAL_PREFIX):
+            raise ValueError(
+                f"reserved internal name cannot be defined by user: {node.name!r}")
+        elif isinstance(node, ast.ClassDef) \
                 and node.name.startswith(RESERVED_INTERNAL_PREFIX):
             raise ValueError(
                 f"reserved internal name cannot be defined by user: {node.name!r}")

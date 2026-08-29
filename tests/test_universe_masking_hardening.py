@@ -185,3 +185,45 @@ def test_normal_formula_unaffected():
     out = um.apply_universe_masking("signal = cs_rank(close)", "__factorlab_universe_active")
     assert "if_else" in out
     um.validate_reserved_bindings("signal = cs_rank(close)")   # 无保留名 → 不抛
+
+
+# ================================================================
+# M6-03B：reserved binding completeness（destructuring / ClassDef）
+# ================================================================
+
+def test_reserved_tuple_destructuring_fails():
+    with pytest.raises(ValueError, match="reserved internal name"):
+        um.validate_reserved_bindings(
+            "__factorlab_x, y = (1, 2)\nsignal = cs_rank(close)")
+
+
+def test_reserved_nested_tuple_destructuring_fails():
+    with pytest.raises(ValueError, match="reserved internal name"):
+        um.validate_reserved_bindings(
+            "a, (b, __factorlab_x) = (1, (2, 3))\nsignal = cs_rank(close)")
+
+
+def test_reserved_list_destructuring_fails():
+    with pytest.raises(ValueError, match="reserved internal name"):
+        um.validate_reserved_bindings(
+            "[a, __factorlab_y] = [1, 2]\nsignal = cs_rank(close)")
+
+
+def test_reserved_classdef_fails():
+    with pytest.raises(ValueError, match="reserved internal name"):
+        um.validate_reserved_bindings(
+            "class __factorlab_universe_active:\n    pass\nsignal = cs_rank(close)")
+
+
+def test_normal_destructuring_not_rejected():
+    """普通非 reserved destructuring 不被 validator 误伤（只测 validator contract）。"""
+    um.validate_reserved_bindings("a, b = (1, 2)\nsignal = cs_rank(close)")
+    um.validate_reserved_bindings("a, (b, c) = (1, (2, 3))\nsignal = cs_rank(close)")
+
+
+def test_reserved_destructuring_real_compute_path():
+    """真实 compute_formula(universe_mask=...) 路径同样 fail fast。"""
+    df = _df([(ISO(2024, 1, 2), "A", 1.0, True)])
+    with pytest.raises(ValueError, match="reserved internal name"):
+        compute_formula(df, "__factorlab_x, y = (1, 2)\nsignal = cs_rank(close)",
+                        universe_mask="__factorlab_universe_active")
