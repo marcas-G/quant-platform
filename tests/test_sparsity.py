@@ -175,3 +175,24 @@ def test_build_final_db_missing_staging_raises(tmp_path):
     staging = PlatformDB(tmp_path / "nope.duckdb")
     with pytest.raises(ValueError, match="暂存库"):
         build_final_db(staging, tmp_path / "final.duckdb")
+
+
+def test_build_final_db_protects_delist_date(tmp_path):
+    """stock_basic.delist_date null_ratio 0.9（> 阈值）仍必须保留（语义关键稀疏字段）；
+    普通稀疏字段照常剔除。"""
+    db = PlatformDB(tmp_path / "staging.duckdb")
+    n = 10
+    db.upsert("stock_basic", pl.DataFrame({
+        "ts_code": [f"00000{i}.SZ" for i in range(1, n + 1)],
+        "symbol": [f"00000{i}" for i in range(1, n + 1)],
+        "list_date": ["20200101"] * n,
+        "delist_date": ["20240101"] + [None] * (n - 1),   # null_ratio 0.9
+        "some_sparse": [1.0] + [None] * (n - 1),          # null_ratio 0.9 → 应剔除
+    }), keys=["ts_code"])
+    result = build_final_db(db, tmp_path / "final.duckdb")
+    excluded = result["excluded_fields"].get("stock_basic", [])
+    assert "delist_date" not in excluded       # protected：保留
+    assert "some_sparse" in excluded           # 普通稀疏字段：照常剔除
+    final = PlatformDB(tmp_path / "final.duckdb")
+    assert "delist_date" in final.describe("stock_basic")
+    assert "some_sparse" not in final.describe("stock_basic")

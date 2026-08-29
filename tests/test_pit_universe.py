@@ -51,7 +51,11 @@ def build_db(tmp_path, with_delist: bool = True, with_st_table: bool = True,
 
 @pytest.fixture
 def db(tmp_path):
-    conn = build_db(tmp_path, st_rows=[("000001.SZ", "ST平安", "20240301", "ST", "实施风险警示")])
+    # ST coverage = [20240301, 20240304]：A 3/1 ST；600000 3/4 ST（扩大 coverage 供 absent 用例）
+    conn = build_db(tmp_path, st_rows=[
+        ("000001.SZ", "ST平安", "20240301", "ST", "实施风险警示"),
+        ("600000.SH", "ST银行", "20240304", "ST", "实施风险警示"),
+    ])
     yield conn
     conn.close()
 
@@ -116,7 +120,9 @@ def test_list_days_is_natural_days(db):
 # ---------------------------------------------------------------- ST PIT
 
 def test_st_pit_membership(db):
-    uf = _uf(db, rules={"exclude_st": True, "exchanges": ["SSE", "SZSE"]})
+    """ST PIT：coverage 内（20240301-20240301）当日快照出现 true、缺席 false。"""
+    uf = resolve_universe_frame(spec_with(rules={"exclude_st": True, "exchanges": ["SSE", "SZSE"]}),
+                                db, ["2024-03-01", "2024-03-04"])
     a = uf.filter(pl.col("code") == "000001").sort("date")
     st = {str(r["date"]): (bool(r["is_st"]), bool(r["in_universe"]))
           for r in a.iter_rows(named=True)}
@@ -126,9 +132,10 @@ def test_st_pit_membership(db):
 
 def test_future_st_does_not_pollute_past(tmp_path, db):
     """未来 ST（2025-01-01）加入后，2024-03-01 的 membership 必须完全不变。"""
-    before = _uf(db, rules={"exclude_st": True, "exchanges": ["SSE", "SZSE"]})
+    spec = spec_with(rules={"exclude_st": True, "exchanges": ["SSE", "SZSE"]})
+    before = resolve_universe_frame(spec, db, ["2024-03-01", "2024-03-04"])
     db.execute("INSERT INTO stock_st VALUES ('000001.SZ', 'ST平安', '20250101', 'ST', '实施风险警示')")
-    after = _uf(db, rules={"exclude_st": True, "exchanges": ["SSE", "SZSE"]})
+    after = resolve_universe_frame(spec, db, ["2024-03-01", "2024-03-04"])
     past_before = before.filter(pl.col("date") == datetime.date(2024, 3, 1)).sort("code")
     past_after = after.filter(pl.col("date") == datetime.date(2024, 3, 1)).sort("code")
     assert past_before.equals(past_after)
@@ -232,8 +239,9 @@ def test_align_keeps_active_missing_and_drops_inactive(db):
         "close": pl.Series([1.0, 100.0, 50.0], dtype=pl.Float64),
     })
     out = align_to_universe(raw, uf)
+    d = out.filter(pl.col("date") == datetime.date(2024, 2, 10))
     got = {r["code"]: (r["close"] if r["close"] is not None else None)
-           for r in out.iter_rows(named=True)}
+           for r in d.iter_rows(named=True)}
     assert got["000001"] == 1.0      # A active + 有行情
     assert got["000002"] == 100.0    # C（2/10 未退市）active + 有行情
     assert got["600000"] is None     # B active 但 raw 无行情 → null 保留
@@ -247,8 +255,9 @@ def test_align_keeps_active_missing_and_drops_inactive(db):
         "close": pl.Series([1.0, 100.0, 50.0], dtype=pl.Float64),
     })
     out2 = align_to_universe(raw2, uf2)
+    d2 = out2.filter(pl.col("date") == datetime.date(2024, 5, 31))
     got2 = {r["code"]: (r["close"] if r["close"] is not None else None)
-            for r in out2.iter_rows(named=True)}
+            for r in d2.iter_rows(named=True)}
     assert got2["000001"] == 1.0
     assert got2["000002"] == 100.0
     assert got2["600000"] == 50.0    # B active + raw 有行情
@@ -263,9 +272,10 @@ def test_align_excludes_inactive_even_with_raw(db):
         "value": pl.Series([1.0, 100.0, 2.0], dtype=pl.Float64),
     })
     out = align_to_universe(raw, uf)
-    codes = set(out["code"].to_list())
+    d = out.filter(pl.col("date") == datetime.date(2024, 6, 2))
+    codes = set(d["code"].to_list())
     assert codes == {"000001", "600000"}      # C（退市 inactive）完全不存在
-    assert out.filter(pl.col("code") == "600000")["value"][0] == 2.0  # B active + 有行情
+    assert d.filter(pl.col("code") == "600000")["value"][0] == 2.0  # B active + 有行情
 
 
 def test_align_fail_fast_duplicate_raw(db):
@@ -302,3 +312,135 @@ def test_date_slice_independent(db):
         parts.append(resolve_universe_frame(spec, db, chunk))
     merged = pl.concat(parts).sort(["date", "code"])
     assert merged.equals(full.sort(["date", "code"]))
+
+
+# ================================================================
+# M6-02A Hardening 新增测试
+# ================================================================
+
+# ---- 1. universe 驱动：某日 raw 完全无行，active date/code 不消失 ----
+
+def test_align_keeps_entire_active_date_when_raw_has_no_rows_for_date(db):
+    uf = _uf(db, rules={"exchanges": ["SSE", "SZSE"]})
+    raw = pl.DataFrame({
+        "date": pl.Series([datetime.date(2024, 2, 10)], dtype=pl.Date),
+        "code": pl.Series(["000001"], dtype=pl.String),
+        "close": pl.Series([1.0], dtype=pl.Float64),
+    })
+    out = align_to_universe(raw, uf)
+    # 1/10：raw 完全无行——active 行（A）必须保留 null
+    jan = out.filter(pl.col("date") == datetime.date(2024, 1, 10))
+    assert jan.filter(pl.col("code") == "000001")["close"][0] is None
+    assert jan.height >= 1
+    # 2/10：000001 有行情
+    feb = out.filter((pl.col("date") == datetime.date(2024, 2, 10))
+                     & (pl.col("code") == "000001"))
+    assert feb["close"][0] == 1.0
+
+
+# ---- 2/3. code 严格 pl.String ----
+
+def test_align_raw_code_int_rejected(db):
+    uf = _uf(db, rules={"exchanges": ["SSE", "SZSE"]})
+    raw = pl.DataFrame({
+        "date": pl.Series([datetime.date(2024, 2, 10)], dtype=pl.Date),
+        "code": pl.Series([1], dtype=pl.Int64),
+        "close": pl.Series([1.0], dtype=pl.Float64),
+    })
+    with pytest.raises(ValueError, match="String"):
+        align_to_universe(raw, uf)
+
+
+def test_align_universe_code_int_rejected(db):
+    uni = _uf(db, rules={"exchanges": ["SSE", "SZSE"]}).with_columns(pl.col("code").cast(pl.Int64))
+    raw = pl.DataFrame({
+        "date": pl.Series([datetime.date(2024, 2, 10)], dtype=pl.Date),
+        "code": pl.Series(["000001"], dtype=pl.String),
+        "close": pl.Series([1.0], dtype=pl.Float64),
+    })
+    with pytest.raises(ValueError, match="String"):
+        align_to_universe(raw, uni)
+
+
+# ---- 4/5. universe 完整 schema ----
+
+def test_align_universe_missing_in_universe(db):
+    uni = _uf(db, rules={"exchanges": ["SSE", "SZSE"]}).drop("in_universe")
+    raw = pl.DataFrame({
+        "date": pl.Series([datetime.date(2024, 2, 10)], dtype=pl.Date),
+        "code": pl.Series(["000001"], dtype=pl.String),
+        "close": pl.Series([1.0], dtype=pl.Float64),
+    })
+    with pytest.raises(ValueError, match="in_universe"):
+        align_to_universe(raw, uni)
+
+
+def test_align_universe_in_universe_wrong_dtype(db):
+    uni = _uf(db, rules={"exchanges": ["SSE", "SZSE"]}).with_columns(pl.col("in_universe").cast(pl.Int8))
+    raw = pl.DataFrame({
+        "date": pl.Series([datetime.date(2024, 2, 10)], dtype=pl.Date),
+        "code": pl.Series(["000001"], dtype=pl.String),
+        "close": pl.Series([1.0], dtype=pl.Float64),
+    })
+    with pytest.raises(ValueError, match="Boolean"):
+        align_to_universe(raw, uni)
+
+
+# ---- 6/7. duplicate dates / candidate_codes ----
+
+def test_duplicate_dates_rejected(db):
+    with pytest.raises(ValueError, match="dates 重复"):
+        resolve_universe_frame(spec_with(rules={"exchanges": ["SSE", "SZSE"]}), db,
+                               ["2024-01-10", "2024-01-10"])
+
+
+def test_duplicate_candidate_codes_rejected(db):
+    with pytest.raises(ValueError, match="candidate_codes 重复"):
+        resolve_universe_frame(spec_with(rules={}), db, ["2024-01-10"],
+                               candidate_codes=["000001", "000001"])
+
+
+# ---- 8. pre-list list_days null ----
+
+def test_pre_list_list_days_null(db):
+    uf = resolve_universe_frame(spec_with(codes=["000001"]), db, ["2023-12-31"])
+    a = uf.filter(pl.col("code") == "000001")
+    assert a["list_days"][0] is None
+    assert a["is_listed"][0] == False
+
+
+# ---- 9/10. ST coverage 外 + exclude_st=true → fail fast ----
+
+def test_st_before_coverage_exclude_true_fails(db):
+    """coverage = [20240301, 20240301]；1/10 在 coverage 前 → fail fast。"""
+    with pytest.raises(ValueError, match="ST coverage"):
+        _uf(db, rules={"exclude_st": True, "exchanges": ["SSE", "SZSE"]})
+
+
+def test_st_after_coverage_exclude_true_fails(db):
+    with pytest.raises(ValueError, match="ST coverage"):
+        resolve_universe_frame(spec_with(rules={"exclude_st": True, "exchanges": ["SSE", "SZSE"]}),
+                               db, ["2024-04-01"])
+
+
+# ---- 11/12. coverage 外 unknown / 内 absent=false ----
+
+def test_st_outside_coverage_is_st_null(db):
+    uf = _uf(db, rules={"exchanges": ["SSE", "SZSE"]})
+    jan = uf.filter(pl.col("date") == datetime.date(2024, 1, 10))
+    assert jan["is_st"].null_count() == jan.height    # unknown ≠ false
+
+
+def test_st_inside_coverage_absent_false(db):
+    uf = _uf(db, rules={"exchanges": ["SSE", "SZSE"]})
+    mar4 = uf.filter((pl.col("date") == datetime.date(2024, 3, 4))
+                     & (pl.col("code") == "000001"))
+    assert mar4["is_st"][0] == False
+
+
+# ---- 日期严格校验 ----
+
+@pytest.mark.parametrize("bad", ["2024-01-01 garbage", "20240101", "abc", "2024/01/01"])
+def test_invalid_date_strings_rejected(db, bad):
+    with pytest.raises(ValueError, match="非法日期"):
+        resolve_universe_frame(spec_with(rules={}), db, [bad])

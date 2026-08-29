@@ -246,6 +246,13 @@ def assess_sparsity(db: PlatformDB) -> dict[str, dict[str, dict]]:
     return report
 
 
+# 语义关键稀疏字段：天然大量为 null 但对 PIT 语义关键——无论 sparsity 多高都不得
+# 被 build_final_db 物理删除（仅保护显式字段，不关闭整体 sparsity pruning）
+PROTECTED_SPARSE_FIELDS: dict[str, set[str]] = {
+    "stock_basic": {"delist_date"},
+}
+
+
 def build_final_db(
     staging: PlatformDB,
     final_path: Path,
@@ -255,6 +262,8 @@ def build_final_db(
     """评估稀疏度 → 剔除超限字段 → 重建最终库（物理排除）。
 
     任一超限（null_ratio > null_threshold 或 stock_coverage < coverage_threshold）即剔除；
+    PROTECTED_SPARSE_FIELDS 中的语义关键字段豁免（如 stock_basic.delist_date——
+    天然大量 null 但对 PIT Universe 关键，staging 存在该字段时不得删除）；
     无保留列的表跳过建表；最终库已存在时整体替换（CREATE OR REPLACE，schema 收缩生效）。
     返回 {"excluded_fields": {table: [cols]}, "tables": [最终库表]}。
     """
@@ -263,9 +272,11 @@ def build_final_db(
     sparsity = assess_sparsity(staging)
     excluded: dict[str, list[str]] = {}
     for table, fields in sparsity.items():
+        protected = PROTECTED_SPARSE_FIELDS.get(table, set())
         excluded[table] = [
             col for col, m in fields.items()
-            if m["null_ratio"] > null_threshold or m["stock_coverage"] < coverage_threshold
+            if (m["null_ratio"] > null_threshold or m["stock_coverage"] < coverage_threshold)
+            and col not in protected
         ]
     staging_path = str(staging.path).replace("\\", "/")  # Windows 反斜杠在 ATTACH 字符串中需转义
     with duckdb.connect(str(final_path)) as con:

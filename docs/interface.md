@@ -736,17 +736,19 @@ Universe membership ≠ tradability（M6-02 不实现 can_buy/can_sell——M8 E
 | `resolve_codes()` | **legacy/static**：全期共用一组静态代码（含最新 ST 快照过滤与 date.start 一次性 min_list_days）——候选语义，不用于历史 PIT |
 | `resolve_candidate_codes(spec, db, override=None)` | 候选代码集：复用 override/ref/codes/rules 解析；rules 模式**只应用 exchange 与证券标识合法性**——exclude_st/min_list_days 属动态 PIT 条件，禁止提前应用 |
 | `resolve_universe_frame(spec, db, dates, *, override=None, candidate_codes=None)` | date×code PIT membership——接受显式日期集（chunk 友好，不要求全历史生成） |
-| `align_to_universe(raw, universe)` | active universe LEFT JOIN raw 行情：universe 内正常保留；universe 内无行情 → date/code 保留、行情 null；universe 外排除。duplicate/dtype/缺列 fail fast |
+| `align_to_universe(raw, universe)` | **Universe 驱动**的 active LEFT JOIN raw：raw 不能决定日期是否存在（某日 raw 完全无行 → active date/code 仍输出、行情 null）；universe 外排除。raw 至少 date/code；universe 至少 date/code/in_universe(Boolean)；code 严格 pl.String（前导零证券代码，整数无法无损表示）；duplicate/dtype/缺列 fail fast |
 
 UniverseFrame schema：`date(pl.Date) / code(pl.String) / in_universe / is_listed / list_days / is_st / exchange`，
 `(date, code)` 唯一，按 date/code 稳定排序。
 
 PIT 语义：
 - **listing**：`is_listed = list_date <= t AND (delist_date IS NULL OR t < delist_date)`（`t < delist_date` 平台语义）
-- **list_days**：`date − list_date`（**自然日**年龄，非交易日数）
-- **ST**：当日 `stock_st` 快照出现（`trade_date = date`）；`exclude_st=true` 且缺 stock_st 表 → ValueError（fail fast）；`exclude_st=false` 且缺表 → `is_st = null`
+- **list_days**：`date − list_date`（**自然日**年龄，非交易日数）；**pre-list（date < list_date）→ list_days = null**
+- **ST coverage**：以 `min/max(stock_st.trade_date)` 为 coverage（v1 contract，内部 gap 的精确 provenance 留给 Data Coverage Registry）——coverage 内：当日快照出现 → true、缺席 → false；**coverage 外：is_st = null（unknown ≠ false）**；`exclude_st=true` 且请求日期落在 coverage 外 → **ValueError（fail fast，错误含 requested date 与 coverage 区间）**；缺 stock_st 表：exclude_st=true → ValueError、false → is_st=null
 - **exchange**：ts_code 后缀（.SH→SSE / .SZ→SZSE / .BJ→BSE）；默认池 SSE+SZSE，不意外纳入 BSE
 - 显式 codes 同样尊重上市/退市 PIT 状态（不自动增加 exclude_st/min_list_days 规则）
+- 输入校验：dates 仅接受 datetime.date / ISO `YYYY-MM-DD`（非法格式、重复日期 fail fast）；candidate_codes 重复 fail fast；输出前主动验证 (date, code) 唯一
+- **delist_date 保护**：`stock_basic.delist_date` 是语义关键稀疏字段——`build_final_db` 的 sparsity pruning 不得物理删除（PROTECTED_SPARSE_FIELDS，仅保护显式字段，不关闭整体 pruning）；旧 DB 无 delist_date 列时仍可运行，但 **delisting PIT is incomplete**（不伪造退市日期）
 
 **PIT invariant**：membership at t 不能依赖 t 之后的数据（ST/listing/delisting 均 PIT；
 平台库 stock_basic 当前无 delist_date 列时退市信息不可用，is_listed 只基于 list_date）。

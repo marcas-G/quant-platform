@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import datetime
+import re
 from pathlib import Path
 from typing import Any
 
@@ -9,6 +11,8 @@ import yaml
 
 from factorlab.config import settings
 from factorlab.spec import FactorSpec
+
+_ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
 
 VALID_EXCHANGES = ("SSE", "SZSE")
 _ALLOWED_RULES = {"exclude_st", "min_list_days", "exchanges"}
@@ -204,13 +208,18 @@ def resolve_candidate_codes(
 
 
 def _norm_dates(dates) -> list[str]:
-    """日期集统一为 'YYYY-MM-DD'（接受 date 对象或字符串）。"""
+    """日期集严格校验：只接受 datetime.date 或 ISO 'YYYY-MM-DD' 字符串。
+    '2024-01-01 garbage' / '20240101' / 'abc' 等一律 ValueError（不截断接受）。"""
     out = []
     for d in dates:
         if isinstance(d, str):
-            out.append(d[:10])
-        else:  # datetime.date
-            out.append(d.isoformat())
+            if not _ISO_DATE_RE.match(d):
+                raise ValueError(f"非法日期格式: {d!r}（仅接受 ISO YYYY-MM-DD 字符串或 datetime.date）")
+            out.append(d)
+        elif isinstance(d, datetime.date):
+            out.append(d.isoformat()[:10])
+        else:
+            raise ValueError(f"非法日期类型: {type(d).__name__}（仅接受 datetime.date 或 ISO 字符串）")
     return out
 
 
@@ -237,9 +246,13 @@ def resolve_universe_frame(
         spec, db, override=override, settings=settings)
     if not codes:
         raise ValueError("候选代码集为空")
+    if len(set(codes)) != len(codes):
+        raise ValueError("candidate_codes 重复——fail fast，不静默去重")
     date_strs = _norm_dates(dates)
     if not date_strs:
         raise ValueError("dates 不能为空")
+    if len(set(date_strs)) != len(date_strs):
+        raise ValueError("dates 重复——fail fast，不静默去重")
 
     tables = {r[0] for r in db.execute(
         "SELECT table_name FROM information_schema.tables").fetchall()}
@@ -249,6 +262,22 @@ def resolve_universe_frame(
     exclude_st = bool(rules.get("exclude_st"))
     if exclude_st and not has_st:
         raise ValueError("exclude_st 需要 stock_st 表（平台库由 data rebuild 生成）——不能默认所有股票非 ST")
+    # ST coverage（v1 contract：min/max trade_date；内部 gap 的精确 provenance 留给 Data Coverage Registry）
+    st_cov: tuple[str, str] | None = None
+    if has_st:
+        lo, hi = db.execute("SELECT min(trade_date), max(trade_date) FROM stock_st").fetchone()
+        if lo is not None and hi is not None:
+            st_cov = (str(lo), str(hi))
+        if exclude_st and st_cov is None:
+            raise ValueError("exclude_st=true 但 stock_st 为空表——ST coverage 未知，禁止当非 ST")
+        if exclude_st:
+            outside = [d for d in date_strs
+                       if not (st_cov and st_cov[0] <= d.replace("-", "") <= st_cov[1])]
+            if outside:
+                raise ValueError(
+                    f"exclude_st=true 但请求日期 {outside[0]} 在 ST coverage "
+                    f"[{st_cov[0] if st_cov else '?'}, {st_cov[1] if st_cov else '?'}] 之外——"
+                    f"ST 状态未知，禁止把 unknown 当非 ST")
     # delist_date 列探测（旧库可能无此列——退市信息不可用则视为 NULL）
     sb_cols = {r[0] for r in db.execute(
         "SELECT column_name FROM information_schema.columns WHERE table_name='stock_basic'").fetchall()}
@@ -288,7 +317,20 @@ def resolve_universe_frame(
          & pl.when(pl.col("delist_d").is_null()).then(pl.lit(True))
            .otherwise(pl.col("date") < pl.col("delist_d")))
         .fill_null(False).alias("is_listed"),
-        (pl.col("date") - pl.col("list_d")).dt.total_days().alias("list_days"))
+        # list_days：仅上市后（date >= list_date）有定义；pre-list 为 null
+        pl.when(pl.col("date") >= pl.col("list_d"))
+        .then((pl.col("date") - pl.col("list_d")).dt.total_days())
+        .otherwise(None).alias("list_days"))
+    # ST coverage 外 → is_st = null（unknown ≠ false）
+    if has_st and st_cov is not None:
+        uf = uf.with_columns(
+            pl.when(pl.col("date").dt.strftime("%Y%m%d")
+                    .is_between(pl.lit(st_cov[0]), pl.lit(st_cov[1])))
+            .then(pl.col("is_st")).otherwise(None).alias("is_st"))
+    # 最终输出 invariant：内部逻辑不得产生重复 (date, code)
+    dup = uf.group_by(["date", "code"]).len().filter(pl.col("len") > 1)
+    if dup.height:
+        raise ValueError(f"resolve_universe_frame 内部逻辑产生重复 (date, code)——{dup.height} 组")
     # in_universe
     cond = pl.col("is_listed")
     if "codes" not in data:
@@ -311,28 +353,31 @@ def resolve_universe_frame(
 
 
 def align_to_universe(raw: pl.DataFrame, universe: pl.DataFrame) -> pl.DataFrame:
-    """active universe LEFT JOIN raw 行情：universe 内正常保留行情；
-    universe 内无行情 → date/code 保留、行情 null；universe 外 → 排除。
-    不判断停牌/涨跌停/can_buy/can_sell（M8 Execution 职责）。
-    duplicate/dtype/缺列 fail fast——不静默去重/cast。"""
-    for df, name in ((raw, "raw"), (universe, "universe")):
-        missing = [c for c in ("date", "code") if c not in df.columns]
+    """**Universe 驱动**的 active LEFT JOIN：raw 不能决定日期是否存在。
+
+    - UniverseFrame filter(in_universe=true) LEFT JOIN raw（on date/code）
+    - universe 内正常保留行情；universe 内无行情（含某日 raw 完全无行）→
+      date/code 保留、行情 null；universe 外 → 排除
+    - raw 至少 date/code；universe 至少 date/code/in_universe（Boolean）
+    - code 严格 pl.String（证券代码有前导零——整数无法无损表示）
+    - duplicate/dtype/缺列 fail fast——不静默去重/cast
+    """
+    for df, name, required in ((raw, "raw", ("date", "code")),
+                               (universe, "universe", ("date", "code", "in_universe"))):
+        missing = [c for c in required if c not in df.columns]
         if missing:
             raise ValueError(f"{name} 缺列: {missing}")
         if df.schema["date"] != pl.Date:
             raise ValueError(f"{name} date 列 dtype 必须为 pl.Date，实际 {df.schema['date']}")
-        if df.schema["code"] not in (pl.String, pl.Int32, pl.Int64):
-            raise ValueError(f"{name} code 列 dtype 必须为 String/整数，实际 {df.schema['code']}")
-    # 平台 daily.code 为 Int64——显式映射到 String（文档化兼容，非错误 cast）
-    raw = raw.with_columns(pl.col("code").cast(pl.String))
-    universe = universe.with_columns(pl.col("code").cast(pl.String))
+        if df.schema["code"] != pl.String:
+            raise ValueError(f"{name} code 列 dtype 必须为 pl.String，实际 {df.schema['code']}")
+    if universe.schema["in_universe"] != pl.Boolean:
+        raise ValueError(f"universe in_universe 列 dtype 必须为 pl.Boolean，"
+                         f"实际 {universe.schema['in_universe']}")
     for df, name in ((raw, "raw"), (universe, "universe")):
         dup = df.group_by(["date", "code"]).len().filter(pl.col("len") > 1)
         if dup.height:
             raise ValueError(f"{name} (date, code) duplicate rows——(date, code) must be unique，fail fast")
-    # 对齐范围为 raw 出现的日期（universe 全日期不输出——研究只关心 raw 有数据的日期）
-    raw_dates = raw["date"].unique()
-    uni = universe.filter(pl.col("in_universe") & pl.col("date").is_in(raw_dates)) \
-        .select(["date", "code"])
+    uni = universe.filter(pl.col("in_universe")).select(["date", "code"])
     out = uni.join(raw, on=["date", "code"], how="left")
     return out.sort(["date", "code"])
