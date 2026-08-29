@@ -3,17 +3,23 @@
 语义：CS/GP 算子在它真正执行的那个阶段只能看到当日 eligible universe——
 TS/TA 算子仍可访问该股票合法的 listed market history。
 
-实现：AST 变换，对 kind=cs/gp 算子的**数据参数**包 `if_else(__universe_active, arg, None)`：
+实现：AST 变换，对 kind=cs/gp 算子的**数据参数**包 `if_else(<mask>, arg, None)`：
     cs_rank(ts_mean(close, 20))
-        → cs_rank(if_else(__universe_active, ts_mean(close, 20), None))
+        → cs_rank(if_else(<mask>, ts_mean(close, 20), None))
     ts_mean(cs_rank(close), 20)
-        → ts_mean(cs_rank(if_else(__universe_active, close, None)), 20)
+        → ts_mean(cs_rank(if_else(<mask>, close, None)), 20)
+
+M6-03A hardening：
+- import alias 与 validate_partition_calls 一致解析（`from wq import cs_rank as r` →
+  `r(...)` 按 canonical cs_rank 查 metadata；**不改写用户 callable**）
+- registry alias 一律经 canonical OperatorDef.name 查 metadata（future aliases 不误判）
+- CS/GP keyword invocation → fail fast（M6 v1 只支持 positional——masking 无歧义）
+- 内部保留名 `__factorlab_*` 前缀：用户任何定义/绑定 → fail fast
 
 - 数据参数位置由显式 registry 声明（_CS_GP_MASK_ARGS）——不可扩展的字符串 hack
 - multi-argument CS（如 cs_resid(y, x)）：所有数据参数都 mask
 - GP：group key 不 mask（分组键语义），factor/value 参数 mask
 - 无法确认 mask 语义的 CS/GP 算子 → **fail fast**（ValueError，含 operator name）
-- mask 列名由调用方注入（如 __universe_active）；用户不得自行定义
 """
 
 from __future__ import annotations
@@ -25,6 +31,7 @@ from factorlab.ops.registry import get_op, has_op
 # CS/GP 算子的"数据参数"位置（参与截面统计、需 active mask 的参数）：
 # group key（group_rank/group_mean 的第 0 参）不需要改 null（分组键语义）。
 # 新增 CS/GP 算子必须在此声明数据参数位置，否则 fail fast。
+# **key = canonical OperatorDef.name**（registry alias 一律 canonicalize 后查）。
 _CS_GP_MASK_ARGS: dict[str, tuple[int, ...]] = {
     "cs_rank": (0,),
     "cs_zscore": (0,),
@@ -38,13 +45,64 @@ _CS_GP_MASK_ARGS: dict[str, tuple[int, ...]] = {
     "group_mean": (1,),
 }
 
+# 内部保留前缀：用户定义/赋值/参数/import alias 以该前缀开头 → fail fast
+RESERVED_INTERNAL_PREFIX = "__factorlab_"
+
+
+def _alias_map(tree: ast.AST) -> dict[str, str]:
+    """收集 import 别名（与 engine/partitions.validate_partition_calls 一致语义）：
+    'from mod import cs_rank as r' → {'r': 'cs_rank'}。"""
+    aliases: dict[str, str] = {}
+    for node in ast.walk(tree):
+        if isinstance(node, (ast.Import, ast.ImportFrom)):
+            for alias in node.names:
+                aliases[alias.asname or alias.name] = alias.name
+    return aliases
+
+
+def validate_reserved_bindings(source: str) -> None:
+    """用户 source 的保留名绑定校验：`__factorlab_*` 前缀不得出现在
+    Assign/AnnAssign target、FunctionDef 名、函数参数名、import alias。
+
+    必须在平台 transformation（apply_universe_masking 插入内部引用）**之前**执行——
+    只检查用户 source 的"定义/绑定"，不检查变换后对内部名的读取。
+    """
+    tree = ast.parse(source)
+    for node in ast.walk(tree):
+        if isinstance(node, ast.Assign):
+            for t in node.targets:
+                if isinstance(t, ast.Name) and t.id.startswith(RESERVED_INTERNAL_PREFIX):
+                    raise ValueError(
+                        f"reserved internal name cannot be assigned by user: {t.id!r}"
+                        f"（{RESERVED_INTERNAL_PREFIX}* 为平台内部保留）")
+        elif isinstance(node, ast.AnnAssign) and isinstance(node.target, ast.Name) \
+                and node.target.id.startswith(RESERVED_INTERNAL_PREFIX):
+            raise ValueError(
+                f"reserved internal name cannot be assigned by user: {node.target.id!r}")
+        elif isinstance(node, ast.FunctionDef) \
+                and node.name.startswith(RESERVED_INTERNAL_PREFIX):
+            raise ValueError(
+                f"reserved internal name cannot be defined by user: {node.name!r}")
+        elif isinstance(node, ast.arg) and node.arg.startswith(RESERVED_INTERNAL_PREFIX):
+            raise ValueError(
+                f"reserved internal name cannot be used as argument: {node.arg!r}")
+        elif isinstance(node, ast.alias) \
+                and (node.asname or node.name).startswith(RESERVED_INTERNAL_PREFIX):
+            raise ValueError(
+                f"reserved internal name cannot be used as import alias: "
+                f"{(node.asname or node.name)!r}")
+
 
 def apply_universe_masking(source: str, mask_name: str) -> str:
     """对公式中 kind=cs/gp 的算子做 universe mask 变换。
 
+    - import alias 与 validate_partition_calls 一致解析（alias → canonical 算子名）
+    - registry alias 一律经 canonical OperatorDef.name 查 metadata
+    - CS/GP keyword invocation → fail fast（M6 v1 positional-only）
     - 未知算子放行（由 validate_partition_calls 报错）
-    - 用户 def 内的 CS/GP 调用不 mask（def 黑盒由 validate_partition_calls 拒绝窗口/截面算子）
+    - 用户 def 内的 CS/GP 调用不 mask（def 黑盒由 validate_partition_calls 拒绝）
     - kind=cs/gp 但 registry 未声明数据参数位置 → ValueError（fail fast，含 operator name）
+    - **不改写用户 callable**：mask 只包数据参数，调用名保持原样（alias 原样）
     """
     from factorlab.ops.polars_ta_wrappers import register_polars_ta_ops
     from factorlab.ops.platform_ops import register_platform_ops
@@ -52,22 +110,29 @@ def apply_universe_masking(source: str, mask_name: str) -> str:
     register_platform_ops()
     tree = ast.parse(source)
     defined = {n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
+    aliases = _alias_map(tree)
 
     class _Masker(ast.NodeTransformer):
         def visit_Call(self, node: ast.Call) -> ast.expr:
             node = self.generic_visit(node)
             if not isinstance(node.func, ast.Name) or node.func.id in defined:
                 return node
-            name = node.func.id
+            name = aliases.get(node.func.id, node.func.id)   # alias → canonical 调用名
             if not has_op(name):
                 return node
             op = get_op(name)
             if op.kind not in ("cs", "gp"):
                 return node
-            positions = _CS_GP_MASK_ARGS.get(name)
+            if node.keywords:
+                raise ValueError(
+                    f"CS/GP operator {op.name} 不支持 keyword arguments"
+                    f"（universe masking 无歧义要求 positional invocation，M6 v1）: "
+                    f"{[k.arg for k in node.keywords]}")
+            canonical = op.name                               # registry alias → canonical
+            positions = _CS_GP_MASK_ARGS.get(canonical)
             if positions is None:
                 raise ValueError(
-                    f"无法确认 {op.kind} 算子 {name} 的 universe masking 数据参数位置"
+                    f"无法确认 {op.kind} 算子 {canonical} 的 universe masking 数据参数位置"
                     f"——请在 _CS_GP_MASK_ARGS 声明或避免使用（fail fast，禁止按错误 universe 计算）")
             for i in positions:
                 if i < len(node.args):

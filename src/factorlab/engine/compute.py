@@ -31,7 +31,8 @@ from factorlab.ops.platform_ops import (
     rewrite_expr_methods,
 )
 from factorlab.ops.polars_ta_wrappers import register_polars_ta_ops
-from factorlab.ops.universe_masking import apply_universe_masking
+from factorlab.ops.universe_masking import (apply_universe_masking,
+                                            validate_reserved_bindings)
 from factorlab.process.registry import run_process_chain
 from factorlab.spec import FactorSpec
 
@@ -82,6 +83,9 @@ def compute_formula(
         # listed history，CS 只见当日 active universe。mask 列必须已存在于 df。
         if universe_mask not in df.columns:
             raise ValueError(f"universe mask 列 {universe_mask!r} 不在输入数据中（内部保留列）")
+        # M6-03A：mask 变换前校验保留名绑定（用户公式 + macro/def 展开后——
+        # __factorlab_* 前缀禁止用户定义/绑定）
+        validate_reserved_bindings(formula)
         formula = apply_universe_masking(formula, universe_mask)
     register_polars_ta_ops()  # 幂等；保证分区校验能识别 ts_/cs_/ta_ 算子
     register_platform_ops()
@@ -255,7 +259,7 @@ def _compute_signal(
     universe-aware formula → filter(active) → process。
 
     - TS/TA 使用 is_listed=true 的完整历史（含 in_universe=false 期间——listing 先行）
-    - CS/GP 经 __universe_active mask 只看到当日 active 横截面
+    - CS/GP 经 __factorlab_universe_active mask 只看到当日 active 横截面
     - 最终 rows 只保留 in_universe=true（process chain 只见 active）
     - **本路径绝不计算 forward returns**
     """
@@ -280,8 +284,8 @@ def _compute_signal(
     panel = view_prices(panel, adjustment, asof=asof)
     # universe mask 列：来源必须是 PIT in_universe（内部保留列，用户不得定义）
     panel = panel.join(uf.select(["date", "code", "in_universe"]), on=["date", "code"], how="left")
-    panel = panel.with_columns(pl.col("in_universe").fill_null(False).alias("__universe_active"))
-    result = compute_formula(panel, formula, universe_mask="__universe_active")
+    panel = panel.with_columns(pl.col("in_universe").fill_null(False).alias("__factorlab_universe_active"))
+    result = compute_formula(panel, formula, universe_mask="__factorlab_universe_active")
     sig = panel.select(["date", "code", "in_universe", "close"]).join(
         result, on=["date", "code"], how="left")
     sig = sig.filter(pl.col("in_universe")).drop("in_universe")

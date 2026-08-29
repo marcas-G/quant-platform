@@ -802,6 +802,22 @@ summary 新增 `candidate_count / signal_rows / label_rows / runtime_semantics`�
 `universe_count` 保留兼容。M6-03 不落盘 signal.parquet/labels.parquet
 （M6-05）；chunk label 尾部缺失保持现状（M6-04）。
 
+### M6-03A hardening（masking boundary）
+
+- **import alias**：masker 与 `validate_partition_calls` 一致解析 alias
+  （`from polars_ta.prefix.wq import cs_rank as cs_r` → canonical `cs_rank` 查
+  metadata）；**不改写用户 callable**（`cs_r(if_else(...))` 保持）。注：无分区
+  前缀的 alias（`as r`）是 expr_codegen 按名前缀分区的平台限制（非 masking 语义）。
+- **registry alias**：metadata 一律经 canonical `OperatorDef.name` 查询——
+  `factor_op(aliases=...)` 的 alias 不会绕过或误判 mask metadata。
+- **keyword arguments**：CS/GP 的 keyword invocation（`cs_rank(x=close)`、
+  `group_rank(key=industry, x=close)`）→ fail fast（M6 v1 positional-only，
+  masking 无歧义）；TS/TA/elementwise keyword 不受影响。
+- **保留名空间**：`__factorlab_*` 为平台内部保留前缀——用户 Assign/AnnAssign
+  target、FunctionDef 名、函数参数、import alias 以该前缀开头 → fail fast
+  （在 universe masking 变换前校验，覆盖 macro/def 展开路径）。内部 mask 列
+  更名为 `__factorlab_universe_active`。
+
 ## 5. 测试
 
 运行：

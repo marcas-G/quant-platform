@@ -20,7 +20,7 @@ def _df(rows: list[tuple], mask: bool = True) -> pl.DataFrame:
         "date": pl.Series([r[0] for r in rows], dtype=pl.Date),
         "code": [r[1] for r in rows],
         "close": [float(r[2]) for r in rows],
-        "__universe_active": [bool(r[3]) for r in rows],
+        "__factorlab_universe_active": [bool(r[3]) for r in rows],
     })
     return df
 
@@ -35,19 +35,19 @@ def _calls(tree: ast.AST, name: str):
 
 
 def test_mask_ts_then_cs():
-    out = apply_universe_masking("signal = cs_rank(ts_mean(close, 20))", "__universe_active")
+    out = apply_universe_masking("signal = cs_rank(ts_mean(close, 20))", "__factorlab_universe_active")
     tree = ast.parse(out)
     cs = _calls(tree, "cs_rank")[0]
     arg = cs.args[0]
     assert isinstance(arg, ast.Call) and arg.func.id == "if_else"
-    assert arg.args[0].id == "__universe_active"      # mask 列
+    assert arg.args[0].id == "__factorlab_universe_active"      # mask 列
     assert arg.args[2].value is None                   # else None
     inner = arg.args[1]
     assert isinstance(inner, ast.Call) and inner.func.id == "ts_mean"  # TS 未被 mask
 
 
 def test_mask_cs_then_ts():
-    out = apply_universe_masking("signal = ts_mean(cs_rank(close), 20)", "__universe_active")
+    out = apply_universe_masking("signal = ts_mean(cs_rank(close), 20)", "__factorlab_universe_active")
     tree = ast.parse(out)
     cs = _calls(tree, "cs_rank")[0]
     assert isinstance(cs.args[0], ast.Call) and cs.args[0].func.id == "if_else"
@@ -57,7 +57,7 @@ def test_mask_cs_then_ts():
 
 def test_mask_multi_arg_cs_resid():
     """cs_regression_resid(y, x)（注册名）——两个数据参数都 mask。"""
-    out = apply_universe_masking("signal = cs_regression_resid(y, x)", "__universe_active")
+    out = apply_universe_masking("signal = cs_regression_resid(y, x)", "__factorlab_universe_active")
     tree = ast.parse(out)
     cs = _calls(tree, "cs_regression_resid")[0]
     for arg in cs.args:                                # 两个数据参数都 mask
@@ -65,7 +65,7 @@ def test_mask_multi_arg_cs_resid():
 
 
 def test_mask_group_key_not_masked():
-    out = apply_universe_masking("signal = group_rank(industry, close)", "__universe_active")
+    out = apply_universe_masking("signal = group_rank(industry, close)", "__factorlab_universe_active")
     tree = ast.parse(out)
     gp = _calls(tree, "group_rank")[0]
     assert gp.args[0].id == "industry"                 # group key 不 mask
@@ -77,7 +77,7 @@ def test_mask_unknown_cs_fails():
     factor_op("cs_myop", kind="cs", version="0.0.1")(lambda x: x)
     try:
         with pytest.raises(ValueError, match="cs_myop"):
-            apply_universe_masking("signal = cs_myop(close)", "__universe_active")
+            apply_universe_masking("signal = cs_myop(close)", "__factorlab_universe_active")
     finally:
         reset_registry()
 
@@ -102,7 +102,7 @@ def test_pure_ts_keeps_inactive_history():
         (datetime.date(2024, 1, 5), "A", 4.0, True),
         (datetime.date(2024, 1, 6), "A", 5.0, True),
     ])
-    r = compute_formula(df, "signal = ts_mean(close, 3)", universe_mask="__universe_active")
+    r = compute_formula(df, "signal = ts_mean(close, 3)", universe_mask="__factorlab_universe_active")
     d4 = r.filter(pl.col("date") == datetime.date(2024, 1, 5))
     assert abs(d4["signal"][0] - 3.0) < 1e-9   # mean(2,3,4)——inactive 历史未被删除
 
@@ -119,7 +119,7 @@ def test_pure_cs_isolation():
         (datetime.date(2024, 1, 2), "B", 2.0, True),
         (datetime.date(2024, 1, 2), "C", 100.0, False),
     ]
-    r = compute_formula(_df(rows), "signal = cs_rank(close)", universe_mask="__universe_active")
+    r = compute_formula(_df(rows), "signal = cs_rank(close)", universe_mask="__factorlab_universe_active")
     base = compute_formula(_df([r for r in rows if r[3]]), "signal = cs_rank(close)")
     for c in ("A", "B"):
         v = r.filter(pl.col("code") == c)["signal"][0]
@@ -142,7 +142,7 @@ def test_ts_then_cs():
         (datetime.date(2024, 1, 3), "C", 200.0, False),
     ]
     r = compute_formula(_df(rows), "signal = cs_rank(ts_mean(close, 2))",
-                        universe_mask="__universe_active")
+                        universe_mask="__factorlab_universe_active")
     # 与只有 A/B 的基准一致（C 的 ts_mean 极端值不得污染 active rank）
     base = compute_formula(_df([r for r in rows if r[3]]),
                            "signal = cs_rank(ts_mean(close, 2))")
@@ -173,7 +173,7 @@ def test_cs_then_ts_inactive_day_null():
     ]
     # 核心锁定：day2 inactive 的 B 在 cs_rank 阶段内部为 null（不能有正常 rank 再进 TS）
     cs_only = compute_formula(_df(rows), "signal = cs_rank(close)",
-                              universe_mask="__universe_active")
+                              universe_mask="__factorlab_universe_active")
     b2 = cs_only.filter((pl.col("date") == datetime.date(2024, 1, 3)) & (pl.col("code") == "B"))
     assert b2["signal"][0] is None     # inactive 日 → cs 内部 null
     cs_bad = compute_formula(_df(rows), "signal = cs_rank(close)")   # unmasked（错误语义）
@@ -184,7 +184,7 @@ def test_cs_then_ts_inactive_day_null():
     # over_null="partition_by" 会把 null 行剔出分区（平台既有行为，M6-03 不改变）——
     # 核心承诺是 inactive 日内部 cs 为 null，而非控制 TS 层 null 传播。
     r = compute_formula(_df(rows), "signal = ts_mean(cs_rank(close), 2)",
-                        universe_mask="__universe_active")
+                        universe_mask="__factorlab_universe_active")
     r_bad = compute_formula(_df(rows), "signal = ts_mean(cs_rank(close), 2)")
     b2_ts = r.filter((pl.col("date") == datetime.date(2024, 1, 3)) & (pl.col("code") == "B"))
     b2_ts_bad = r_bad.filter((pl.col("date") == datetime.date(2024, 1, 3)) & (pl.col("code") == "B"))
