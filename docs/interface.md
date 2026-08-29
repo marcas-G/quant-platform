@@ -898,6 +898,19 @@ M6 边界 fail-fast invariants（不再新增计算能力）：
 integrity 或 immutable run identity（hash/data snapshot 属后续 reproducibility
 里程碑——同改 parquet+manifest 的攻击无法检测，这是正常边界）。
 
+## 4.7 Production Data PIT（M6-07）
+
+**M6-07A 审计**：FULL_HISTORY_NO_ST_GATE=READY（2015-01-05→2026-08-14）；ST_AWARE_GATE=READY（2016-08-09→2026-08-14，SAFE_EXCLUDE_ST_START=20160809）；delist_date CASE C（final/staging 均缺失——TARGETED STOCK_BASIC REFRESH REQUIRED）；stock_st raw 10000 组重复（M6-07B 修复）。
+
+**M6-07B PIT 数据修复**：resolve_universe_frame 的 ST join 改为唯一 (trade_date,
+ts_code) projection（raw stock_st 重复行不膨胀 UniverseFrame——is_st 由存在性决定，
+不物理删 raw payload）；stock_st ingestion 用 dedup=True（retry 幂等，其他日频表
+dedup=False 不变）；stock_basic fetch 显式字段（STOCK_BASIC_FIELDS 含
+delist_date/list_status）+ fetch_stock_basic_all（L/D 合并、ts_code unique fail
+fast、D 行缺 delist_date fail fast）+ migrate_stock_basic_pit_fields（定向迁移：
+ALTER ADD COLUMN + upsert keys=ts_code，保留原字段）。真实迁移依赖
+FACTORLAB_TEAJOIN_TOKEN——未设置时 M6-07B 数据部分 BLOCKED（代码与测试已就绪）。
+
 ## 5. 测试
 
 运行：

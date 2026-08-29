@@ -444,3 +444,40 @@ def test_st_inside_coverage_absent_false(db):
 def test_invalid_date_strings_rejected(db, bad):
     with pytest.raises(ValueError, match="非法日期"):
         resolve_universe_frame(spec_with(rules={}), db, [bad])
+
+
+# ================================================================
+# M6-07B：raw stock_st duplicates 不膨胀 UniverseFrame
+# ================================================================
+
+def test_duplicate_st_rows_no_cardinality_blowup(tmp_path):
+    """同 (date, code) 两条 payload 不同的 ST 行（type=ST / type=*ST）——
+    UniverseFrame 每 date/code 仅 1 行、is_st=true。"""
+    db = build_db(tmp_path, st_rows=[
+        ("000001.SZ", "ST平安", "20240301", "ST", "实施风险警示"),
+        ("000001.SZ", "*ST平安", "20240301", "*ST", "退市风险警示"),   # 同 key payload 不同
+        ("600000.SH", "ST银行", "20240304", "ST", "实施风险警示"),      # coverage 覆盖到 3/4
+    ])
+    spec = spec_with(rules={"exclude_st": True, "exchanges": ["SSE", "SZSE"]})
+    uf = resolve_universe_frame(spec, db, ["2024-03-01", "2024-03-04"])
+    a = uf.filter(pl.col("code") == "000001").sort("date")
+    assert a.height == 2                            # 每日期仅 1 行（无膨胀）
+    assert a.group_by(["date", "code"]).len().filter(pl.col("len") > 1).height == 0
+    st = {str(r["date"]): (bool(r["is_st"]), bool(r["in_universe"]))
+          for r in a.iter_rows(named=True)}
+    assert st["2024-03-01"] == (True, False)        # 重复行 → is_st=true → inactive
+    assert st["2024-03-04"] == (False, True)        # 无 ST 行 → active
+    db.close()
+
+
+def test_duplicate_st_identical_payload_no_blowup(tmp_path):
+    """同 key 两条完全相同的 ST 行——同样 1 行 is_st=true。"""
+    db = build_db(tmp_path, st_rows=[
+        ("000001.SZ", "ST平安", "20240301", "ST", "实施风险警示"),
+        ("000001.SZ", "ST平安", "20240301", "ST", "实施风险警示"),
+    ])
+    spec = spec_with(rules={"exclude_st": True, "exchanges": ["SSE", "SZSE"]})
+    uf = resolve_universe_frame(spec, db, ["2024-03-01"])
+    a = uf.filter((pl.col("code") == "000001") & (pl.col("date") == datetime.date(2024, 3, 1)))
+    assert a.height == 1 and a["is_st"][0] == True and a["in_universe"][0] == False
+    db.close()

@@ -293,8 +293,12 @@ def resolve_universe_frame(
     """
     params: list = [date_strs, codes]
     if has_st:
+        # M6-07B：ST presence 由唯一 (trade_date, ts_code) projection 决定——
+        # raw stock_st 可能含同 key 多行（同日多 type/name 状态），LEFT JOIN 直接
+        # 引用会膨胀 UniverseFrame cardinality。不物理删 raw 行（保留 name/type
+        # 等 payload），只投影 DISTINCT 键。
         sql = sql.replace("SELECT " + select_cols, "SELECT " + select_cols + ", s.trade_date IS NOT NULL AS is_st")
-        sql += (" LEFT JOIN stock_st s"
+        sql += (" LEFT JOIN (SELECT DISTINCT trade_date, ts_code FROM stock_st) s"
                 " ON s.ts_code = b.ts_code AND s.trade_date = strftime(d.date, '%Y%m%d')")
     rows = db.execute(sql, params).fetchall()
     schema = ["date", "code", "ts_code", "list_date", "delist_date"] + (["is_st"] if has_st else [])

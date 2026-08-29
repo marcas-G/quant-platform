@@ -52,13 +52,19 @@ def test_refresh_after_rebuild_no_deadlock(tmp_path, monkeypatch):
             "cal_date": ["20240102", "20240103", "20991231"],
             "is_open": [1, 1, 1],
         }),
-        ("stock_basic", ""): pl.DataFrame({"ts_code": ["A.SZ"]}),
+        ("stock_basic", ""): pl.DataFrame({
+            "ts_code": ["A.SZ"], "symbol": ["A"], "name": ["甲"], "list_status": ["L"],
+            "list_date": ["20240101"], "delist_date": [None], "industry": [None],
+            "market": [None], "act_name": [None], "act_ent_type": [None],
+            "area": [None], "cnspell": [None]}),
         ("daily", "20240102"): pl.DataFrame({"trade_date": ["20240102"], "ts_code": ["A.SZ"], "close": [10.0]}),
         ("daily", "20240103"): pl.DataFrame({"trade_date": ["20240103"], "ts_code": ["A.SZ"], "close": [11.0]}),
     }
     rebuild_client = TeaJoinClient(token="t", interval=0.0)
 
     def responder(api_name, params, fields=None):
+        if api_name == "stock_basic" and params.get("list_status") == "D":
+            return pl.DataFrame()
         key = params.get("trade_date") or params.get("cal_date") or ""
         df = tables.get((api_name, key))
         return df if df is not None else pl.DataFrame()

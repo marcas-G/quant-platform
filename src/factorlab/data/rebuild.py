@@ -64,6 +64,92 @@ def _fetch_one_date(client: TeaJoinClient, table: str, d: str) -> tuple[str, pl.
     return d, df
 
 
+# M6-07B：stock_basic 显式字段（必须含 delist_date/list_status——否则未来 rebuild
+# 的 staging 会再次丢失 PIT 字段）。可按真实 TeaJoin 支持字段最小调整。
+STOCK_BASIC_FIELDS = (
+    "ts_code",
+    "symbol",
+    "name",
+    "area",
+    "industry",
+    "cnspell",
+    "market",
+    "list_status",
+    "list_date",
+    "delist_date",
+    "act_name",
+    "act_ent_type",
+)
+
+# M6-07B：stock_st 体量小且 retry 窗口可能重复 INSERT——唯一键 upsert（dedup=True）；
+# 其他大日频表保持 dedup=False（纯 INSERT 性能）。ST presence 由唯一键投影决定，
+# raw payload（name/type/type_name）保留多行不物理删除。
+ST_DEDUP_TABLE = "stock_st"
+
+
+def fetch_stock_basic_all(client: TeaJoinClient) -> pl.DataFrame:
+    """获取完整 stock_basic（list_status=L + D 分页合并）。
+
+    - 显式字段（含 delist_date/list_status）
+    - 合并后 ts_code 必须唯一（重复 → fail fast，不静默 unique）
+    - D 状态行必须非空 delist_date（缺失 → fail fast，不写数据库）
+    """
+    parts = []
+    for status in ("L", "D"):
+        df = client.fetch_paged("stock_basic", {"list_status": status},
+                                fields=list(STOCK_BASIC_FIELDS))
+        if df.height:
+            parts.append(df)
+    if not parts:
+        return pl.DataFrame()   # 空返回不建表、不阻塞（旧语义兼容）
+    merged = pl.concat(parts)
+    for col in ("ts_code", "symbol", "list_date", "list_status", "delist_date"):
+        if col not in merged.columns:
+            raise ValueError(f"stock_basic fetch 缺少字段: {col}（显式字段未生效）")
+    merged = merged.with_columns(pl.col("delist_date").cast(pl.String))   # Null→String 统一
+    if merged["ts_code"].null_count() or merged["ts_code"].is_duplicated().any():
+        raise ValueError("stock_basic 合并后 ts_code 缺失或重复——fail fast")
+    d_missing = merged.filter((pl.col("list_status") == "D")
+                              & pl.col("delist_date").is_null())
+    if d_missing.height:
+        raise ValueError(f"stock_basic 存在退市股票（list_status=D）但 delist_date 为空"
+                         f"——{d_missing.height} 行，BLOCKED 不写数据库")
+    return merged.sort("ts_code")
+
+
+def migrate_stock_basic_pit_fields(db: PlatformDB, stock_basic: pl.DataFrame) -> dict:
+    """定向迁移 stock_basic 的 delist_date（只动静态表，不重建历史）。
+
+    单事务：缺 delist_date → ALTER ADD COLUMN；upsert 完整 fetched 数据（keys=ts_code，
+    保留全部原有字段）；验证后 commit。失败 rollback——不留下半迁移表。
+    """
+    before = {"rows": db.query("SELECT COUNT(*) FROM stock_basic")[0][0],
+              "cols": db.describe("stock_basic")}
+    with db.connect() as con:
+        # duckdb 限制：同一事务内 ALTER + DML 冲突（"altered by a different transaction"）——
+        # ALTER 在事务外先执行（幂等：列已存在即跳过），upsert+验证在事务内（失败 rollback）
+        cols = [r[0] for r in con.execute("DESCRIBE stock_basic").fetchall()]
+        if "delist_date" not in cols:
+            con.execute("ALTER TABLE stock_basic ADD COLUMN delist_date VARCHAR")
+        try:
+            con.execute("BEGIN")
+            db.upsert("stock_basic", stock_basic, keys=["ts_code"])
+            rows = con.execute("SELECT COUNT(*) FROM stock_basic").fetchone()[0]
+            distinct = con.execute("SELECT COUNT(DISTINCT ts_code) FROM stock_basic").fetchone()[0]
+            if rows != distinct:
+                raise ValueError(f"迁移后 ts_code 不唯一: rows {rows} != distinct {distinct}")
+            con.execute("COMMIT")
+        except Exception:
+            try:
+                con.execute("ROLLBACK")
+            except Exception:
+                pass
+            raise
+    after = {"rows": db.query("SELECT COUNT(*) FROM stock_basic")[0][0],
+             "cols": db.describe("stock_basic")}
+    return {"before": before, "after": after}
+
+
 def _rebuild_daily_table(
     db: PlatformDB,
     con: duckdb.DuckDBPyConnection,
@@ -88,13 +174,14 @@ def _rebuild_daily_table(
     errors: dict[str, str] = {}
     done_count = 0
     workers = 1 if table in SERIAL_TABLES else max_workers
+    dedup = table == ST_DEDUP_TABLE   # M6-07B：stock_st 唯一键 upsert（retry 幂等）
     with ThreadPoolExecutor(max_workers=workers) as pool:
         futures = {pool.submit(_fetch_one_date, client, table, d): d for d in todo}
         for fut in as_completed(futures):
             d = futures[fut]
             try:
                 _, df = fut.result()
-                db.upsert_on(con, table, df, keys=["trade_date", "ts_code"], dedup=False)
+                db.upsert_on(con, table, df, keys=["trade_date", "ts_code"], dedup=dedup)
                 completed.add(d)
                 failed.discard(d)  # 重试成功后从 failed 移除
                 errors.pop(d, None)
@@ -151,11 +238,10 @@ def rebuild_all(
         raise ValueError("trade_cal 无交易日（全部为未来公告日），检查 token/日期范围")
     db.upsert("trade_cal", cal, keys=["exchange", "cal_date"])
 
-    # 2. 静态表（上市 L + 退市 D，分页）
-    for status in ("L", "D"):
-        df = client.fetch_paged("stock_basic", {"list_status": status})
-        if df.height:
-            db.upsert("stock_basic", df, keys=["ts_code"])
+    # 2. 静态表（上市 L + 退市 D，分页；M6-07B：显式字段含 delist_date/list_status）
+    sb = fetch_stock_basic_all(client)
+    if sb.height:
+        db.upsert("stock_basic", sb, keys=["ts_code"])
 
     report: dict = {"tables": {}}
 
