@@ -2,10 +2,13 @@ from __future__ import annotations
 
 import polars as pl
 
+# M6-04：forward horizon 唯一来源（5d/20d 平台固定；数学定义不变）
+DEFAULT_FORWARD_HORIZONS: tuple[int, ...] = (5, 20)
+
 
 def compute_forward_returns(
     df: pl.DataFrame,
-    horizons: tuple[int, ...] = (5, 20),
+    horizons: tuple[int, ...] = DEFAULT_FORWARD_HORIZONS,
     close_col: str = "close",
     adj_col: str = "adj_factor",
 ) -> pl.DataFrame:

@@ -20,7 +20,7 @@ from factorlab.data.source import load_daily
 from factorlab.data.universe import align_to_listing, resolve_candidate_codes, resolve_universe_frame
 from factorlab.domain.frames import LabelArtifact, SignalArtifact, SignalMeta
 from factorlab.domain.timing import DEFAULT_EOD_SIGNAL_TIMING
-from factorlab.engine.forward import compute_forward_returns
+from factorlab.engine.forward import DEFAULT_FORWARD_HORIZONS, compute_forward_returns
 from factorlab.engine.partitions import reject_future_shifts, validate_partition_calls
 from factorlab.factor.ast_gate import validate_formula
 from factorlab.ops.platform_ops import (
@@ -293,6 +293,23 @@ def _compute_signal(
     return sig.sort(["date", "code"])
 
 
+def label_lookahead_end(cal: pl.Series, chunk_end: datetime.date, horizon: int) -> datetime.date:
+    """M6-04：chunk_end 向后 horizon 个交易日的 label_end（right lookahead）。
+
+    截断到研究 calendar 最后一天（**label lookahead 可跨内部 chunk boundary，
+    不可跨研究 sample boundary**）。chunk_end 不在 calendar / horizon<0 /
+    calendar 为空 → fail fast。
+    """
+    if horizon < 0:
+        raise ValueError(f"horizon 不能为负: {horizon}")
+    if cal.len() == 0:
+        raise ValueError("calendar 为空——无法计算 label lookahead")
+    idx = int(cal.search_sorted(chunk_end))
+    if idx >= cal.len() or cal[idx] != chunk_end:
+        raise ValueError(f"chunk_end {chunk_end} 不在研究 calendar 中")
+    return cal[min(idx + horizon, cal.len() - 1)]
+
+
 def _compute_labels(
     con: duckdb.DuckDBPyConnection,
     ctx: RunContext,
@@ -307,7 +324,9 @@ def _compute_labels(
     active-at-t keys → LabelArtifact frame。
 
     - 是否生成 t 的 label 取决于 t 是否 active（t+h 的未来 membership 不参与 censoring）
-    - forward endpoint 无真实价格 → label null（chunk 尾部/停牌——保持现有语义）
+    - forward endpoint 无真实价格 → label null（sample 尾/停牌/退市——真 null 保持）
+    - M6-04：date_start=chunk_start（label 不需要左侧 signal warmup——forward 只
+      需要 t 与 t+h，无过去窗口）；date_end=label_end（right lookahead，仅 label）
     """
     raw = load_daily(
         ctx.db_path, codes,
@@ -374,31 +393,44 @@ def run_factor(spec: FactorSpec, ctx: RunContext) -> FactorResult:
             base_adj = _load_base_adj(con, spec.date.end)
         sig_parts, lab_parts = [], []
         for load_start, chunk_start, chunk_end in chunks:
-            if load_start is None or chunk_end is None:
-                cal_chunk = cal          # 单块全历史（spec.date 未设）
+            if ctx.chunk_days is None:
+                # 单块全历史：signal/label 同窗口，无 lookahead——
+                # label_end = sample end（截断后 cal 最后一天；spec.date.end 可能
+                # 是非交易日，不在 cal——不能做额外 lookahead）
+                signal_cal = label_cal = cal
+                label_end = cal[-1] if cal.len() else None
             else:
-                cal_chunk = cal.filter((cal >= load_start) & (cal <= chunk_end))
-            # PIT UniverseFrame 覆盖 load_start..chunk_end（含 warmup——CS→TS 混合在
-            # warmup 期间不缺 universe membership，AC-25）
-            uf = resolve_universe_frame(spec, con, dates=cal_chunk.to_list(),
-                                        candidate_codes=codes)
-            sig = _compute_signal(con, ctx, spec, formula, codes, uf,
+                # M6-04 双窗口：
+                #   Signal: [left warmup | output chunk]——结束于 chunk_end
+                #   Label:  [output chunk | right lookahead]——结束于 label_end
+                signal_cal = cal.filter((cal >= load_start) & (cal <= chunk_end))
+                label_end = label_lookahead_end(cal, chunk_end,
+                                                max(DEFAULT_FORWARD_HORIZONS))
+                label_cal = cal.filter((cal >= chunk_start) & (cal <= label_end))
+            signal_uf = resolve_universe_frame(spec, con, dates=signal_cal.to_list(),
+                                               candidate_codes=codes)
+            label_uf = resolve_universe_frame(spec, con, dates=label_cal.to_list(),
+                                              candidate_codes=codes)
+            sig = _compute_signal(con, ctx, spec, formula, codes, signal_uf,
                                   load_start.isoformat() if load_start else None,
                                   chunk_end.isoformat() if chunk_end else None,
-                                  cal_chunk, base_adj)
-            lab = _compute_labels(con, ctx, spec, codes, uf,
-                                  load_start.isoformat() if load_start else None,
-                                  chunk_end.isoformat() if chunk_end else None, cal_chunk)
+                                  signal_cal, base_adj)
+            lab = _compute_labels(con, ctx, spec, codes, label_uf,
+                                  chunk_start.isoformat() if chunk_start else None,
+                                  label_end.isoformat() if label_end else None,
+                                  label_cal)
             if ctx.chunk_days is not None:
-                # 每块算完即裁剪到对齐输出列：全列面板堆叠会让峰值内存 = 所有块之和（OOM）
-                sig = sig.filter(pl.col("date") >= chunk_start)
-                lab = lab.filter(pl.col("date") >= chunk_start)
+                # 双边裁剪 [chunk_start, chunk_end]：right-lookahead rows 不得
+                # 进入任何输出（signal/label/panel）；每块算完即裁剪到对齐输出列
+                # （全列面板堆叠会让峰值内存 = 所有块之和，OOM）
+                sig = sig.filter((pl.col("date") >= chunk_start) & (pl.col("date") <= chunk_end))
+                lab = lab.filter((pl.col("date") >= chunk_start) & (pl.col("date") <= chunk_end))
             sig_parts.append(sig.select([c for c in _CHUNK_KEEP if c in sig.columns]))
             lab_parts.append(lab)
         signal_df = pl.concat(sig_parts)
         labels_df = pl.concat(lab_parts)
         if ctx.chunk_days is not None:
-            del sig_parts, lab_parts, cal_chunk, base_adj  # 立即释放块级引用（评估阶段省内存）
+            del sig_parts, lab_parts, signal_cal, label_cal, base_adj  # 立即释放块级引用（评估阶段省内存）
         # M6-01 domain contract 接线
         adjustment = getattr(spec, "adjustment", None) or ctx.adjustment
         meta = SignalMeta(name=spec.name, frequency="1d",

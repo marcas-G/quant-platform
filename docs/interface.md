@@ -818,6 +818,31 @@ summary 新增 `candidate_count / signal_rows / label_rows / runtime_semantics`�
   （在 universe masking 变换前校验，覆盖 macro/def 展开路径）。内部 mask 列
   更名为 `__factorlab_universe_active`。
 
+## 4.4 Exact Chunked Labels（M6-04）
+
+chunked run 与 non-chunked run 的 forward labels 在研究样本内部**逐 cell 完全一致**
+（right lookahead 只进 Label Runtime）。
+
+每块双窗口：
+
+```
+Signal: [ left warmup | output chunk ]         ← 结束于 chunk_end（禁止传 label_end）
+Label:                [ output chunk | right lookahead ]  ← 结束于 label_end
+         chunk_start     chunk_end       label_end
+```
+
+- `label_lookahead_end(cal, chunk_end, horizon)`：chunk_end 向后 horizon 个交易日
+  （截断到研究 calendar 最后一天）；chunk_end 不在 calendar / horizon<0 /
+  calendar 为空 → fail fast
+- **lookahead 可跨内部 chunk boundary，不可跨研究 sample boundary**——最后一块
+  label_end = sample 最后一天（5d/20d 尾部 null 保持合法）
+- Label Runtime：date_start=chunk_start（无左侧 warmup——forward 只需 t 与 t+h）、
+  date_end=label_end；**Signal Runtime 仍只看 <= chunk_end**
+- 每块输出双边裁剪 [chunk_start, chunk_end]——lookahead rows 不进任何输出
+- 未来 membership 不 censor label（t+h ST/inactive 不影响 t 的 label——listed
+  skeleton 承载未来市场历史）
+- `DEFAULT_FORWARD_HORIZONS = (5, 20)` 为 horizon 唯一来源（forward.py）
+
 ## 5. 测试
 
 运行：

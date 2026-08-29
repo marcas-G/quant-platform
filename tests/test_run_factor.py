@@ -658,9 +658,9 @@ formula: |
 
 
 def test_chunked_consistency_with_full_run(tmp_path):
-    # 关键回归：分块（含 qfq 归一）vs 整段跑，signal 逐 cell 相等、forward 非 null 区相等
-    # chunk_days=6（12 天 → 2 块）：块内首行有完整 forward_5d（需未来 5 个交易日），
-    #   非 null 交集 = 块 0 首行 + 块 1 首行 × 2 代码 = 4 行，可验证 forward 一致性
+    # M6-04 关键回归：分块（含 qfq 归一 + label right lookahead）vs 整段跑——
+    # signal 逐 cell 相等；forward 对**全部 full 非 null 行**逐 cell 一致；
+    # **内部 chunk boundary 不再产生 extra null**（旧语义"块边界 null 是接受的差异"已删除）
     build_db(tmp_path, ex_date=True, n_days=12)
     spec = _chunk_spec(tmp_path)
     full = run_factor(spec, RunContext(
@@ -674,14 +674,16 @@ def test_chunked_consistency_with_full_run(tmp_path):
     # signal 逐 cell 相等（float64：1e-9；含 log(close) 绝对水平输入 → 验证 qfq 归一）
     diff = (joined["signal"] - joined["signal_c"]).abs().max()
     assert float(diff) < 1e-9
-    # forward：仅两边都非 null 的行可比（块边界 null 是接受的差异）
-    mask = joined["forward_return_5d"].is_not_null() & joined["forward_return_5d_c"].is_not_null()
-    assert mask.sum() == 4  # 块 0 首行 + 块 1 首行 × 2 代码
-    fdiff = (joined.filter(mask)["forward_return_5d"] - joined.filter(mask)["forward_return_5d_c"]).abs().max()
+    # forward：full 非 null 的行 chunked 必须完全一致（12 天 → 前 7 天 × 2 代码非 null）
+    mask = joined["forward_return_5d"].is_not_null()
+    assert mask.sum() == (12 - 5) * 2
+    fdiff = (joined.filter(mask)["forward_return_5d"]
+             - joined.filter(mask)["forward_return_5d_c"]).abs().max()
     assert float(fdiff) < 1e-9
-    # 块边界 forward null 存在但受限：2 块 → 块尾 5 天 × 2 代码
-    null_rows = joined.filter(joined["forward_return_5d"].is_not_null() & joined["forward_return_5d_c"].is_null())
-    assert null_rows.height <= 5 * 2
+    # 内部 chunk boundary 不再产生 extra null（M6-04 核心——right lookahead 修复）
+    extra = joined.filter(joined["forward_return_5d"].is_not_null()
+                          & joined["forward_return_5d_c"].is_null())
+    assert extra.height == 0
 
 
 def test_chunked_pure_cs_consistency(tmp_path):
