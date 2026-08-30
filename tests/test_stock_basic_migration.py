@@ -386,3 +386,123 @@ def test_merged_status_null_cannot_penetrate():
     out = validate_stock_basic_source(*_valid_pair())
     assert out["list_status"].null_count() == 0
     assert set(out["list_status"].unique().to_list()) == {"L", "D"}
+
+
+# ================================================================
+# M6-07B4：source partition（canonical research securities / quarantined legacy aliases）
+# ================================================================
+
+from factorlab.data.rebuild import (StockBasicSourcePartition,
+                                    fetch_stock_basic_source,
+                                    partition_stock_basic_source)
+
+
+def _pl(**over):
+    """partition 用 canonical L 行（默认）。"""
+    row = {"ts_code": "000001.SZ", "symbol": "000001", "name": "甲",
+           "list_status": "L", "list_date": "19910403", "delist_date": None,
+           "industry": "银行", "market": "主板", "act_name": None,
+           "act_ent_type": None, "area": None, "cnspell": None}
+    row.update(over)
+    return row
+
+
+def _pd(**over):
+    """canonical D 行（默认带合法 delist_date）。"""
+    row = _pl(ts_code="000002.SZ", symbol="000002", name="乙",
+              list_status="D", delist_date="20240601")
+    row.update(over)
+    return row
+
+
+def _palias(**over):
+    """legacy vendor alias（T600018.SH 历史残留，Tushare 已知脏数据形态）。"""
+    row = _pl(ts_code="T600018.SH", symbol="T600018", name="上港集箱(退)",
+              list_status="D", list_date="20000719", delist_date="20061020")
+    row.update(over)
+    return row
+
+
+# A. canonical L → canonical
+def test_partition_canonical_l_enters_canonical():
+    part = partition_stock_basic_source(pl.DataFrame([_pl()]), pl.DataFrame([_pd()]))
+    assert part.canonical["ts_code"].to_list() == ["000001.SZ", "000002.SZ"]
+    assert part.quarantined.height == 0
+
+
+# B. canonical D + valid delist → canonical（不 quarantine）
+def test_partition_canonical_d_with_delist_enters_canonical():
+    part = partition_stock_basic_source(pl.DataFrame([_pl()]), pl.DataFrame([_pd()]))
+    d = part.canonical.filter(pl.col("list_status") == "D")
+    assert d["ts_code"].to_list() == ["000002.SZ"]
+    assert d["delist_date"].to_list() == ["20240601"]
+
+
+# C. T600018.SH / D / 合法 delist → quarantined，不在 canonical
+def test_partition_legacy_alias_quarantined():
+    part = partition_stock_basic_source(pl.DataFrame([_pl()]),
+                                        pl.DataFrame([_pd(), _palias()]))
+    assert part.canonical["ts_code"].to_list() == ["000001.SZ", "000002.SZ"]
+    assert part.quarantined["ts_code"].to_list() == ["T600018.SH"]
+
+
+# D. TS0018.SH / D / delist=null → quarantined，不阻塞 canonical 结果
+def test_partition_quarantine_allows_null_delist():
+    part = partition_stock_basic_source(
+        pl.DataFrame([_pl()]),
+        pl.DataFrame([_pd(), _palias(ts_code="TS0018.SH", symbol="TS0018",
+                                     delist_date=None)]))
+    assert part.quarantined["ts_code"].to_list() == ["TS0018.SH"]
+    assert part.canonical["ts_code"].to_list() == ["000001.SZ", "000002.SZ"]
+
+
+# E. 非 canonical 且 list_status=L → fail fast（活跃非标准标识不可 quarantine）
+def test_partition_noncanonical_l_fails():
+    with pytest.raises(ValueError, match="list_status=L|活跃"):
+        partition_stock_basic_source(pl.DataFrame([_palias(list_status="L")]),
+                                     pl.DataFrame([_pd()]))
+
+
+# F. 非 canonical + 不支持的后缀 → fail
+def test_partition_unsupported_suffix_fails():
+    with pytest.raises(ValueError, match="后缀"):
+        partition_stock_basic_source(pl.DataFrame([_pl()]),
+                                     pl.DataFrame([_pd(), _palias(ts_code="T600018.XX",
+                                                                  symbol="T600018")]))
+
+
+# G. alias symbol/ts_code 不匹配 → fail
+def test_partition_symbol_mismatch_fails():
+    with pytest.raises(ValueError, match="symbol"):
+        partition_stock_basic_source(pl.DataFrame([_pl()]),
+                                     pl.DataFrame([_pd(), _palias(symbol="X")]))
+
+
+# §19: canonical D + delist=null 仍然 fail——quarantine 不弱化 canonical PIT 契约
+def test_partition_canonical_d_missing_delist_still_fails():
+    with pytest.raises(ValueError, match="delist_date 为空"):
+        partition_stock_basic_source(pl.DataFrame([_pl()]),
+                                     pl.DataFrame([_pd(delist_date=None)]))
+
+
+# §22: 不 alias→canonical 映射——T600018.SH 保留自身标识
+def test_partition_no_alias_canonicalization():
+    part = partition_stock_basic_source(pl.DataFrame([_pl()]),
+                                        pl.DataFrame([_pd(), _palias()]))
+    q = part.quarantined
+    assert q["ts_code"].to_list() == ["T600018.SH"]
+    assert q["symbol"].to_list() == ["T600018"]
+    assert "600018.SH" not in q["ts_code"].to_list()
+
+
+# §8: fetch 层 quarantine 审计可见性；fetch_stock_basic_all = canonical-only 兼容 API
+def test_fetch_source_exposes_quarantine():
+    client = _FakeClient(pl.DataFrame([_pl()]),
+                         pl.DataFrame([_pd(), _palias()]))
+    part = fetch_stock_basic_source(client)
+    assert part.canonical["ts_code"].to_list() == ["000001.SZ", "000002.SZ"]
+    assert part.quarantined["ts_code"].to_list() == ["T600018.SH"]
+    # 兼容 API 只返回 fully validated canonical 行
+    out = fetch_stock_basic_all(client)
+    assert out["ts_code"].to_list() == ["000001.SZ", "000002.SZ"]
+    assert "T600018.SH" not in out["ts_code"].to_list()

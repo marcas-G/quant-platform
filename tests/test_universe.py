@@ -186,3 +186,44 @@ def test_resolve_codes_missing_reference_file(db, tmp_path):
     settings = Settings(universes_dir=tmp_path / "nope")
     with pytest.raises(FileNotFoundError):
         resolve_codes(spec_with(ref="ghost"), db, settings=settings)
+
+
+# ================================================================
+# M6-07B4：rules universe 排除 legacy vendor aliases（T/TS 前缀历史残留）
+# ================================================================
+
+from factorlab.data.universe import resolve_candidate_codes
+
+
+def _build_db_with_aliases(tmp_path):
+    """stock_basic 含 canonical 600018.SH + legacy aliases T600018.SH/TS0018.SH。"""
+    db = duckdb.connect(tmp_path / "t.duckdb")
+    db.execute("CREATE TABLE stock_basic (ts_code VARCHAR, symbol VARCHAR, exchange VARCHAR, list_date VARCHAR, industry VARCHAR, market VARCHAR)")
+    db.execute("""INSERT INTO stock_basic VALUES
+        ('000001.SZ', '000001', 'SZSE', '19910403', '银行', '主板'),
+        ('600018.SH', '600018', 'SSE', '20061026', '港口', '主板'),
+        ('T600018.SH', 'T600018', 'SSE', '20000719', '港口', '主板'),
+        ('TS0018.SH', 'TS0018', 'SSE', '20000719', '港口', '主板')""")
+    return db
+
+
+@pytest.fixture
+def db_alias(tmp_path):
+    conn = _build_db_with_aliases(tmp_path)
+    yield conn
+    conn.close()
+
+
+def test_resolve_codes_rules_excludes_legacy_aliases(db_alias):
+    spec = spec_with(rules={})
+    assert resolve_codes(spec, db_alias) == ["000001", "600018"]
+
+
+def test_resolve_candidate_codes_rules_excludes_legacy_aliases(db_alias):
+    spec = spec_with(rules={"exchanges": ["SSE", "SZSE"]})
+    assert resolve_candidate_codes(spec, db_alias) == ["000001", "600018"]
+
+
+def test_resolve_codes_exchanges_by_suffix_excludes_aliases(db_alias):
+    spec = spec_with(rules={"exchanges": ["SSE"]})
+    assert resolve_codes(spec, db_alias) == ["600018"]

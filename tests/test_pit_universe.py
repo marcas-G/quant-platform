@@ -481,3 +481,35 @@ def test_duplicate_st_identical_payload_no_blowup(tmp_path):
     a = uf.filter((pl.col("code") == "000001") & (pl.col("date") == datetime.date(2024, 3, 1)))
     assert a.height == 1 and a["is_st"][0] == True and a["in_universe"][0] == False
     db.close()
+
+
+# ================================================================
+# M6-07B4：UniverseFrame rules 路径排除 legacy vendor aliases
+# ================================================================
+
+def _build_db_with_aliases(tmp_path):
+    """canonical 000001.SZ/600018.SH + legacy aliases（老 list_date、无 delist_date）。
+    保护：即使 alias 有历史 list_date 且无 delist_date，也不得进入 research universe。"""
+    db = duckdb.connect(tmp_path / "t.duckdb")
+    db.execute("CREATE TABLE stock_basic (ts_code VARCHAR, symbol VARCHAR, exchange VARCHAR, list_date VARCHAR, industry VARCHAR, market VARCHAR, delist_date VARCHAR)")
+    db.execute("""INSERT INTO stock_basic VALUES
+        ('000001.SZ', '000001', 'SZSE', '19910403', '银行', '主板', NULL),
+        ('600018.SH', '600018', 'SSE', '20061026', '港口', '主板', NULL),
+        ('T600018.SH', 'T600018', 'SSE', '20000719', '港口', '主板', NULL),
+        ('TS0018.SH', 'TS0018', 'SSE', '20000719', '港口', '主板', NULL)""")
+    db.execute("CREATE TABLE daily (ts_code VARCHAR, trade_date VARCHAR, close DOUBLE)")
+    db.execute("CREATE TABLE trade_cal (exchange VARCHAR, cal_date VARCHAR, is_open BIGINT)")
+    return db
+
+
+def test_universe_frame_rules_excludes_legacy_aliases(tmp_path):
+    """§13 invariant：T600018/TS0018 绝不进 candidate_codes / UniverseFrame.code。"""
+    db = _build_db_with_aliases(tmp_path)
+    spec = spec_with(rules={"exchanges": ["SSE", "SZSE"]})
+    codes = resolve_candidate_codes(spec, db)
+    assert codes == ["000001", "600018"]
+    uf = resolve_universe_frame(spec, db, DATES)
+    assert "T600018" not in uf["code"].to_list()
+    assert "TS0018" not in uf["code"].to_list()
+    assert {"000001", "600018"} <= set(uf["code"].to_list())
+    db.close()

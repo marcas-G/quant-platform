@@ -12,6 +12,8 @@ import polars as pl
 from factorlab.config import settings
 from factorlab.data.fetcher import TeaJoinClient
 from factorlab.data.platform_db import PlatformDB
+from factorlab.domain.codes import (CANONICAL_TS_CODE_PATTERN,
+                                    is_canonical_stock_code)
 
 DAILY_TABLES = ("daily", "daily_basic", "adj_factor", "stock_st", "stk_limit", "suspend_d", "moneyflow")
 # 服务端对 suspend_d 的连续访问敏感（并发拉取批量失败、串行正常）：该表强制串行
@@ -142,10 +144,11 @@ def validate_stock_basic_source(l_df: pl.DataFrame, d_df: pl.DataFrame) -> pl.Da
         raise ValueError(f"stock_basic list_status 仅允许非空 L/D，实际含 "
                          f"{bad_status['list_status'].unique().to_list()}"
                          f"（含 null——null 不能穿透）")
-    # ---- identifier ----
-    bad_code = merged.filter(~pl.col("ts_code").str.contains(r"^\d{6}\.(SH|SZ|BJ)$"))
+    # ---- identifier（M6-07B4：canonical 谓词唯一权威来源 domain.codes） ----
+    bad_code = merged.filter(~pl.col("ts_code").map_elements(
+        is_canonical_stock_code, return_dtype=pl.Boolean).fill_null(False))
     if bad_code.height:
-        raise ValueError(f"stock_basic ts_code 必须匹配 ^\d{{6}}\.(SH|SZ|BJ)$: "
+        raise ValueError(f"stock_basic ts_code 必须匹配 {CANONICAL_TS_CODE_PATTERN}: "
                          f"{bad_code.height} 行")
     if merged["ts_code"].null_count() or merged["ts_code"].is_duplicated().any():
         raise ValueError("stock_basic 合并后 ts_code 缺失或重复——fail fast")
@@ -179,17 +182,148 @@ def validate_stock_basic_source(l_df: pl.DataFrame, d_df: pl.DataFrame) -> pl.Da
     return merged.sort("ts_code")
 
 
-def fetch_stock_basic_all(client: TeaJoinClient) -> pl.DataFrame:
-    """获取完整 stock_basic（list_status=L + D 分页合并）→ validate_stock_basic_source。
+# ---------------------------------------------------------------------------
+# M6-07B4：source partition（canonical research securities / quarantined aliases）
+# ---------------------------------------------------------------------------
 
-    显式字段（含 delist_date/list_status）；L/D 必须非空；唯一正式 source 校验
-    入口（validate_stock_basic_source——全部 fail fast 不自动修复）。
+@dataclass(frozen=True)
+class StockBasicSourcePartition:
+    """stock_basic source 分区。
+
+    canonical：research 可用标准证券——is_canonical_stock_code 通过且完整走
+    validate_stock_basic_source（全部 fail fast 契约不弱化）。
+    quarantined：非 canonical 的退市 vendor alias（保留自身标识，仅供审计/
+    migration report；不参与 PIT universe、不进 future rebuild 的 research
+    stock_basic）。**隔离 ≠ 合并/映射/静默丢弃。**
+    """
+
+    canonical: pl.DataFrame
+    quarantined: pl.DataFrame
+
+
+def _classify_identifiers(df: pl.DataFrame, name: str) -> tuple[pl.DataFrame, pl.DataFrame]:
+    """按 canonical / quarantine 分类 df 行；其余形态 fail fast（细分错误消息）。
+
+    quarantine 候选四条件（M6-07B4 §4，全部 true）：list_status==D、
+    ts_code 非 null、symbol 非 null、ts_code 以 .SH/.SZ/.BJ 结尾、
+    symbol == ts_code 去后缀。不要求 canonical 六位数字 symbol。
+    fail fast 顺序（§5）：active L → null ts_code → null symbol →
+    unsupported suffix → symbol/base mismatch。
+    """
+    can_mask = pl.col("ts_code").map_elements(
+        is_canonical_stock_code, return_dtype=pl.Boolean).fill_null(False)
+    canonical = df.filter(can_mask)
+    rest = df.filter(~can_mask)
+    if rest.is_empty():
+        return canonical, rest
+    rest = rest.with_columns(
+        _q_null_ts=pl.col("ts_code").is_null(),
+        _q_null_sym=pl.col("symbol").is_null(),
+        _q_suffix=(pl.col("ts_code").str.ends_with(".SH")
+                   | pl.col("ts_code").str.ends_with(".SZ")
+                   | pl.col("ts_code").str.ends_with(".BJ")),
+        _q_base=pl.col("symbol") == pl.col("ts_code").str.replace(r"\.(SH|SZ|BJ)$", ""),
+    )
+    active = rest.filter(pl.col("list_status") == "L")
+    if active.height:
+        raise ValueError(
+            f"stock_basic {name} 存在非 canonical 且 list_status=L 的行: "
+            f"{active['ts_code'].head(5).to_list()}——活跃非标准标识不可 quarantine"
+            f"（可能代表平台不认识的证券类别）")
+    if rest["_q_null_ts"].any():
+        raise ValueError(f"stock_basic {name} 存在 null ts_code——fail fast")
+    if rest["_q_null_sym"].any():
+        raise ValueError(f"stock_basic {name} 存在 null symbol——fail fast")
+    bad_suffix = rest.filter(~pl.col("_q_suffix"))
+    if bad_suffix.height:
+        raise ValueError(
+            f"stock_basic {name} 存在非 canonical 且后缀不支持的 ts_code: "
+            f"{bad_suffix['ts_code'].head(5).to_list()}——仅 .SH/.SZ/.BJ")
+    bad_base = rest.filter(~pl.col("_q_base"))
+    if bad_base.height:
+        raise ValueError(
+            f"stock_basic {name} 存在非 canonical 且 symbol/ts_code 不匹配的行: "
+            f"{bad_base['ts_code'].head(5).to_list()}——symbol 必须等于 ts_code 去后缀")
+    quarantined = rest.filter((pl.col("list_status") == "D")
+                              & pl.col("_q_suffix") & pl.col("_q_base"))
+    return canonical, quarantined.drop(["_q_null_ts", "_q_null_sym",
+                                        "_q_suffix", "_q_base"])
+
+
+def partition_stock_basic_source(l_df: pl.DataFrame, d_df: pl.DataFrame) -> StockBasicSourcePartition:
+    """显式 source 分区（M6-07B4）：canonical 完整验证 + quarantine legacy aliases。
+
+    - L/D 非空 + 分类必需列（ts_code/symbol/list_status）→ fail fast
+    - endpoint status 分区（null 显式拒绝）——canonical 与 quarantine 一视同仁
+    - canonical 行走 validate_stock_basic_source（endpoint/dates/temporal/
+      uniqueness/symbol 全部保持——canonical D + delist=null 依然 BLOCK）
+    - quarantined 允许 D + delist_date=null（§6：alias 无完整 PIT 契约）
+    **禁止**：alias→canonical 映射、静默丢弃、硬编码别名清单（规则来自
+    标识类别与 source 语义，非具体代码）。
+    """
+    for df, name in ((l_df, "L"), (d_df, "D")):
+        if df.height == 0:
+            raise ValueError(f"stock_basic {name} 返回空——source 无效"
+                             f"（真实 A 股必有退市股，空返回更可能代表权限/API/schema/网络问题）")
+        for col in ("ts_code", "symbol", "list_status"):
+            if col not in df.columns:
+                raise ValueError(f"stock_basic {name} 缺少字段: {col}")
+    # endpoint status 分区（与 validate_stock_basic_source 相同契约；null 显式拒绝）
+    bad_l = l_df.filter(pl.col("list_status").is_null()
+                        | (pl.col("list_status") != "L"))
+    if bad_l.height:
+        raise ValueError(f"stock_basic L endpoint 返回非 L row: {bad_l.height} 行"
+                         f"（含 null/空串/其他值）")
+    bad_d = d_df.filter(pl.col("list_status").is_null()
+                        | (pl.col("list_status") != "D"))
+    if bad_d.height:
+        raise ValueError(f"stock_basic D endpoint 返回非 D row: {bad_d.height} 行"
+                         f"（含 null/空串/其他值）")
+    l_can, l_q = _classify_identifiers(l_df, "L")
+    d_can, d_q = _classify_identifiers(d_df, "D")
+    quarantined = _concat_partitions(l_q, d_q)
+    if l_can.height or d_can.height:
+        canonical = validate_stock_basic_source(l_can, d_can)
+    else:
+        canonical = pl.DataFrame(schema=l_df.schema)
+    return StockBasicSourcePartition(canonical=canonical, quarantined=quarantined)
+
+
+def _concat_partitions(*parts: pl.DataFrame) -> pl.DataFrame:
+    """concat 前统一 Null dtype 列 → String（全 null 分区推断 Null，与有值
+    String 分区冲突——Polars 三值 dtype 陷阱）。"""
+    non_empty = [p for p in parts if p.height]
+    if not non_empty:
+        return pl.DataFrame(schema=parts[0].schema)
+    unified = []
+    for p in non_empty:
+        null_cols = [c for c, t in p.schema.items() if t == pl.Null]
+        unified.append(p.with_columns(pl.col(c).cast(pl.String) for c in null_cols)
+                       if null_cols else p)
+    return pl.concat(unified)
+
+
+def fetch_stock_basic_source(client: TeaJoinClient) -> StockBasicSourcePartition:
+    """获取完整 stock_basic（list_status=L + D 分页合并）→ partition。
+
+    显式字段（含 delist_date/list_status）；L/D 必须非空；唯一正式 source 入口
+    （partition_stock_basic_source：canonical 完整验证 fail fast 不自动修复；
+    legacy aliases quarantine 随分区返回——审计可见，绝不静默丢弃）。
     """
     l_df = client.fetch_paged("stock_basic", {"list_status": "L"},
                               fields=list(STOCK_BASIC_FIELDS))
     d_df = client.fetch_paged("stock_basic", {"list_status": "D"},
                               fields=list(STOCK_BASIC_FIELDS))
-    return validate_stock_basic_source(l_df, d_df)
+    return partition_stock_basic_source(l_df, d_df)
+
+
+def fetch_stock_basic_all(client: TeaJoinClient) -> pl.DataFrame:
+    """兼容 API：canonical-only（M6-07B4 起 legacy aliases 被 quarantine）。
+
+    未来 rebuild 的 research stock_basic 只收 canonical 行；quarantine 行由
+    fetch_stock_basic_source() 提供审计可见性（不静默丢弃）。
+    """
+    return fetch_stock_basic_source(client).canonical
 def migrate_stock_basic_pit_fields(db: PlatformDB, stock_basic: pl.DataFrame) -> dict:
     """Two-phase targeted migration（M6-07B1）。
 

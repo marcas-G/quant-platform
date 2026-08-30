@@ -10,6 +10,7 @@ import polars as pl
 import yaml
 
 from factorlab.config import settings
+from factorlab.domain.codes import CANONICAL_TS_CODE_PATTERN
 from factorlab.spec import FactorSpec
 
 _ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -54,8 +55,12 @@ def _codes_from_rules(rules: dict[str, Any], db: duckdb.DuckDBPyConnection, date
     unknown = set(rules) - _ALLOWED_RULES
     if unknown:
         raise ValueError(f"未知 universe 规则: {sorted(unknown)}（支持: {sorted(_ALLOWED_RULES)}）")
-    # 平台库默认宇宙 = SSE+SZSE（无 exchange 列，按 ts_code 后缀推断；BSE 不进默认宇宙）
-    sql = "SELECT symbol FROM stock_basic WHERE substr(ts_code, -2) IN (SELECT unnest(?))"
+    # 平台库默认宇宙 = SSE+SZSE（无 exchange 列，按 ts_code 后缀推断；BSE 不进默认宇宙）。
+    # M6-07B4：rules 候选必须额外满足 canonical research identifier
+    # （^\d{6}\.(SH|SZ|BJ)$——legacy vendor aliases 如 T600018.SH 被排除）。
+    sql = ("SELECT symbol FROM stock_basic"
+           f" WHERE regexp_matches(ts_code, '{CANONICAL_TS_CODE_PATTERN}')"
+           " AND substr(ts_code, -2) IN (SELECT unnest(?))")
     params: list[Any] = [[s for s, ex in _EXCHANGE_BY_SUFFIX.items() if ex in VALID_EXCHANGES]]
     if rules.get("exclude_st"):
         tables = {r[0] for r in db.execute("SELECT table_name FROM information_schema.tables").fetchall()}
@@ -195,9 +200,13 @@ def resolve_candidate_codes(
             suffixes = [s for s, ex in _EXCHANGE_BY_SUFFIX.items() if ex in exchanges]
         else:
             suffixes = [s for s, ex in _EXCHANGE_BY_SUFFIX.items() if ex in VALID_EXCHANGES]
+        # M6-07B4：rules 候选必须满足 canonical research identifier——legacy
+        # vendor aliases（T600018.SH 等）即使后缀匹配 .SH 也绝不进入 candidate
         codes = sorted(
             r[0] for r in db.execute(
-                "SELECT symbol FROM stock_basic WHERE substr(ts_code, -2) IN (SELECT unnest(?))",
+                "SELECT symbol FROM stock_basic"
+                f" WHERE regexp_matches(ts_code, '{CANONICAL_TS_CODE_PATTERN}')"
+                " AND substr(ts_code, -2) IN (SELECT unnest(?))",
                 [suffixes],
             ).fetchall())
     else:

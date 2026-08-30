@@ -646,6 +646,45 @@ CLI 消费：`factorlab run` 默认调用并把结果写入
 常量：`DAILY_TABLES`（7 行情表）、`FINANCIAL_TABLES`（3 财报表，M3b v1 不拉取，
 M3b+ 按 ts_code 分批）、`INDEX_CODES`（4 指数）。
 
+### Canonical research identifier 与 source partition（M6-07B4）
+
+**背景**：vendor（TeaJoin/Tushare）`stock_basic` 可能含历史遗留别名/实体标识，
+超出 canonical 六位 A 股证券代码域（实测：`T600018.SH`/`TS0018.SH`——上港集箱
+退市残留；平台冻结库亦含此两行，均无 `daily` 行情）。这些行**不映射、不合并、
+不删除、不猜测关系**——M6 无 verified corporate-action/entity-lineage 模型。
+
+**Canonical research universe v1**（唯一权威：`factorlab.domain.codes`）：
+
+```
+ts_code 匹配 ^\d{6}\.(SH|SZ|BJ)$  且  symbol == ts_code 前六位
+```
+
+- `is_canonical_stock_code(ts_code) -> bool`：ts_code 形态判断（None/非 str → False）。
+- `CANONICAL_TS_CODE_PATTERN`：Python re 与 DuckDB `regexp_matches()` 共用同一
+  pattern 常量——rebuild/universe 代码不得独立重写该正则。
+
+**Source partition**（`factorlab.data.rebuild`）：
+
+- `StockBasicSourcePartition(canonical, quarantined)`（frozen dataclass）：
+  - `canonical`：标准证券，完整走 `validate_stock_basic_source()`——endpoint
+    L/D 正确性、日期、temporal、uniqueness、symbol 全部保持 fail fast（canonical
+    D 行缺 delist_date 依然 BLOCK）。
+  - `quarantined`：非 canonical 的**退市** vendor alias，保留自身标识，仅供
+    audit/migration report——不参与 PIT universe、不进 future rebuild 的
+    research `stock_basic`。**隔离 ≠ 合并**。
+- `partition_stock_basic_source(l_df, d_df) -> StockBasicSourcePartition`：
+  分类前置 fail fast 与 validator 同契约（L/D 非空、必需列、endpoint status
+  分区含 null 显式拒绝）。quarantine 候选四条件全 true 才进入：
+  `list_status==D` + ts_code 非 null + symbol 非 null + ts_code 以
+  `.SH/.SZ/.BJ` 结尾 + `symbol == ts_code 去后缀`。quarantined D 允许
+  delist_date=null。其余任何形态（非 canonical 且 L、unsupported suffix、
+  null、symbol/base mismatch）→ fail fast。**禁止硬编码别名清单**——规则来自
+  标识类别与 source 语义。
+- `fetch_stock_basic_source(client) -> StockBasicSourcePartition`：L/D 分页
+  fetch → partition（quarantine 审计可见，不静默丢弃）。
+- `fetch_stock_basic_all(client) -> pl.DataFrame`：兼容 API，**canonical-only**
+  （future rebuild 的 research stock_basic 只收 canonical 行）。
+
 ### `factorlab.data.refresh` 增量续拉
 
 - `refresh(db, client, manifest_path=None) -> dict`
@@ -734,7 +773,7 @@ Universe membership ≠ tradability（M6-02 不实现 can_buy/can_sell——M8 E
 | API | 语义 |
 |---|---|
 | `resolve_codes()` | **legacy/static**：全期共用一组静态代码（含最新 ST 快照过滤与 date.start 一次性 min_list_days）——候选语义，不用于历史 PIT |
-| `resolve_candidate_codes(spec, db, override=None)` | 候选代码集：复用 override/ref/codes/rules 解析；rules 模式**只应用 exchange 与证券标识合法性**——exclude_st/min_list_days 属动态 PIT 条件，禁止提前应用 |
+| `resolve_candidate_codes(spec, db, override=None)` | 候选代码集：复用 override/ref/codes/rules 解析；rules 模式**只应用 exchange 与证券标识合法性**——exclude_st/min_list_days 属动态 PIT 条件，禁止提前应用。**M6-07B4**：rules 候选额外要求 canonical research identifier（`regexp_matches(ts_code, '^\d{6}\.(SH\|SZ\|BJ)$')`，pattern 单一权威来自 `domain.codes`）——legacy vendor aliases（如 `T600018.SH`）即使后缀匹配 .SH 也绝不进入候选 |
 | `resolve_universe_frame(spec, db, dates, *, override=None, candidate_codes=None)` | date×code PIT membership——接受显式日期集（chunk 友好，不要求全历史生成） |
 | `align_to_universe(raw, universe)` | **Universe 驱动**的 active LEFT JOIN raw：raw 不能决定日期是否存在（某日 raw 完全无行 → active date/code 仍输出、行情 null）；universe 外排除。raw 至少 date/code；universe 至少 date/code/in_universe(Boolean)；code 严格 pl.String（前导零证券代码，整数无法无损表示）；duplicate/dtype/缺列 fail fast |
 
@@ -935,6 +974,20 @@ list_status/delist_date；Phase-2 同一 connection 事务：UPDATE 已有行 PI
 list_status full-match）、COMMIT/ROLLBACK——不调用 db.upsert 不开第二写连接）；
 fetch_stock_basic_all 收紧：L/D 必须非空（D 空更可能代表权限/API/schema 问题）、
 list_date/delist_date YYYYMMDD 校验、symbol 非空。
+
+**M6-07B4 quarantine legacy aliases**：vendor `stock_basic` 实测含历史别名
+`T600018.SH`/`TS0018.SH`（上港集箱退市残留；冻结库同存、daily 均无行情）。
+canonical research identifier 谓词收口到 `factorlab.domain.codes`
+（`is_canonical_stock_code` / `CANONICAL_TS_CODE_PATTERN`——Python 与 DuckDB
+SQL 共用）；`partition_stock_basic_source` 显式分区 canonical/quarantined：
+canonical 走完整 validator（不弱化，canonical D 缺 delist 仍 BLOCK）；
+非 canonical **退市** alias（suffix 合法 + symbol==ts_code 去后缀）进
+quarantined（D 允许 delist=null）；其余形态 fail fast。**禁止** alias→canonical
+映射/静默丢弃/硬编码白名单。`fetch_stock_basic_source` 暴露 quarantine（审计
+可见），`fetch_stock_basic_all` = canonical-only 兼容 API；rules-based
+resolve_codes/resolve_candidate_codes 加 canonical predicate——legacy aliases
+绝不进 candidate_codes/UniverseFrame.code。冻结库中 T600018.SH/TS0018.SH
+行保留为 inert（不删除；universe 不可选）。
 
 ## 5. 测试
 
