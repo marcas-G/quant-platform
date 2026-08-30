@@ -302,6 +302,38 @@ def _compute_signal(
     if panel.height == 0:
         raise ValueError("日期段无数据，可运行 data refresh（M3b）")
     adjustment = getattr(spec, "adjustment", None) or ctx.adjustment
+    # ---- M6-07C2F：boundary fill state（跨 chunk 左边界 seed）----
+    # 长期停牌跨块时 load_start 落在停牌中 → 块内无前值 → fill 无法初始化 →
+    # extra null。从 DB 取 window_start 前每 code 每字段 latest non-null 注入
+    # synthetic seed 行（fill 初始化专用）——**fill 后立即删除**，seed 绝不进
+    # formula/CS mask/artifact（§16 顺序锁定：fill → trim seed → formula）。
+    fillable_cols = [c for c in panel.columns if c not in {"date", "code"}]
+    seed = None
+    seed_date = None
+    if fillable_cols and cal.len():
+        ws = cal.min()
+        if ws is not None:
+            seed_date = ws - datetime.timedelta(days=1)
+            first_rows = panel.filter(pl.col("date") == ws)
+            need = sorted(first_rows.filter(
+                pl.any_horizontal(pl.col(c).is_null() for c in fillable_cols)
+            )["code"].unique().to_list())
+            if need:
+                from factorlab.data.source import load_daily_fill_state
+                fs = load_daily_fill_state(
+                    ctx.db_path, need, before=ws.isoformat(),
+                    cols=fillable_cols, float32=ctx.float32)
+                if fs.height:
+                    seed = pl.DataFrame({
+                        "date": [seed_date] * fs.height,
+                        "code": fs["code"].to_list(),
+                        **{c: fs[c].to_list() for c in fillable_cols if c in fs.columns},
+                    })
+                    # seed 列 dtype 与 panel 对齐（load_daily_fill_state 可能按
+                    # 请求列 cast float32，而 panel 侧某些列保持 load_daily 语义）
+                    panel = pl.concat([seed.cast({c: panel.schema[c]
+                                                  for c in seed.columns if c in panel.schema}),
+                                       panel]).sort(["code", "date"])
     qfq_base_col = None
     if adjustment == "qfq" and base_adj is not None:
         # M6-07C2E：固定 sample base 列（**不覆盖 raw adj_factor**——字段保持
@@ -310,6 +342,9 @@ def _compute_signal(
         panel = panel.join(base_adj, on="code", how="left")
         qfq_base_col = "__factorlab_qfq_base_adj"
     panel = fill_suspension_values(panel)
+    if seed is not None:
+        # seed 只参与 fill 初始化——formula 前必须彻底删除（§15/16）
+        panel = panel.filter(pl.col("date") >= ws)
     asof = None
     if adjustment == "pit_qfq":
         asof = datetime.date.fromisoformat(spec.date.end) if spec.date.end else panel["date"].max()

@@ -90,3 +90,70 @@ def load_daily(
     if float32:
         df = df.with_columns([pl.col(c).cast(pl.Float32) for c in out_cols])
     return df.lazy()
+
+
+def load_daily_fill_state(
+    db_path: Path,
+    codes: list[str],
+    *,
+    before: str,
+    cols: list[str],
+    float32: bool = settings.use_float32,
+) -> pl.DataFrame:
+    """Boundary fill state（M6-07C2F）：每 code 每字段在 trade_date < before 的
+    **latest non-null** 值（字段彼此独立——不是 latest physical bar）。
+
+    用于 chunk/FULL 左边界长期停牌的 forward-fill 初始化：load 窗口起点落在
+    停牌中时，块内无前值 → 从 DB 取 window_start 前的 per-column state。
+
+    - set-based 单查询（不 per-code 循环、不 materialize 全部历史）
+    - 字段来源/映射与 load_daily 完全一致（daily/adj_factor/daily_basic/
+      index_daily + vol→volume、turnover→turnover_rate 等）
+    - 返回 (code, <请求列>)；每个 code 最多一行；无历史行 → 该 code 缺席
+    """
+    if not codes:
+        raise ValueError("codes 为空")
+    requested = list(cols)
+    unknown = [c for c in requested if c not in _KNOWN_COLS]
+    if unknown:
+        raise ValueError(f"未知列名: {unknown}（平台库可用列: {sorted(_KNOWN_COLS)}）")
+    daily_cols = [c for c in requested if c in _PLATFORM_COLS]
+    basic_cols = [c for c in requested if c in _DAILY_BASIC_MAP]
+    want_adj = "adj_factor" in requested
+    out_cols = list(dict.fromkeys([*[c for c in requested if c not in {"date", "code"}], "close"]))
+
+    select_items = ["substr(d.ts_code, 1, 6) AS code"]
+    if want_adj:
+        select_items.append(
+            "last(a.adj_factor ORDER BY d.trade_date) "
+            "FILTER (WHERE a.adj_factor IS NOT NULL) AS adj_factor")
+    select_items += [
+        f"last(d.{_COL_MAP.get(c, c)} ORDER BY d.trade_date) "
+        f"FILTER (WHERE d.{_COL_MAP.get(c, c)} IS NOT NULL) AS {c}"
+        for c in daily_cols]
+    select_items += [
+        f"last(b.{_DAILY_BASIC_MAP[c]} ORDER BY d.trade_date) "
+        f"FILTER (WHERE b.{_DAILY_BASIC_MAP[c]} IS NOT NULL) AS {c}"
+        for c in basic_cols]
+    if "idx_ret" in requested:
+        select_items.append(
+            "last(m.pct_chg ORDER BY d.trade_date) "
+            "FILTER (WHERE m.pct_chg IS NOT NULL) / 100.0 AS idx_ret")
+    sql = "SELECT " + ", ".join(select_items) + " FROM daily d"
+    sql += " JOIN adj_factor a ON d.trade_date = a.trade_date AND d.ts_code = a.ts_code"
+    if basic_cols:
+        sql += " LEFT JOIN daily_basic b ON d.trade_date = b.trade_date AND d.ts_code = b.ts_code"
+    if "idx_ret" in requested:
+        sql += f" LEFT JOIN index_daily m ON d.trade_date = m.trade_date AND m.ts_code = '{_MARKET_INDEX}'"
+    sql += " WHERE substr(d.ts_code, 1, 6) IN (SELECT unnest(?)) AND d.trade_date < ?"
+    sql += " GROUP BY substr(d.ts_code, 1, 6)"
+
+    with duckdb.connect(str(db_path), read_only=True) as con:
+        con.execute(f"SET memory_limit='{settings.default_max_memory}'")
+        con.execute("SET threads=2")
+        df = con.execute(sql, [[c.split(".")[0] for c in codes],
+                               before.replace("-", "")]).pl()
+    if float32:
+        df = df.with_columns([pl.col(c).cast(pl.Float32)
+                              for c in out_cols if c in df.columns])
+    return df
