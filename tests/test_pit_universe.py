@@ -513,3 +513,120 @@ def test_universe_frame_rules_excludes_legacy_aliases(tmp_path):
     assert "TS0018" not in uf["code"].to_list()
     assert {"000001", "600018"} <= set(uf["code"].to_list())
     db.close()
+
+
+# ================================================================
+# M6-07C1：稀疏 PIT Universe DataFrame 构造（显式 dtype，不依赖推断）
+# ================================================================
+
+def _build_db_sparse(tmp_path, with_st: bool = True, n_listed: int = 150,
+                     with_delisted: bool = True) -> duckdb.DuckDBPyConnection:
+    """151 canonical stocks：150 L（delist null）+ 999999.SZ D（delist 20020614）。
+    候选排序（resolve_candidate_codes 返回 sorted）保证 D 股最后——前 150 行
+    delist_date 全 null，第 151 行出现非 null（复现生产分布：非 null 首现于
+    Polars 默认 100 行推断窗口之后）。"""
+    db = duckdb.connect(tmp_path / "t.duckdb")
+    db.execute("CREATE TABLE stock_basic (ts_code VARCHAR, symbol VARCHAR, exchange VARCHAR,"
+               " list_date VARCHAR, industry VARCHAR, market VARCHAR, delist_date VARCHAR)")
+    rows = [(f"{i:06d}.SZ", f"{i:06d}", "SZSE", "20240101", "银行", "主板", None)
+            for i in range(1, n_listed + 1)]
+    if with_delisted:
+        rows.append(("999999.SZ", "999999", "SZSE", "20000101", "地产", "主板", "20020614"))
+    db.executemany("INSERT INTO stock_basic VALUES (?,?,?,?,?,?,?)", rows)
+    if with_st:
+        db.execute("CREATE TABLE stock_st (ts_code VARCHAR, name VARCHAR, trade_date VARCHAR,"
+                   " type VARCHAR, type_name VARCHAR)")
+    db.execute("CREATE TABLE daily (ts_code VARCHAR, trade_date VARCHAR, close DOUBLE)")
+    db.execute("CREATE TABLE trade_cal (exchange VARCHAR, cal_date VARCHAR, is_open BIGINT)")
+    return db
+
+
+DATES_SPARSE = ["2002-06-13", "2002-06-14", "2002-06-15", "2024-01-10"]
+
+
+def test_sparse_delist_construction_150_leading_nulls(tmp_path):
+    """生产分布复现：≥150 前导 null 后出现 delist 值——构造不得崩溃。
+
+    UniverseFrame 最终输出裁剪为 7 列，delist_date 的 String dtype 通过
+    行为级验证：后续 strptime 解析成功（999999 的 PIT is_listed 正确）即
+    证明构造边界 delist_date 为 String（Null dtype 会 str.strptime 崩溃）。
+    """
+    db = _build_db_sparse(tmp_path)
+    spec = spec_with(rules={"exchanges": ["SSE", "SZSE"]})
+    uf = resolve_universe_frame(spec, db, DATES_SPARSE)
+    assert uf["date"].dtype == pl.Date
+    assert uf["code"].dtype == pl.String
+    assert uf["is_st"].dtype == pl.Boolean
+    assert uf["exchange"].dtype == pl.String
+    assert uf["is_listed"].dtype == pl.Boolean
+    # 晚 D 股（第 151 行，非 null delist）PIT 正确——delist_date 值被精确解析
+    d = uf.filter((pl.col("code") == "999999") & (pl.col("date") == datetime.date(2002, 6, 13)))
+    assert d["is_listed"][0] is True
+    db.close()
+
+
+def test_sparse_delist_pit_semantics_unchanged(tmp_path):
+    """晚 D 股 PIT：date<delist → listed；date>=delist → 不 listed。"""
+    db = _build_db_sparse(tmp_path)
+    uf = resolve_universe_frame(spec_with(rules={"exchanges": ["SSE", "SZSE"]}),
+                                db, DATES_SPARSE)
+    d = uf.filter(pl.col("code") == "999999")
+    expect = {
+        datetime.date(2002, 6, 13): True,    # pre-delist
+        datetime.date(2002, 6, 14): False,   # == delist
+        datetime.date(2002, 6, 15): False,   # post-delist
+        datetime.date(2024, 1, 10): False,   # 长期退市
+    }
+    for day, listed in expect.items():
+        row = d.filter(pl.col("date") == day)
+        assert row["is_listed"][0] == listed, f"{day}: {listed}"
+    db.close()
+
+
+def test_all_null_delist_date_stays_string(tmp_path):
+    """全 null delist_date：dtype 必须 String（旧库/无退市子集锁定），不推断 Null。"""
+    db = _build_db_sparse(tmp_path, with_delisted=False)
+    uf = resolve_universe_frame(spec_with(rules={"exchanges": ["SSE", "SZSE"]}),
+                                db, ["2024-01-10"])
+    # 全 null delist 构造成功 + is_listed 正常（后续 strptime 对 null 幂等——
+    # Null dtype 会在 str.strptime 崩溃，构造成功即证明 String）
+    assert uf.height == 150
+    assert uf["is_listed"].null_count() == 0
+    assert uf["is_listed"].all()
+    db.close()
+
+
+def test_unmatched_candidate_nullable_text_stays_string(tmp_path):
+    """显式 candidate_codes 不在 stock_basic：ts_code/list_date/delist null 但 dtype String。"""
+    db = _build_db_sparse(tmp_path, n_listed=3, with_delisted=False)
+    uf = resolve_universe_frame(spec_with(rules={}), db, ["2024-01-10"],
+                                candidate_codes=["600519"])
+    # 构造成功即证明中间可空文本列（ts_code/list_date/delist_date）非 Null dtype
+    # （Null dtype 会在后续 strptime 操作崩溃）；未匹配行保留、is_listed=false
+    row = uf.filter(pl.col("code") == "600519")
+    assert row.height == 1
+    assert row["is_listed"][0] is False
+    assert uf["is_listed"].dtype == pl.Boolean
+    db.close()
+
+
+def test_has_st_false_keeps_is_st_boolean(tmp_path):
+    """无 stock_st 表：is_st 仍 Boolean、全 null（行为不变）。"""
+    db = _build_db_sparse(tmp_path, with_st=False, n_listed=3, with_delisted=False)
+    uf = resolve_universe_frame(spec_with(rules={"exchanges": ["SSE", "SZSE"]}),
+                                db, ["2024-01-10"])
+    assert uf["is_st"].dtype == pl.Boolean
+    assert uf["is_st"].null_count() == uf.height
+    db.close()
+
+
+def test_has_st_true_sparse_is_st_boolean(tmp_path):
+    """has_st=true 且 ST 表为空：is_st 仍显式 Boolean（不得依赖推断）。"""
+    db = _build_db_sparse(tmp_path, with_st=True, n_listed=3, with_delisted=False)
+    uf = resolve_universe_frame(spec_with(rules={"exchanges": ["SSE", "SZSE"]}),
+                                db, ["2024-01-10"])
+    assert uf["is_st"].dtype == pl.Boolean
+    # 空 ST 表：presence join 产生 false（NULL IS NOT NULL → false），非 null
+    assert uf["is_st"].null_count() == 0
+    assert not uf["is_st"].any()
+    db.close()

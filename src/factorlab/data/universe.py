@@ -310,10 +310,22 @@ def resolve_universe_frame(
         sql += (" LEFT JOIN (SELECT DISTINCT trade_date, ts_code FROM stock_st) s"
                 " ON s.ts_code = b.ts_code AND s.trade_date = strftime(d.date, '%Y%m%d')")
     rows = db.execute(sql, params).fetchall()
-    schema = ["date", "code", "ts_code", "list_date", "delist_date"] + (["is_st"] if has_st else [])
+    # M6-07C1：构造边界必须显式 dtype——DuckDB row tuples 对稀疏字段（真实数据
+    # delist_date 94% null）可能以任意长度的 null run 开头，Polars 默认 100 行
+    # 推断窗口全 null → 推断 Null dtype → 后续非 null 值 append 失败
+    # （构造后 cast 为时已晚——推断失败发生在 DataFrame 构建期）。
+    schema: dict[str, pl.DataType] = {
+        "date": pl.Date,
+        "code": pl.String,
+        "ts_code": pl.String,
+        "list_date": pl.String,
+        "delist_date": pl.String,
+    }
+    if has_st:
+        schema["is_st"] = pl.Boolean
     uf = pl.DataFrame(rows, schema=schema, orient="row")
+    # 幂等 cast 保留（构造边界已显式，不依赖这些 cast 修正 dtype）
     uf = uf.with_columns(pl.col("date").cast(pl.Date), pl.col("code").cast(pl.String))
-    # 全 null 的 delist_date 会被 polars 推断为 null dtype——显式 String（null 保留）
     uf = uf.with_columns(pl.col("delist_date").cast(pl.String))
     if not has_st:
         uf = uf.with_columns(pl.lit(None, dtype=pl.Boolean).alias("is_st"))
