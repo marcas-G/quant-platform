@@ -227,6 +227,31 @@ _WARMUP_SAFETY_PAD = 20  # 自动 warmup 的安全垫：覆盖 ts_delay 等窗�
 _CHUNK_KEEP = ["date", "code", "signal", "forward_return_5d", "forward_return_20d", "close"]
 
 
+def _build_legacy_panel(
+    signal_df: pl.DataFrame,
+    labels_df: pl.DataFrame,
+    signal_artifact: SignalArtifact,
+    label_artifact: LabelArtifact,
+) -> pl.DataFrame:
+    """Legacy panel 兼容视图（M6-07C2B）：**不做 key join**。
+
+    Signal/Label 的 (date, code) 键对齐（行数/键/顺序）由正式
+    validate_signal_label_alignment() 证明后，仅位置化附加 labels 值列
+    （forward_return_5d/20d）——避免 1,155 万行 × 2 侧的 hash join 峰值
+    分配在无页面文件机器上撞 commit 空间（C2A 定位的 0xC0000005）。
+
+    职责窄：alignment validation + positional attach + legacy schema select；
+    不含 persistence（write_factor_artifacts 是独立的 persistence boundary
+    guard，重复 alignment 验证属正常）。禁止任何 join——本步的数学关系
+    已由 alignment contract 证明。
+    """
+    from factorlab.artifacts import validate_signal_label_alignment
+    validate_signal_label_alignment(signal_artifact, label_artifact)
+    label_values = labels_df.select(["forward_return_5d", "forward_return_20d"])
+    panel = signal_df.hstack(label_values)
+    return panel.select([c for c in _CHUNK_KEEP if c in panel.columns])
+
+
 def _load_base_adj(con: duckdb.DuckDBPyConnection, date_end: str | None) -> pl.DataFrame:
     """全局 qfq 复权基准：每代码在 <= date_end 的最新 adj_factor（与整段跑的组内 latest 语义一致）。
 
@@ -439,9 +464,10 @@ def run_factor(spec: FactorSpec, ctx: RunContext) -> FactorResult:
             frame=signal_df.select(["date", "code", "signal"]), meta=meta)
         label_artifact = LabelArtifact(
             frame=labels_df.select(["date", "code", "forward_return_5d", "forward_return_20d"]))
-        # legacy panel：signal LEFT JOIN labels + close（CLI/eval 兼容视图）
-        panel = signal_df.join(labels_df, on=["date", "code"], how="left")
-        panel = panel.select([c for c in _CHUNK_KEEP if c in panel.columns])
+        # legacy panel：Signal/Label key 对齐已证明 → 位置化附加 label 值列
+        # （M6-07C2B：不做 hash join——1,155 万行 × 2 侧的 join 峰值分配在
+        # 无页面文件机器上撞 commit 空间 → 0xC0000005）
+        panel = _build_legacy_panel(signal_df, labels_df, signal_artifact, label_artifact)
     finally:
         con.close()
 
