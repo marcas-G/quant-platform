@@ -97,9 +97,16 @@ def view_prices(
     view: str = "qfq",
     asof: datetime.date | None = None,
     adj_col: str = "adj_factor",
+    qfq_base_col: str | None = None,
 ) -> pl.DataFrame:
     """价格视图：RAW 原样；QFQ 前复权（adj/adj[latest]）；HFQ 后复权（×adj）；
-    PIT_QFQ 动态前复权（adj/adj[asof]，研究日视角防未来）。"""
+    PIT_QFQ 动态前复权（adj/adj[asof]，研究日视角防未来）。
+
+    M6-07C2E：qfq_base_col 非 None 时 qfq 使用**固定 sample base**——
+    factor = adj_col / qfq_base_col（与 chunk 划分无关），禁止计算块内 latest。
+    默认（qfq_base_col=None）保持 standalone contract：以当前 df 内每 code
+    最新非 null adj 为 base。HFQ/PIT_QFQ 忽略该参数。
+    """
     if view not in PRICE_VIEWS:
         raise ValueError(f"未知价格视图 view: {view}（支持 {PRICE_VIEWS}）")
     if view == "raw":
@@ -112,9 +119,13 @@ def view_prices(
         df = df.sort(["code", "date"])
 
     if view == "qfq":
-        # 停牌补全行的 adj 为 null：latest 跳过 null（窗口末行 null → 全组 None 的回归）
-        latest_adj = pl.col(adj_col).filter(pl.col(adj_col).is_not_null()).last().over("code")
-        factor = pl.col(adj_col) / latest_adj
+        if qfq_base_col is not None:
+            # runtime fixed-base：factor = adj / fixed_base（sample 全局，与块无关）
+            factor = pl.col(adj_col) / pl.col(qfq_base_col)
+        else:
+            # standalone：停牌补全行的 adj 为 null：latest 跳过 null（窗口末行 null → 全组 None 的回归）
+            latest_adj = pl.col(adj_col).filter(pl.col(adj_col).is_not_null()).last().over("code")
+            factor = pl.col(adj_col) / latest_adj
     elif view == "hfq":
         factor = pl.col(adj_col)
     else:  # pit_qfq

@@ -119,3 +119,60 @@ def test_total_return_includes_dividend():
     # tr[t] = close[t]*adj[t] / (close[t-1]*adj[t-1]) - 1（组内，首行 null）
     assert out["tr"].to_list()[:1] == [None]
     assert out["tr"].to_list()[1:] == pytest.approx([0.1, 12.0 / 11.0 - 1, 13.5 / 12.0 - 1])
+
+
+# ================================================================
+# M6-07C2E：view_prices qfq fixed-base（qfq_base_col 参数）
+# ================================================================
+
+def _panel_with_base():
+    """带固定 base 列的 panel（runtime 传入）。"""
+    return pl.DataFrame({
+        "date": [datetime.date(2024, 1, 2), datetime.date(2024, 1, 3),
+                 datetime.date(2024, 1, 4), datetime.date(2024, 1, 5)],
+        "code": ["A", "A", "A", "A"],
+        "close": [10.0, 11.0, 8.0, 9.0],
+        "adj_factor": [1.0, 1.0, 1.5, 1.5],
+        "__factorlab_qfq_base_adj": [1.5, 1.5, 1.5, 1.5],
+    })
+
+
+def test_view_qfq_fixed_base_column():
+    """qfq_base_col 非 None → factor = adj / base（不再计算块内 latest）。"""
+    out = view_prices(_panel_with_base(), "qfq",
+                      qfq_base_col="__factorlab_qfq_base_adj")
+    assert out["close"].to_list() == pytest.approx([10.0 / 1.5, 11.0 / 1.5, 8.0, 9.0])
+
+
+def test_view_qfq_fixed_base_differs_from_latest():
+    """固定 base ≠ 块内 latest 时必须用固定 base。"""
+    df = _panel_with_base().with_columns(pl.lit(1.0).alias("__factorlab_qfq_base_adj"))
+    out = view_prices(df, "qfq", qfq_base_col="__factorlab_qfq_base_adj")
+    # factor = adj/1.0 = [1,1,1.5,1.5]——若错误用 latest（1.5）则 [1/1.5,1/1.5,1,1]
+    assert out["close"].to_list() == pytest.approx([10.0, 11.0, 12.0, 13.5])
+
+
+def test_view_qfq_fixed_base_null_tail():
+    """adj_factor 行内 null：factor=adj/base 逐行语义（null 行 close null）——
+    base 列自身的 non-null 由 _load_base_adj 的 FILTER 保证（§23，run_factor 级
+    测试覆盖）。"""
+    df = _panel_with_base().with_columns(
+        pl.col("adj_factor").replace([1.5], [None]))
+    out = view_prices(df, "qfq", qfq_base_col="__factorlab_qfq_base_adj")
+    assert out["close"].to_list() == pytest.approx([10.0 / 1.5, 11.0 / 1.5, None, None])
+
+
+def test_view_qfq_default_contract_unchanged():
+    """默认调用（无 qfq_base_col）保持 standalone latest 语义（§6）。"""
+    out = view_prices(_panel(), "qfq")
+    assert out["close"].to_list() == pytest.approx([10.0 / 1.5, 11.0 / 1.5, 8.0, 9.0])
+
+
+def test_view_hfq_and_pit_unchanged_with_base_param():
+    """hfq/pit_qfq 忽略 qfq_base_col（不破坏）。"""
+    df = _panel_with_base()
+    out = view_prices(df, "hfq", qfq_base_col="__factorlab_qfq_base_adj")
+    assert out["close"].to_list() == pytest.approx([10.0, 11.0, 12.0, 13.5])
+    out = view_prices(df, "pit_qfq", asof=datetime.date(2024, 1, 3),
+                      qfq_base_col="__factorlab_qfq_base_adj")
+    assert out["close"].to_list() == pytest.approx([10.0, 11.0, 12.0, 13.5])

@@ -253,16 +253,20 @@ def _build_legacy_panel(
 
 
 def _load_base_adj(con: duckdb.DuckDBPyConnection, date_end: str | None) -> pl.DataFrame:
-    """全局 qfq 复权基准：每代码在 <= date_end 的最新 adj_factor（与整段跑的组内 latest 语义一致）。
+    """全局 qfq 固定 base（M6-07C2E）：每代码在 <= effective_end 的**最新非 null**
+    adj_factor。base 与 chunk 划分/warmup 无关；列名用内部保留前缀
+    （__factorlab_），不进入用户公式（_compute_signal 在 compute_formula 前 drop）。
 
-    返回 (code, base_adj) 两列 DataFrame；date_end 为 ISO 'YYYY-MM-DD' 或 'YYYYMMDD'。
+    返回 (code, __factorlab_qfq_base_adj) 两列 DataFrame；date_end 为 ISO
+    'YYYY-MM-DD' 或 'YYYYMMDD'。FULL/CHUNK 使用完全相同 base。
     """
     where, params = "", []
     if date_end:
         where, params = " WHERE trade_date <= ?", [date_end.replace("-", "")]
     return con.execute(
-        f"SELECT substr(ts_code, 1, 6) AS code, "
-        f"last(adj_factor ORDER BY trade_date) AS base_adj "
+        "SELECT substr(ts_code, 1, 6) AS code, "
+        "last(adj_factor ORDER BY trade_date) "
+        "FILTER (WHERE adj_factor IS NOT NULL) AS __factorlab_qfq_base_adj "
         f"FROM adj_factor{where} GROUP BY substr(ts_code, 1, 6)",
         params,
     ).pl()
@@ -298,15 +302,21 @@ def _compute_signal(
     if panel.height == 0:
         raise ValueError("日期段无数据，可运行 data refresh（M3b）")
     adjustment = getattr(spec, "adjustment", None) or ctx.adjustment
+    qfq_base_col = None
     if adjustment == "qfq" and base_adj is not None:
-        panel = panel.join(base_adj, on="code", how="left").with_columns(
-            (pl.col("adj_factor") / pl.col("base_adj")).alias("adj_factor")
-        ).drop("base_adj")
+        # M6-07C2E：固定 sample base 列（**不覆盖 raw adj_factor**——字段保持
+        # 市场语义，formula=adj_factor 在 FULL/CHUNK 下看到同一 raw 值）。
+        # base 与 chunk 划分无关：FULL/CHUNK 共用 run_factor 传入的同一 base。
+        panel = panel.join(base_adj, on="code", how="left")
+        qfq_base_col = "__factorlab_qfq_base_adj"
     panel = fill_suspension_values(panel)
     asof = None
     if adjustment == "pit_qfq":
         asof = datetime.date.fromisoformat(spec.date.end) if spec.date.end else panel["date"].max()
-    panel = view_prices(panel, adjustment, asof=asof)
+    panel = view_prices(panel, adjustment, asof=asof, qfq_base_col=qfq_base_col)
+    if qfq_base_col is not None:
+        # internal base 不进用户公式（compute_formula 前 drop）与 artifact
+        panel = panel.drop(qfq_base_col)
     # universe mask 列：来源必须是 PIT in_universe（内部保留列，用户不得定义）
     panel = panel.join(uf.select(["date", "code", "in_universe"]), on=["date", "code"], how="left")
     panel = panel.with_columns(pl.col("in_universe").fill_null(False).alias("__factorlab_universe_active"))
@@ -408,14 +418,22 @@ def run_factor(spec: FactorSpec, ctx: RunContext) -> FactorResult:
             raise ValueError("日期段无数据，可运行 data refresh（M3b）")
         warmup = ctx.warmup_days if ctx.warmup_days is not None \
             else _ts_window_days(formula) + _WARMUP_SAFETY_PAD
+        # M6-07C2E：qfq 固定 sample base 与执行模式无关——FULL/CHUNK 同一 base。
+        # effective_end：spec.date.end（非交易日合法，取 <= end 最后 adj）或
+        # 研究 calendar 最后一天（无 end 时不读库中未来 adj_factor）。
+        adjustment = getattr(spec, "adjustment", None) or ctx.adjustment
+        if adjustment == "qfq":
+            effective_end = spec.date.end if spec.date.end \
+                else (cal[-1].isoformat() if cal.len() else None)
+            base_adj = _load_base_adj(con, effective_end)
+        else:
+            base_adj = None
         if ctx.chunk_days is None:
             start_d = datetime.date.fromisoformat(spec.date.start) if spec.date.start else None
             end_d = datetime.date.fromisoformat(spec.date.end) if spec.date.end else None
             chunks = [(start_d, start_d, end_d)]
-            base_adj = None   # 单块：qfq 组内 latest 基准（与整段跑一致）
         else:
             chunks = chunk_calendar(cal, ctx.chunk_days, warmup)
-            base_adj = _load_base_adj(con, spec.date.end)
         sig_parts, lab_parts = [], []
         for load_start, chunk_start, chunk_end in chunks:
             if ctx.chunk_days is None:
