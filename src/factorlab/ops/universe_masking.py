@@ -34,6 +34,7 @@ from factorlab.ops.registry import get_op, has_op
 # **key = canonical OperatorDef.name**（registry alias 一律 canonicalize 后查）。
 _CS_GP_MASK_ARGS: dict[str, tuple[int, ...]] = {
     "cs_rank": (0,),
+    "cs_stable_rank": (0,),   # M6-07C2I：v2 stable dense rank（同一 CS data 语义）
     "cs_zscore": (0,),
     "cs_demean": (0,),
     "cs_scale": (0,),

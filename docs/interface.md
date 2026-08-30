@@ -989,6 +989,46 @@ resolve_codes/resolve_candidate_codes 加 canonical predicate——legacy aliase
 绝不进 candidate_codes/UniverseFrame.code。冻结库中 T600018.SH/TS0018.SH
 行保留为 inert（不删除；universe 不可选）。
 
+## 4.8 Numeric Determinism（M6-07C2G/I）
+
+**两层契约**：
+
+1. **STRUCTURAL_EXACT**（严格位级相等）：schema/dtype/rows/(date,code) keys/key
+   order/null mask/NaN/±Inf mask/labels/timing/PIT/canonical/ST filtering——
+   以及非 reduction signal path（`signal = close`、QFQ 复权、labels）。
+2. **FLOAT_REDUCTION_EQUIVALENT**（算子/负载特定数值等价）：连续 reduction
+   的有限值对满足 `ULP_DISTANCE <= 4` **且** `abs(a-b) <= 8·EPS_FLOAT64·max(1,|a|,|b|)`
+   （AND Gate）。当前绑定 M6 参考 `ts_mean(close, 20)`（全量 11.4M+ 行验证
+   max ULP=4、scaled violations=0）。**bitwise mismatch count 本身不是
+   reduction failure**（诊断指标）。
+
+**Float64 ULP primitive**（单一权威，`factorlab.numerics`）：sign-aware 单调
+IEEE bit 映射；+0.0/-0.0 → ULP=0；相邻可表示 float64 → 1。QA comparator
+（`factorlab.qa.numeric_determinism`）与 stable rank 共用，禁止两套 ULP 定义。
+
+**cs_rank v2（stable dense rank，M6-07C2I）**：`cs_rank` 现在路由到平台
+`cs_stable_rank`（`factorlab.ops.stable_rank`，version 0.2.0）——Float64
+近 tie（数值间隔 <= 4 ULP）按**组 anchor** 规则归为一个 dense level：
+- anchor = 组内第一个（排序序）值；后续值 vs anchor ULP <= 4 才加入当前组
+  （**anti-chaining**：A、A+4、A+8 → [A,A+4]、[A+8]，非传递合并）
+- `cs_rank(x, True, 0)` 显式 legacy exact-bit tie 语义（迁移选项）
+- 非 Float 输入 exact tie（不 fuzzy）；null → null；+0.0/-0.0 同组
+- pct=True：level / max(K-1, 1)（0..1）；pct=False：1..K（UInt32）
+- 动机（C2H）：数学真实 tie 被 rolling 路径 1 ULP 假拆分 → dense unique +1 →
+  denominator 变化 → 全截面 normalized rank 平移（2022-12-06 单日 4,859 行）
+- **4 ULP 不是全平台通用容差**——它绑定 M6 numerical contract + cs_rank v2；
+  其他 discontinuous 算子（cs_quantile/cs_qcut/group_rank 等）未自动获得该
+  contract（后续 discontinuous-operator audit）。
+
+**执行模式角色**：CHUNK = production execution mode（全历史）；FULL =
+bounded reference/debug mode（受限窗口独立实现对照）。full-history FULL
+不要求在当前 16 GiB reference machine（8 GiB 固定 pagefile，CommitLimit
+≈23.87 GiB）完成。
+
+**M6 已验证结果**：F1 全历史 120/60 结构 exact + ≤4 ULP；F2/F3 全历史
+120/60 strict exact（stable rank 下 F2 亦 exact）；bounded F2/F3
+FULL/120/60 strict exact；labels strict exact；F2_ST violations=0。
+
 ## 5. 测试
 
 运行：

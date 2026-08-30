@@ -78,6 +78,8 @@ def compute_formula(
     formula = inline_defs(formula)  # def 内联（幂等：无 def 原样返回）——窗口算子合法化为顶层 ts_ 调用
     formula = rewrite_expr_methods(formula)  # 元素级方法链 → 函数调用（expr_codegen 不支持属性调用）
     formula = expand_platform_macros(formula)  # 薄封装 → ts_ 表达式，保证按 asset 分区
+    from factorlab.ops.stable_rank import rewrite_stable_rank
+    formula = rewrite_stable_rank(formula)  # M6-07C2I：cs_rank → 平台 stable 实现（+ import）
     if universe_mask is not None:
         # M6-03：CS/GP 算子的数据参数包 if_else(mask, arg, None)——TS 仍见完整
         # listed history，CS 只见当日 active universe。mask 列必须已存在于 df。
@@ -89,6 +91,8 @@ def compute_formula(
         formula = apply_universe_masking(formula, universe_mask)
     register_polars_ta_ops()  # 幂等；保证分区校验能识别 ts_/cs_/ta_ 算子
     register_platform_ops()
+    from factorlab.ops.stable_rank import register_stable_rank_ops
+    register_stable_rank_ops()  # 幂等注册 cs_stable_rank（registry 可能被 reset_registry 清空）
     _check_future_inputs(formula)
     validate_partition_calls(formula)
     reject_future_shifts(formula)
