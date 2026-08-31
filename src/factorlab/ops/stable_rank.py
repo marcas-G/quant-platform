@@ -202,4 +202,5 @@ def register_stable_rank_ops() -> None:
     fixture），compute_formula 每次调用都执行本函数保证分区校验可用。
     universe_masking 的 _CS_GP_MASK_ARGS 同步识别该名字。
     """
-    factor_op("cs_stable_rank", kind="cs", version="0.2.0")(cs_stable_rank)
+    factor_op("cs_stable_rank", kind="cs", version="0.2.0",
+             aliases=("cs_rank",))(cs_stable_rank)

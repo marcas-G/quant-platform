@@ -136,8 +136,10 @@ def apply_universe_masking(source: str, mask_name: str) -> str:
     """
     from factorlab.ops.polars_ta_wrappers import register_polars_ta_ops
     from factorlab.ops.platform_ops import register_platform_ops
+    from factorlab.ops.stable_rank import register_stable_rank_ops
     register_polars_ta_ops()   # 幂等：独立调用时注册表可能为空
     register_platform_ops()
+    register_stable_rank_ops()   # M6-07C2J：cs_rank canonical 归平台 stable（alias 解析需要）
     tree = ast.parse(source)
     defined = {n.name for n in ast.walk(tree) if isinstance(n, ast.FunctionDef)}
     aliases = _alias_map(tree)

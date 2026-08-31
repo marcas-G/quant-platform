@@ -1003,11 +1003,16 @@ resolve_codes/resolve_candidate_codes 加 canonical predicate——legacy aliase
    reduction failure**（诊断指标）。
 
 **Float64 ULP primitive**（单一权威，`factorlab.numerics`）：sign-aware 单调
-IEEE bit 映射；+0.0/-0.0 → ULP=0；相邻可表示 float64 → 1。QA comparator
+IEEE bit 映射（**压缩零**：+0.0/-0.0 映射到同一序值——ULP=0 是映射本身性质；
+零邻域 ULP(-min_subnormal, ±0.0)=1 且 ULP(±0.0, +min_subnormal)=1）；相邻
+可表示 float64 → 1。QA comparator
 （`factorlab.qa.numeric_determinism`）与 stable rank 共用，禁止两套 ULP 定义。
 
-**cs_rank v2（stable dense rank，M6-07C2I）**：`cs_rank` 现在路由到平台
-`cs_stable_rank`（`factorlab.ops.stable_rank`，version 0.2.0）——Float64
+**cs_rank v2（stable dense rank，M6-07C2I/J）**：canonical operator 为
+`cs_rank` v0.2.0，实现 = 平台 stable dense rank（`factorlab.ops.stable_rank`
+的 `cs_stable_rank`——registry 中 `get_op("cs_rank")` 即该实现，vendor
+polars_ta 的 0.1.0 cs_rank 不再占用 canonical 名；legacy exact tie 通过
+`cs_rank(..., tie_ulps=0)` 显式获得）。Float64
 近 tie（数值间隔 <= 4 ULP）按**组 anchor** 规则归为一个 dense level：
 - anchor = 组内第一个（排序序）值；后续值 vs anchor ULP <= 4 才加入当前组
   （**anti-chaining**：A、A+4、A+8 → [A,A+4]、[A+8]，非传递合并）

@@ -12,6 +12,8 @@ def _registered_ops():
     registry.reset_registry()
     register_polars_ta_ops()
     register_platform_ops()
+    from factorlab.ops.stable_rank import register_stable_rank_ops
+    register_stable_rank_ops()   # M6-07C2J：cs_rank canonical 归平台 stable
 
 
 def test_allows_known_prefixed_calls():

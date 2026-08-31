@@ -212,3 +212,57 @@ def test_group_anchor_from_sorted_order_not_row_order():
     m2 = dict(zip(df2["code"].to_list(),
                   df2.with_columns(r=cs_stable_rank(pl.col("x")))["r"].to_list()))
     assert m1 == m2
+
+
+# ================================================================
+# M6-07C2J：signed-zero/subnormal 行序无关 + registry 元数据
+# ================================================================
+
+def test_signed_zero_subnormal_row_order_independent():
+    """-0.0/+0.0/subnormal 近 4-ULP 边界——shuffle 后 (code→rank) 一致。"""
+    mn = np.finfo(np.float64).tiny
+    a, b, c, d = -0.0, 0.0, mn * 4, mn * 8   # c 与 d 间隔 4 ULP（同组边界）
+    rows1 = [("A", a), ("B", b), ("C", c), ("D", d)]
+    rows2 = [("D", d), ("A", a), ("C", c), ("B", b)]
+    df1 = pl.DataFrame({"code": [r[0] for r in rows1], "x": [r[1] for r in rows1]})
+    df2 = pl.DataFrame({"code": [r[0] for r in rows2], "x": [r[1] for r in rows2]})
+    m1 = dict(zip(df1["code"].to_list(),
+                  df1.with_columns(r=cs_stable_rank(pl.col("x")))["r"].to_list()))
+    m2 = dict(zip(df2["code"].to_list(),
+                  df2.with_columns(r=cs_stable_rank(pl.col("x")))["r"].to_list()))
+    assert m1 == m2
+    # -0.0 与 +0.0 同组
+    assert m1["A"] == m1["B"]
+
+
+def test_registry_cs_rank_owned_by_stable():
+    """get_op("cs_rank") → stable 实现、version 0.2.0（§9）。"""
+    from factorlab.ops.polars_ta_wrappers import register_polars_ta_ops
+    from factorlab.ops.platform_ops import register_platform_ops
+    from factorlab.ops.registry import get_op, reset_registry
+    from factorlab.ops.stable_rank import register_stable_rank_ops
+    reset_registry()
+    register_polars_ta_ops()
+    register_platform_ops()
+    register_stable_rank_ops()
+    op = get_op("cs_rank")
+    assert op.version == "0.2.0"
+    assert op.kind == "cs"
+    assert op.func is cs_stable_rank
+    # reset/re-register 后仍成立
+    reset_registry()
+    register_polars_ta_ops()
+    register_platform_ops()
+    register_stable_rank_ops()
+    op2 = get_op("cs_rank")
+    assert op2.version == "0.2.0" and op2.func is cs_stable_rank
+
+
+def test_registry_cs_rank_not_vendor():
+    """vendor 0.1.0 的 cs_rank 不再注册（canonical 名归 stable）。"""
+    from factorlab.ops.polars_ta_wrappers import register_polars_ta_ops
+    from factorlab.ops.registry import get_op, reset_registry
+    reset_registry()
+    register_polars_ta_ops()   # 不调 register_stable_rank_ops
+    from factorlab.ops.registry import has_op
+    assert not has_op("cs_rank") or get_op("cs_rank").version != "0.1.0"

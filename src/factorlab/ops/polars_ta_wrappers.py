@@ -13,8 +13,11 @@ _WQ_TS = (
     "ts_count",
 )
 
+# M6-07C2J：cs_rank 从 vendor 自动注册移除——canonical 名归平台 stable
+# dense rank（cs_stable_rank，version 0.2.0，aliases=("cs_rank",)）。
+# registry 不得再暴露 vendor 0.1.0 的 cs_rank 双重语义。
 _WQ_CS = (
-    "cs_rank", "cs_zscore", "cs_demean", "cs_scale", "cs_quantile",
+    "cs_zscore", "cs_demean", "cs_scale", "cs_quantile",
     "cs_mad_zscore",
 )
 
