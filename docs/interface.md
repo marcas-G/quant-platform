@@ -1121,6 +1121,57 @@ all-cash 日（0 rows）豁免。
 earliest_execution=NEXT_OPEN）下**不代表 t close 成交**——最早 t+1 open
 执行；execution_date 解析属 M8。
 
+### M7-02 PortfolioConstructor
+
+```python
+construct_target_portfolio(
+    signal: SignalArtifact,
+    spec: StrategySpec,
+) -> TargetPortfolio
+```
+
+流程：
+
+```
+SignalArtifact(date, code, signal)
+    │
+    ├── validate signal_name / frequency / canonical code / non-finite
+    ├── per-date null drop
+    ├── direction sort（±1）
+    ├── code_asc exact tie break
+    ├── top_k / insufficient（use_available / all_cash）
+    └── equal_weight（gross_exposure / M）
+    ▼
+TargetPortfolio
+```
+
+- **Strategy Runtime 边界**：只接受 SignalArtifact（LabelArtifact/DataFrame/
+  FactorResult/panel 一律 TypeError——无 DataFrame shortcut）；spec 必须为
+  StrategySpec（dict 不自动转换）
+- **输入边界全量校验**：signal.meta.name == spec.signal_name（不匹配 fail）；
+  SignalMeta.frequency == "1d"（与 rebalance_frequency=daily 兼容）；全部
+  code 必须 canonical（非法 alias 即使永不入选也 fail）；NaN/±Inf → fail
+  （non-finite 无策略语义，非 null_policy 范畴）
+- **decision_dates（M7-02 daily v1）= SignalArtifact.frame 中出现过的全部
+  signal dates**（ascending unique）——不是交易所 calendar；M7-03 才引入
+  独立 Rebalance Schedule
+- **ranking**：null drop → direction 排序（+1 高→低 / -1 低→高）→ 相同
+  signal 按 code ASC（exact tie，输入行序不影响）；ULP near-tie 不合并
+  （M6 cs_rank tie_ulps=4 是版本化算子语义，不推广为 Strategy 算子——
+  stable Top-K 语义单独评估）
+- **insufficient**：N >= k → 选 k；0 < N < k + use_available → 选 N；
+  N < k + all_cash → 0 rows（决策存在）；N = 0 → all-cash
+- **equal_weight**：每支 = gross_exposure / M（Float64，无 residual
+  correction——TargetPortfolio 1e-12 gross tolerance 吸收）；gross < 1 →
+  隐式现金（不创建 CASH row）
+- **输出**：sparse positions（0 weight 不建 row）、严格三列
+  decision_date/code/target_weight、按 (decision_date, code) 稳定排序
+  （与 ranking order 不同——ranking 只决定谁入选）
+- **top-k ≠ execution**：今日目标 Top-30 不代表明天一定能全部买到
+  （T+1/停牌/涨跌停/整手/费用/滑点属 M8）
+- **source timing 原样传播**：TargetPortfolioMeta.source_timing =
+  signal.meta.timing（不重建默认，未来不同 timing 也继承实际值）
+
 **TargetPortfolio = 理想目标权重**（Strategy Decision Artifact），不是
 actual holdings：T+1/停牌/涨跌停/整手/费用/滑点/部分成交/现金余额全部属
 M8 Execution Runtime。现金是隐式 residual（cash = 1 - securities weight
