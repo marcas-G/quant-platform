@@ -198,3 +198,160 @@ class OrderBatch:
                 f"{type(self.execution_timing).__name__}）")
         _check_orders_schema(self.orders)
         _check_orders_content(self.orders)
+
+
+# ---------------------------------------------------------------------------
+# M8-02：ExecutionSchedule（calendar resolver 输出）
+# ---------------------------------------------------------------------------
+
+_SCHEDULE_COLUMNS = ["decision_date", "execution_date", "execution_timing"]
+
+
+@dataclass(frozen=True)
+class ExecutionSchedule:
+    """decision_date → execution_date 映射（每 portfolio decision 恰一个
+    execution event）。
+
+    - 严格三列：decision_date(Date) / execution_date(Date) /
+      execution_timing(String = ExecutionTiming.value)
+    - decision_date unique；execution_date > decision_date（严格）；
+      decision ASC 且 execution 随 decision 序列严格递增（NEXT_OPEN/
+      NEXT_CLOSE 均解析到下一交易日）；不自动 sort
+    - 空 typed schedule 合法（schema 保持）
+    """
+
+    frame: pl.DataFrame
+
+    def __post_init__(self) -> None:
+        f = self.frame
+        if list(f.columns) != _SCHEDULE_COLUMNS:
+            raise ValueError(
+                f"ExecutionSchedule.frame 必须严格为 decision_date/execution_date/"
+                f"execution_timing 三列（收到 {f.columns}）")
+        if f.schema["decision_date"] != pl.Date:
+            raise ValueError(
+                f"decision_date dtype 必须为 Date（收到 {f.schema['decision_date']}）")
+        if f.schema["execution_date"] != pl.Date:
+            raise ValueError(
+                f"execution_date dtype 必须为 Date（收到 {f.schema['execution_date']}）")
+        if f.schema["execution_timing"] != pl.String:
+            raise ValueError(
+                f"execution_timing dtype 必须为 String（收到 {f.schema['execution_timing']}）")
+        if f.height:
+            dup = f.group_by("decision_date").len().filter(pl.col("len") > 1)
+            if dup.height:
+                raise ValueError(
+                    f"decision_date 重复 {dup.height} 组——每 portfolio decision "
+                    f"恰一个 execution event")
+            bad = f.filter(pl.col("execution_date") <= pl.col("decision_date"))
+            if bad.height:
+                raise ValueError(
+                    f"execution_date 必须 > decision_date（{bad.height} 行违规）")
+            for v in f["execution_timing"].unique().to_list():
+                try:
+                    ExecutionTiming(v)
+                except ValueError as exc:
+                    raise ValueError(
+                        f"execution_timing 必须为 ExecutionTiming.value"
+                        f"（收到 {v!r}——open/close/NEXT_OPEN/tomorrow 拒绝）") from exc
+            dec = f["decision_date"].to_list()
+            if dec != sorted(dec):
+                raise ValueError("decision_date 必须 ASC——不自动排序")
+            ex = f["execution_date"].to_list()
+            if ex != sorted(ex):
+                raise ValueError(
+                    "execution_date 必须随 decision 序列严格递增——不自动排序")
+
+
+# ---------------------------------------------------------------------------
+# M8-02：MarketOpenSnapshot（execution_date 的市场开盘证据）
+# ---------------------------------------------------------------------------
+
+_SNAPSHOT_COLUMNS = ["code", "open", "pre_close", "up_limit", "down_limit",
+                     "has_daily", "has_limit", "has_suspend_record"]
+
+
+@dataclass(frozen=True)
+class MarketOpenSnapshot:
+    """execution_date 的市场开盘证据（不是 tradability/fill 判定）。
+
+    - 严格 8 列：code(String) / open(Float64) / pre_close(Float64) /
+      up_limit(Float64) / down_limit(Float64) / has_daily(Boolean) /
+      has_limit(Boolean) / has_suspend_record(Boolean)
+    - code canonical + unique + 稳定排序；无 date 列（共享 execution_date）
+    - has_daily=True → open/pre_close non-null finite >0；False → null
+    - has_limit=True → up/down non-null finite >0 且 down <= up；False → null
+    - has_suspend_record = suspend_d 存在性证据（raw evidence flag——
+      **不是** is_suspended_at_open / is_tradable；M8-04 定义 fill 语义）
+    - 价格是 raw daily.open（禁止 qfq/hfq 复权价作成交价）
+    """
+
+    execution_date: datetime.date
+    frame: pl.DataFrame
+
+    def __post_init__(self) -> None:
+        if not isinstance(self.execution_date, datetime.date) \
+                or isinstance(self.execution_date, datetime.datetime):
+            raise ValueError(
+                f"execution_date 必须为 datetime.date（收到 {self.execution_date!r}）")
+        f = self.frame
+        if list(f.columns) != _SNAPSHOT_COLUMNS:
+            raise ValueError(
+                f"MarketOpenSnapshot.frame 必须严格为 8 列（收到 {f.columns}）"
+                f"——禁止 is_tradable/can_buy 等推断字段")
+        expected = {"code": pl.String, "open": pl.Float64, "pre_close": pl.Float64,
+                    "up_limit": pl.Float64, "down_limit": pl.Float64,
+                    "has_daily": pl.Boolean, "has_limit": pl.Boolean,
+                    "has_suspend_record": pl.Boolean}
+        for col, dtype in expected.items():
+            if f.schema[col] != dtype:
+                raise ValueError(
+                    f"snapshot.{col} dtype 必须为 {dtype}（收到 {f.schema[col]}）")
+        if f.height:
+            dup = f.group_by("code").len().filter(pl.col("len") > 1)
+            if dup.height:
+                raise ValueError(f"snapshot code 重复 {dup.height} 组")
+            bad_code = f.filter(~pl.col("code").map_elements(
+                is_canonical_stock_code, return_dtype=pl.Boolean).fill_null(False))
+            if bad_code.height:
+                raise ValueError(
+                    f"snapshot 含非 canonical code: {bad_code['code'].unique().to_list()}")
+            if not f.equals(f.sort("code")):
+                raise ValueError("snapshot 必须按 code 稳定排序——不自动排序")
+            bad_daily = f.filter(pl.col("has_daily")
+                                 & (~pl.col("open").is_finite()
+                                    | (pl.col("open") <= 0)
+                                    | pl.col("open").is_null()
+                                    | ~pl.col("pre_close").is_finite()
+                                    | (pl.col("pre_close") <= 0)
+                                    | pl.col("pre_close").is_null()))
+            if bad_daily.height:
+                raise ValueError(
+                    f"has_daily=True 要求 open/pre_close non-null finite >0"
+                    f"（{bad_daily['code'].to_list()}）")
+            bad_no_daily = f.filter(~pl.col("has_daily")
+                                    & (pl.col("open").is_not_null()
+                                       | pl.col("pre_close").is_not_null()))
+            if bad_no_daily.height:
+                raise ValueError(
+                    f"has_daily=False 要求 open/pre_close 为 null"
+                    f"（{bad_no_daily['code'].to_list()}）")
+            bad_limit = f.filter(pl.col("has_limit")
+                                 & (pl.col("up_limit").is_null()
+                                    | ~pl.col("up_limit").is_finite()
+                                    | (pl.col("up_limit") <= 0)
+                                    | pl.col("down_limit").is_null()
+                                    | ~pl.col("down_limit").is_finite()
+                                    | (pl.col("down_limit") <= 0)
+                                    | (pl.col("down_limit") > pl.col("up_limit"))))
+            if bad_limit.height:
+                raise ValueError(
+                    f"has_limit=True 要求 up/down non-null finite >0 且 down<=up"
+                    f"（{bad_limit['code'].to_list()}）")
+            bad_no_limit = f.filter(~pl.col("has_limit")
+                                    & (pl.col("up_limit").is_not_null()
+                                       | pl.col("down_limit").is_not_null()))
+            if bad_no_limit.height:
+                raise ValueError(
+                    f"has_limit=False 要求 up/down_limit 为 null"
+                    f"（{bad_no_limit['code'].to_list()}）")

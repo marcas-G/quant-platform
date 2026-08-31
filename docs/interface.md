@@ -1281,6 +1281,63 @@ actual holdings：T+1/停牌/涨跌停/整手/费用/滑点/部分成交/现金�
 M8 Execution Runtime。现金是隐式 residual（cash = 1 - securities weight
 sum），不创建 CASH pseudo-security。
 
+## 6. M8-02 Execution Calendar + Market Open Snapshot
+
+```
+TargetPortfolio
+    │ decision_dates + source_timing.default_earliest_execution
+    ▼
+trade_cal（唯一 calendar truth——复用 factorlab.data.calendar.trading_calendar）
+    ▼
+ExecutionSchedule（decision_date → execution_date）
+    ▼
+execution_date + canonical codes
+    ▼
+daily / stk_limit / suspend_d（raw evidence，精确 ts_code）
+    ▼
+MarketOpenSnapshot
+```
+
+**两层严格分开**：
+
+```
+trade_cal determines when market should open（calendar truth）
+daily/stk_limit determine whether the backtest has execution evidence（data availability）
+```
+
+例：decision 2026-08-14 → trade_cal next open 2026-08-17 可成功解析；但
+daily.max = 2026-08-14 → MarketOpenSnapshot(2026-08-17) 必须 fail
+（"outside available daily market-data coverage"）——禁止 fallback 到最后
+已知价/丢弃/假装停牌。
+
+**ExecutionSchedule**（domain）：decision_date(Date)/execution_date(Date)/
+execution_timing(String = ExecutionTiming.value)；decision unique、
+execution > decision、decision ASC 且 execution 随序列严格递增；空 typed
+合法。
+
+**resolve_execution_schedule(target, db_path)**：timing 权威 =
+target.meta.source_timing.default_earliest_execution（NEXT_OPEN/NEXT_CLOSE
+日期解析相同——均为严格 > decision 的第一开放日；NEXT_CLOSE market
+snapshot/fill 未实现）；decision date 必须 open（fail，不自动取周一）；
+无下一开放日 fail whole（不 drop trailing）；空 target → 空 schedule；
+all-cash decision 仍产生 execution event；一次 calendar 加载 + bisect。
+
+**MarketOpenSnapshot**（domain）：execution_date + 严格 8 列
+code/open/pre_close/up_limit/down_limit/has_daily/has_limit/
+has_suspend_record（Float64/Boolean）；code canonical unique 排序；
+has_daily=True → open/pre_close 非空有限 >0（False → null）；has_limit
+同理（down <= up）；**evidence ≠ fillability**——has_daily/has_limit/
+has_suspend_record 都是 market-data evidence，不是 can_buy/can_sell
+（M8-04 才定义 fill rules）；价格是 **raw daily.open**（禁止 qfq/hfq
+复权价作成交价）。
+
+**load_market_open_frame / load_market_open_snapshot**：精确 ts_code
+查询（无六位启发式）；skeleton 由 requested codes 驱动（rows == codes，
+无数据证券保留 has_*=False）；daily/stk_limit duplicate fail、suspend_d
+DISTINCT collapse；daily/stk_limit 全市场日期覆盖 0 行 fail、suspend_d
+0 行合法；缺表/缺字段 fail fast；执行价格 Float64（不沿用 M6 float32
+research 设置）。
+
 ## 6. Canonical Security Identity Handoff（M7-05）
 
 ```
