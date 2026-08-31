@@ -1260,9 +1260,17 @@ strategy result dir
 - **版本语义**：STRATEGY_ARTIFACT_FORMAT_VERSION（目录布局）与
   TARGET_PORTFOLIO/REBALANCE_SCHEDULE/STRATEGY_SPEC SCHEMA_VERSION 独立于
   M6 factor artifact 版本
-- **atomic**：单文件 sibling .tmp → os.replace；manifest 最后写（缺失 =
+- **atomic（M7-04A）**：三个 core 文件全部走 sibling-temp + os.replace——
+  失败的 temp 写入**绝不替换已存在的合法 final 文件**（target/schedule/
+  manifest 一致）；writer 失败清理 temp 且不吞异常；manifest 最后写（缺失 =
   incomplete directory，loader 识别）；目录级事务未实现（partial write
   可能残留 target/schedule——无 manifest 即不可加载）
+- **load provenance closure（M7-04A）**：bundle loader 重建 source SignalMeta
+  并 cross-validate 完整链——source_meta.name == spec.signal_name ==
+  schedule.source_signal_name == target.meta.source_signal_name；
+  source_meta.frequency == target.meta.frequency；source_meta.timing ==
+  target.meta.source_timing（valid-but-inconsistent tamper 全类检测；
+  source_signal 结构/类型（name/frequency/adjustment/timing root/字段）严格校验）
 - **round-trip**：spec/schedule/target（frame/decision_dates/meta）严格一致；
   tamper 检测覆盖 version/filename/rows/columns/dtype/spec/meta/timing
 - 不复制 M6 summary.json；不保存 StrategySpec YAML 副本（manifest 已完整

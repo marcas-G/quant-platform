@@ -21,7 +21,6 @@ from __future__ import annotations
 
 import json
 import os
-import tempfile
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -78,32 +77,56 @@ def _timing_json(timing) -> dict:
             "default_earliest_execution": timing.default_earliest_execution.value}
 
 
-def _timing_from_json(d: dict):
+def _timing_from_json(d) -> "SignalTiming":
     from factorlab.domain.timing import (ExecutionTiming, InformationCutoff,
                                          SignalAvailability, SignalTiming)
+    if not isinstance(d, dict):
+        raise ValueError(
+            f"source_signal.timing 必须为 dict（收到 {type(d).__name__}——"
+            f"[]/'foo'/null 均拒绝）")
+    try:
+        cutoff = d["information_cutoff"]
+        avail = d["available_at"]
+        exec_ = d["default_earliest_execution"]
+    except KeyError as exc:
+        raise ValueError(f"source_signal.timing 缺少字段: {exc}") from exc
+    for name, value, enum in (("information_cutoff", cutoff, InformationCutoff),
+                              ("available_at", avail, SignalAvailability),
+                              ("default_earliest_execution", exec_, ExecutionTiming)):
+        if not isinstance(value, str):
+            raise ValueError(f"source_signal.timing.{name} 必须为 str（收到 {value!r}）")
     try:
         return SignalTiming(
-            information_cutoff=InformationCutoff(d["information_cutoff"]),
-            available_at=SignalAvailability(d["available_at"]),
-            default_earliest_execution=ExecutionTiming(d["default_earliest_execution"]),
+            information_cutoff=InformationCutoff(cutoff),
+            available_at=SignalAvailability(avail),
+            default_earliest_execution=ExecutionTiming(exec_),
         )
-    except (KeyError, ValueError) as exc:
-        raise ValueError(f"source_signal.timing 非法: {exc}") from exc
+    except ValueError as exc:
+        raise ValueError(f"source_signal.timing 非法 enum 值: {exc}") from exc
 
 
 # ---------------------------------------------------------------------------
-# 单文件 atomic write（sibling .tmp → os.replace）
+# 单文件 atomic write（M7-04A：sibling-temp + os.replace，三个 core 文件统一）
 # ---------------------------------------------------------------------------
 
-def _atomic_write(path: Path, writer) -> None:
-    tmp = path.with_suffix(path.suffix + ".tmp")
-    with tmp.open("wb") as f:
-        writer(f)
-    os.replace(tmp, path)
+def _atomic_write_file(path: Path, writer) -> None:
+    """Path-oriented atomic write：writer(tmp) 成功 → os.replace(tmp, path)。
+
+    - temp 与 final 同目录同 filesystem（os.replace 跨 fs 不保证 atomic）
+    - writer 失败 → 删除 temp、原样抛异常（不吞错、不继续写后续文件）
+    - final 已存在时失败 → 旧 final 完整保持（绝不截断/覆盖）
+    """
+    tmp = path.with_name(path.name + ".tmp")
+    try:
+        writer(tmp)
+        os.replace(tmp, path)
+    except Exception:
+        tmp.unlink(missing_ok=True)
+        raise
 
 
 def _write_text(path: Path, text: str) -> None:
-    _atomic_write(path, lambda f: f.write(text.encode("utf-8")))
+    _atomic_write_file(path, lambda tmp: tmp.write_text(text, encoding="utf-8"))
 
 
 # ---------------------------------------------------------------------------
@@ -181,12 +204,12 @@ def write_strategy_artifacts(
     sch_path = output_dir / REBALANCE_SCHEDULE_FILE
     mani_path = output_dir / STRATEGY_MANIFEST_FILE
 
-    # 1. target（直接来自 TargetPortfolio.frame）
-    target.frame.write_parquet(tp_path)
-    # 2. schedule（严格一列 Date，decision_dates 原样顺序）
+    # 1. target（直接来自 TargetPortfolio.frame；atomic sibling-temp replace）
+    _atomic_write_file(tp_path, lambda tmp: target.frame.write_parquet(tmp))
+    # 2. schedule（严格一列 Date，decision_dates 原样顺序；atomic）
     sch = pl.DataFrame({"decision_date": pl.Series(
         schedule.decision_dates, dtype=pl.Date)})
-    sch.write_parquet(sch_path)
+    _atomic_write_file(sch_path, lambda tmp: sch.write_parquet(tmp))
     # 3. manifest（最后 = core artifacts complete）
     manifest = {
         "strategy_artifact_format_version": STRATEGY_ARTIFACT_FORMAT_VERSION,
@@ -302,13 +325,26 @@ def _check_rows_columns(disk: pl.DataFrame, m: dict, label: str) -> None:
 
 def _signal_meta_from_manifest(m: dict) -> SignalMeta:
     ss = m["source_signal"]
-    timing = _timing_from_json(ss.get("timing") or {})
-    return SignalMeta(
-        name=ss["name"],
-        frequency=ss["frequency"],
-        timing=timing,
-        adjustment=ss.get("adjustment"),
-    )
+    if not isinstance(ss, dict):
+        raise ValueError(f"manifest.source_signal 必须为 dict（收到 {type(ss).__name__}）")
+    name = ss.get("name")
+    freq = ss.get("frequency")
+    if not isinstance(name, str) or not name:
+        raise ValueError(f"source_signal.name 必须为非空 str（收到 {name!r}）")
+    if not isinstance(freq, str) or not freq:
+        raise ValueError(f"source_signal.frequency 必须为非空 str（收到 {freq!r}）")
+    adj = ss.get("adjustment")
+    if adj is not None and not isinstance(adj, str):
+        raise ValueError(
+            f"source_signal.adjustment 仅允许 None/str（收到 {adj!r}——"
+            f"[]/{{}}/123/True 均拒绝）")
+    timing = _timing_from_json(ss.get("timing"))
+    # SignalMeta domain validator 复验（frequency '1d' contract 等）
+    try:
+        return SignalMeta(name=name, frequency=freq, timing=timing,
+                          adjustment=adj)
+    except ValueError as exc:
+        raise ValueError(f"manifest source_signal 非法: {exc}") from exc
 
 
 # ---------------------------------------------------------------------------
@@ -393,8 +429,28 @@ def load_strategy_artifacts(result_dir: Path) -> StrategyArtifactBundle:
     spec = load_strategy_spec(result_dir)
     schedule = load_rebalance_schedule(result_dir)
     target = load_target_portfolio(result_dir)
-    # 用 manifest provenance 重建 SignalMeta 做 cross-check（不构造 SignalArtifact）
-    _signal_meta_from_manifest(_load_manifest(result_dir))
+    # 重建 source SignalMeta 并参与完整 provenance 链（M7-04A：不再丢弃）
+    source_meta = _signal_meta_from_manifest(_load_manifest(result_dir))
+    if source_meta.name != spec.signal_name:
+        raise ValueError(
+            f"source/spec signal_name 不一致（tamper？）：{source_meta.name!r} vs "
+            f"{spec.signal_name!r}")
+    if source_meta.name != schedule.source_signal_name:
+        raise ValueError(
+            f"source/schedule signal_name 不一致（tamper？）：{source_meta.name!r} vs "
+            f"{schedule.source_signal_name!r}")
+    if source_meta.name != target.meta.source_signal_name:
+        raise ValueError(
+            f"source/target signal_name 不一致（tamper？）：{source_meta.name!r} vs "
+            f"{target.meta.source_signal_name!r}")
+    if source_meta.frequency != target.meta.frequency:
+        raise ValueError(
+            f"source/target frequency 不一致（tamper？）：{source_meta.frequency!r} vs "
+            f"{target.meta.frequency!r}")
+    if source_meta.timing != target.meta.source_timing:
+        raise ValueError(
+            f"source/target timing 不一致（tamper？）——两个 timing 各自合法但"
+            f"彼此不一致")
     if spec.signal_name != schedule.source_signal_name:
         raise ValueError(
             f"spec/schedule signal_name 不一致（tamper？）：{spec.signal_name!r} vs "

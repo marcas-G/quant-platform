@@ -471,3 +471,180 @@ def test_manifest_written_last(tmp_path, monkeypatch):
     assert not (tmp_path / STRATEGY_MANIFEST_FILE).exists()
     assert (tmp_path / TARGET_PORTFOLIO_FILE).exists()
     assert (tmp_path / REBALANCE_SCHEDULE_FILE).exists()
+
+
+# ================================================================
+# M7-04A：parquet atomicity + load-side provenance closure
+# ================================================================
+
+# ---------------- provenance tamper（valid-but-inconsistent） ----------------
+
+def test_valid_source_name_tamper_fails(tmp_path):
+    """只改 manifest.source_signal.name 为另一合法名——spec/schedule/target 互
+    相一致，唯一错误在 source——bundle 必须检测。"""
+    sa, spec, schedule, target = _full_set(tmp_path)
+    _write(tmp_path, source_signal=sa, spec=spec, schedule=schedule, target=target)
+    m = _manifest(tmp_path)
+    m["source_signal"]["name"] = "alpha_b"
+    (tmp_path / STRATEGY_MANIFEST_FILE).write_text(json.dumps(m), encoding="utf-8")
+    with pytest.raises(ValueError, match="signal_name|name"):
+        load_strategy_artifacts(tmp_path)
+
+
+def test_valid_source_timing_tamper_fails(tmp_path):
+    """只改 source timing 为另一组合法 timing——target timing 保持——bundle 必须
+    检测 source↔target timing 不一致。"""
+    sa, spec, schedule, target = _full_set(tmp_path)
+    _write(tmp_path, source_signal=sa, spec=spec, schedule=schedule, target=target)
+    m = _manifest(tmp_path)
+    m["source_signal"]["timing"] = {"information_cutoff": "open",
+                                    "available_at": "at_open",
+                                    "default_earliest_execution": "next_close"}
+    (tmp_path / STRATEGY_MANIFEST_FILE).write_text(json.dumps(m), encoding="utf-8")
+    with pytest.raises(ValueError, match="timing"):
+        load_strategy_artifacts(tmp_path)
+
+
+def test_valid_target_timing_tamper_fails(tmp_path):
+    """反方向：只改 target manifest 的 source_timing——source 保持——bundle fail。"""
+    sa, spec, schedule, target = _full_set(tmp_path)
+    _write(tmp_path, source_signal=sa, spec=spec, schedule=schedule, target=target)
+    m = _manifest(tmp_path)
+    m["artifacts"]["target_portfolio"]["meta"]["source_timing"] = {
+        "information_cutoff": "open", "available_at": "at_open",
+        "default_earliest_execution": "next_close"}
+    (tmp_path / STRATEGY_MANIFEST_FILE).write_text(json.dumps(m), encoding="utf-8")
+    with pytest.raises(ValueError, match="timing"):
+        load_strategy_artifacts(tmp_path)
+
+
+def test_source_timing_root_list_fails(tmp_path):
+    sa, spec, schedule, target = _full_set(tmp_path)
+    _write(tmp_path, source_signal=sa, spec=spec, schedule=schedule, target=target)
+    m = _manifest(tmp_path)
+    m["source_signal"]["timing"] = []
+    (tmp_path / STRATEGY_MANIFEST_FILE).write_text(json.dumps(m), encoding="utf-8")
+    with pytest.raises(ValueError):
+        load_strategy_artifacts(tmp_path)
+
+
+def test_source_timing_field_int_fails(tmp_path):
+    sa, spec, schedule, target = _full_set(tmp_path)
+    _write(tmp_path, source_signal=sa, spec=spec, schedule=schedule, target=target)
+    m = _manifest(tmp_path)
+    m["source_signal"]["timing"]["information_cutoff"] = 123
+    (tmp_path / STRATEGY_MANIFEST_FILE).write_text(json.dumps(m), encoding="utf-8")
+    with pytest.raises(ValueError):
+        load_strategy_artifacts(tmp_path)
+
+
+def test_source_adjustment_list_fails(tmp_path):
+    sa, spec, schedule, target = _full_set(tmp_path)
+    _write(tmp_path, source_signal=sa, spec=spec, schedule=schedule, target=target)
+    m = _manifest(tmp_path)
+    m["source_signal"]["adjustment"] = []
+    (tmp_path / STRATEGY_MANIFEST_FILE).write_text(json.dumps(m), encoding="utf-8")
+    with pytest.raises(ValueError):
+        load_strategy_artifacts(tmp_path)
+
+
+def test_source_name_type_fails(tmp_path):
+    sa, spec, schedule, target = _full_set(tmp_path)
+    _write(tmp_path, source_signal=sa, spec=spec, schedule=schedule, target=target)
+    m = _manifest(tmp_path)
+    m["source_signal"]["name"] = 123
+    (tmp_path / STRATEGY_MANIFEST_FILE).write_text(json.dumps(m), encoding="utf-8")
+    with pytest.raises(ValueError):
+        load_strategy_artifacts(tmp_path)
+
+
+# ---------------- atomic write ----------------
+
+def test_atomic_target_failure_new_dir(tmp_path, monkeypatch):
+    """target writer 抛异常 → 新目录无 final、无 temp、无 manifest。"""
+    sa, spec, schedule, target = _full_set(tmp_path)
+    from factorlab.strategy import artifacts as A
+    real = A._atomic_write_file
+    def boom(path, writer):
+        if path.name == TARGET_PORTFOLIO_FILE:
+            raise RuntimeError("target boom")
+        return real(path, writer)
+    monkeypatch.setattr(A, "_atomic_write_file", boom)
+    with pytest.raises(RuntimeError):
+        _write(tmp_path, source_signal=sa, spec=spec, schedule=schedule, target=target)
+    files = {p.name for p in tmp_path.iterdir()}
+    assert TARGET_PORTFOLIO_FILE not in files
+    assert STRATEGY_MANIFEST_FILE not in files
+    assert not any(n.endswith(".tmp") for n in files)
+
+
+def test_atomic_target_failure_preserves_existing(tmp_path, monkeypatch):
+    """已有合法 final target——新写失败 → 旧 final 内容保持。"""
+    sa, spec, schedule, target = _full_set(tmp_path)
+    _write(tmp_path, source_signal=sa, spec=spec, schedule=schedule, target=target)
+    old_bytes = (tmp_path / TARGET_PORTFOLIO_FILE).read_bytes()
+    from factorlab.strategy import artifacts as A
+    real = A._atomic_write_file
+    def boom(path, writer):
+        if path.name == TARGET_PORTFOLIO_FILE:
+            raise RuntimeError("target boom")
+        return real(path, writer)
+    monkeypatch.setattr(A, "_atomic_write_file", boom)
+    with pytest.raises(RuntimeError):
+        _write(tmp_path, source_signal=sa, spec=spec, schedule=schedule, target=target)
+    assert (tmp_path / TARGET_PORTFOLIO_FILE).read_bytes() == old_bytes
+    assert not any(p.name.endswith(".tmp") for p in tmp_path.iterdir())
+
+
+def test_atomic_schedule_failure_preserves_existing(tmp_path, monkeypatch):
+    sa, spec, schedule, target = _full_set(tmp_path)
+    _write(tmp_path, source_signal=sa, spec=spec, schedule=schedule, target=target)
+    old_bytes = (tmp_path / REBALANCE_SCHEDULE_FILE).read_bytes()
+    from factorlab.strategy import artifacts as A
+    real = A._atomic_write_file
+    def boom(path, writer):
+        if path.name == REBALANCE_SCHEDULE_FILE:
+            raise RuntimeError("schedule boom")
+        return real(path, writer)
+    monkeypatch.setattr(A, "_atomic_write_file", boom)
+    with pytest.raises(RuntimeError):
+        _write(tmp_path, source_signal=sa, spec=spec, schedule=schedule, target=target)
+    assert (tmp_path / REBALANCE_SCHEDULE_FILE).read_bytes() == old_bytes
+    assert not any(p.name.endswith(".tmp") for p in tmp_path.iterdir())
+
+
+def test_manifest_atomic_failure_no_partial(tmp_path, monkeypatch):
+    """manifest 写失败 → 无半截 manifest（旧 manifest 也不被破坏）。"""
+    sa, spec, schedule, target = _full_set(tmp_path)
+    _write(tmp_path, source_signal=sa, spec=spec, schedule=schedule, target=target)
+    old = (tmp_path / STRATEGY_MANIFEST_FILE).read_text(encoding="utf-8")
+    from factorlab.strategy import artifacts as A
+    real = A._atomic_write_file
+    def boom(path, writer):
+        if path.name == STRATEGY_MANIFEST_FILE:
+            raise RuntimeError("manifest boom")
+        return real(path, writer)
+    monkeypatch.setattr(A, "_atomic_write_file", boom)
+    with pytest.raises(RuntimeError):
+        _write(tmp_path, source_signal=sa, spec=spec, schedule=schedule, target=target)
+    assert (tmp_path / STRATEGY_MANIFEST_FILE).read_text(encoding="utf-8") == old
+    assert not any(p.name.endswith(".tmp") for p in tmp_path.iterdir())
+
+
+def test_incomplete_directory_rejected(tmp_path, monkeypatch):
+    """target+schedule 成功、manifest 失败 → 无 manifest → loader 拒绝。"""
+    sa, spec, schedule, target = _full_set(tmp_path)
+    from factorlab.strategy import artifacts as A
+    real = A._atomic_write_file
+    def boom(path, writer):
+        if path.name == STRATEGY_MANIFEST_FILE:
+            raise RuntimeError("manifest boom")
+        return real(path, writer)
+    monkeypatch.setattr(A, "_atomic_write_file", boom)
+    with pytest.raises(RuntimeError):
+        _write(tmp_path, source_signal=sa, spec=spec, schedule=schedule, target=target)
+    assert (tmp_path / TARGET_PORTFOLIO_FILE).exists()
+    assert (tmp_path / REBALANCE_SCHEDULE_FILE).exists()
+    assert not (tmp_path / STRATEGY_MANIFEST_FILE).exists()
+    with pytest.raises(ValueError, match="manifest"):
+        load_strategy_artifacts(tmp_path)
