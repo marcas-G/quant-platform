@@ -1281,6 +1281,77 @@ actual holdings：T+1/停牌/涨跌停/整手/费用/滑点/部分成交/现金�
 M8 Execution Runtime。现金是隐式 residual（cash = 1 - securities weight
 sum），不创建 CASH pseudo-security。
 
+## 6. M8 Execution Runtime
+
+### 架构边界
+
+```
+TargetPortfolio（ideal weights，M7）
+    │
+    │ ideal weights——weight space
+    ▼
+Execution Runtime
+    ├── calendar resolution       [M8-02 未实现]
+    ├── target→orders             [M8-03 未实现]
+    ├── A-share fills             [M8-04 未实现]
+    └── accounting                [M8-05 未实现]
+    ▼
+PortfolioState（actual cash/share inventory）
+```
+
+**TargetPortfolio ≠ PortfolioState**：前者是 desired weight space（策略希望
+达到什么权重），后者是 actual cash/share inventory（账户实际持有什么）——
+中间必须经过 Execution Runtime（真实 A 股存在 execution date/open price/
+现金约束/整手/T+1/停牌/涨跌停/费用/部分成交，ideal ≠ actual 是独立 domain）。
+
+### M8-01 Execution Domain Contracts
+
+**ExecutionSpec**（`factorlab.execution`，extra=forbid + frozen）：
+
+```
+initial_cash   positive finite float（bool/string 拒绝；int 规范化 float）
+lot_size       v1 固定 100（canonical A 股；ETF/期货等另版本化）
+无成本参数（commission/stamp_tax/slippage 属 M8-05 Cost Model）
+不重复时间语义（最早执行时点复用 M6 SignalTiming.ExecutionTiming）
+```
+
+**PortfolioState**（`factorlab.domain.execution`，dataclass frozen）：
+
+```
+as_of_date   datetime.date（datetime.datetime/str 拒绝）
+phase        PortfolioStatePhase ∈ {PRE_EXECUTION, POST_EXECUTION}——
+             同一天开盘交易前/后不是同一 state（直接影响 cash/quantity/
+             sellable_quantity）
+cash         finite >= 0（可用于证券交易的账户现金；可提现/结算未区分）
+positions    sparse holdings——严格 code(String)/quantity(Int64>0)/
+             sellable_quantity(Int64 ∈ [0, quantity])；code unique + canonical
+             + 稳定排序；无日期列（共享 as_of_date/phase）；空 typed frame
+             合法（cash-only state）；0 quantity 行拒绝
+```
+
+quantity = 当前持有股数；sellable_quantity = 当前时点依法可提交卖出的股数
+（A 股 T+1 基础）——**transition 未实现**（隔夜 sellable += today_buys 属
+后续 Execution state transition）。不保存 weights/price/market_value/cost
+（估值属 M8-05）。
+
+**OrderBatch**（dataclass frozen）：
+
+```
+decision_date    datetime.date（未来对应 TargetPortfolio.decision_dates）
+execution_date   calendar resolver 解析出的真实交易日期（> decision_date——
+                 默认 t close decision → after_close → next trading day open；
+                 M8-01 不负责计算）
+execution_timing 复用 M6 ExecutionTiming（NEXT_OPEN/NEXT_CLOSE——不新建）
+orders           strict code(String)/side(String "buy"/"sell"——
+                 OrderSide.value)/quantity(Int64>0)；code unique（净订单，
+                 buy/sell 同 code 必须先 net）；稳定排序；空 typed batch 合法
+                 （目标==当前：execution event 存在但 0 orders）
+```
+
+不携带 target_weight/signal/price/cost（share-space action）。**不定义
+Fill/Trade/PnL/NAV/MarketSnapshot**（M8-04/05 之前锁定 contract 过早）；
+不读取行情/DB；不实现任何执行算法（resolve/generate/execute/fill/mark）。
+
 ## 6. 测试
 
 运行：
