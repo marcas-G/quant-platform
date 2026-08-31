@@ -1034,7 +1034,99 @@ bounded reference/debug mode（受限窗口独立实现对照）。full-history 
 120/60 strict exact（stable rank 下 F2 亦 exact）；bounded F2/F3
 FULL/120/60 strict exact；labels strict exact；F2_ST violations=0。
 
-## 5. 测试
+## 5. M7 Portfolio Construction
+
+### 架构边界（最重要）
+
+```
+Factor Research Runtime
+    │
+    ├── SignalArtifact
+    └── LabelArtifact
+              │
+              X
+              │
+Strategy Runtime
+    │
+    └── 只允许 SignalArtifact
+```
+
+**Strategy Runtime 永远不能消费 LabelArtifact / forward_return_* / legacy
+panel**。未来策略回测必须从 SignalArtifact 开始。现有
+`factorlab.eval.layered.layered_backtest` 继续保留——它直接使用
+forward_return_*，定位为 **FactorEvaluator / Research Diagnostic**（NOT
+Strategy/Execution/Portfolio Backtest）。
+
+### M7-01 Domain Contracts
+
+```
+SignalArtifact
+    │
+    ▼
+StrategySpec
+    │
+    ▼
+PortfolioConstructor  [M7-02 未实现]
+    │
+    ▼
+TargetPortfolio
+    │
+    ▼
+Execution Runtime     [M8 未实现]
+```
+
+**StrategySpec**（`factorlab.strategy`，与 FactorSpec 严格分离）：
+
+```
+name               ^[A-Za-z_][A-Za-z0-9_]{0,63}$
+signal_name        期望消费的 SignalArtifact.meta.name（M7-02 实际检查）
+direction          ±1（signal 越大越优 / 越小越优；bool 拒绝）
+selection          SelectionSpec（v1: top_k）
+weighting          WeightingSpec（v1: equal_weight）
+gross_exposure     0 < x <= 1（finite、非 bool；剩余为隐式现金）
+rebalance_frequency "daily" only（调仓日历语义属 M7-03）
+extra="forbid" + frozen——target/forward_return/label/commission/slippage
+                   全部 fail fast
+```
+
+SelectionSpec：`k` strict int >= 1（"30"/1.5/True/False 拒绝）；
+`tie_breaker="code_asc"`（cutoff 处相同 signal 按 code 升序——输入行序
+不影响 Top-K）；`null_policy="drop"`（null 不进入 ranking）；`
+on_insufficient` ∈ {use_available（全部可用）/ all_cash（显式 0 仓位）}。
+
+**TargetPortfolioMeta**（`factorlab.domain.portfolio`，dataclass frozen）：
+`strategy_name / source_signal_name / source_timing（复用 M6 SignalTiming——
+不新建 Strategy/PortfolioTiming）/ gross_exposure / frequency="1d"`。
+
+**TargetPortfolio**（dataclass frozen）：
+
+```
+frame：严格 3 列 decision_date(pl.Date) / code(pl.String) / target_weight(pl.Float64)
+      ——禁止 signal/rank/forward_return_*/label/close/execution_price 等附加列
+decision_dates：tuple[datetime.date,...] 严格递增唯一——与 sparse frame 分离
+      （某日 0 rows = 显式 all-cash target，≠ 无决策）
+meta：来源元数据
+```
+
+校验：`(decision_date, code)` 唯一（不 dedup）；code 必须
+`is_canonical_stock_code`（复用 domain.codes，CASH/alias 拒绝）；target_weight
+finite 且 0 < w <= 1（zero position 不创建 row）；frame date ⊆ decision_dates；
+frame 必须按 (decision_date, code) 稳定排序（validator 只检查不自动重排——
+artifact diff/hash/reproducibility 依赖稳定顺序）；**gross exposure invariant**：
+有仓位日 sum(weight) ≈ meta.gross_exposure（1e-12，只检查不 renormalize）；
+all-cash 日（0 rows）豁免。
+
+**时间语义**：`decision_date = t` = 使用 t 日可得 SignalArtifact 的理想目标
+组合。默认 EOD 信号（information_cutoff=CLOSE、available_at=AFTER_CLOSE、
+earliest_execution=NEXT_OPEN）下**不代表 t close 成交**——最早 t+1 open
+执行；execution_date 解析属 M8。
+
+**TargetPortfolio = 理想目标权重**（Strategy Decision Artifact），不是
+actual holdings：T+1/停牌/涨跌停/整手/费用/滑点/部分成交/现金余额全部属
+M8 Execution Runtime。现金是隐式 residual（cash = 1 - securities weight
+sum），不创建 CASH pseudo-security。
+
+## 6. 测试
 
 运行：
 
