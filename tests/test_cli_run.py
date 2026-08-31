@@ -74,7 +74,7 @@ formula: |
     assert result.exit_code == 0, result.output
     summary = json.loads((out_dir / "summary.json").read_text(encoding="utf-8"))
     assert summary["universe_count"] == 1
-    assert summary["codes"] == ["600519"]
+    assert summary["codes"] == ["600519.SH"]
 
 
 def test_run_default_universe_wired(tmp_path, monkeypatch):
@@ -100,7 +100,7 @@ formula: |
     assert result.exit_code == 0, result.output
     summary = json.loads((out_dir / "summary.json").read_text(encoding="utf-8"))
     assert summary["universe_count"] == 1
-    assert summary["codes"] == ["000001"]
+    assert summary["codes"] == ["000001.SZ"]
 
 
 def test_run_missing_spec(tmp_path):

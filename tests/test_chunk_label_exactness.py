@@ -128,7 +128,7 @@ def test_full_chunk_exactness(tmp_path, h):
 def test_only_sample_tail_null(tmp_path):
     build_db(tmp_path)
     full = _run(tmp_path, _spec(tmp_path))
-    for code in ("000001", "000002"):
+    for code in ("000001.SZ", "000002.SZ"):
         a = full.label_artifact.frame.filter(pl.col("code") == code).sort("date")
         null5 = a.filter(pl.col("forward_return_5d").is_null())["date"].to_list()
         null20 = a.filter(pl.col("forward_return_20d").is_null())["date"].to_list()
@@ -194,13 +194,13 @@ def test_future_membership_does_not_censor_with_lookahead(tmp_path):
     t = datetime.date(2024, 1, 12)   # day11——内部 chunk（chunk 2 内 [1/8..1/15]）且 < ST 日
     for r in (full, chunked):
         row = r.label_artifact.frame.filter(
-            (pl.col("code") == "000001") & (pl.col("date") == t))
+            (pl.col("code") == "000001.SZ") & (pl.col("date") == t))
         assert row.height == 1
         assert row["forward_return_5d"][0] is not None
     f = full.label_artifact.frame.filter(
-        (pl.col("code") == "000001") & (pl.col("date") == t))["forward_return_5d"][0]
+        (pl.col("code") == "000001.SZ") & (pl.col("date") == t))["forward_return_5d"][0]
     c = chunked.label_artifact.frame.filter(
-        (pl.col("code") == "000001") & (pl.col("date") == t))["forward_return_5d"][0]
+        (pl.col("code") == "000001.SZ") & (pl.col("date") == t))["forward_return_5d"][0]
     assert abs(f - c) < 1e-12
 
 
@@ -252,5 +252,5 @@ def test_qfq_regression(tmp_path):
     assert float((joined["signal"] - joined["signal_c"]).abs().max()) < 1e-12
     # label total-return 数学定义不变（close×adj）——adj=1 → forward = close[t+h]/close[t]-1
     row = full.label_artifact.frame.filter(
-        (pl.col("code") == "000001") & (pl.col("date") == datetime.date(2024, 1, 2)))
+        (pl.col("code") == "000001.SZ") & (pl.col("date") == datetime.date(2024, 1, 2)))
     assert abs(row["forward_return_5d"][0] - (10.5 / 10.0 - 1)) < 1e-12  # day5 close = 10.5

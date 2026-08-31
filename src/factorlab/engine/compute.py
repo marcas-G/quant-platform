@@ -231,6 +231,40 @@ _WARMUP_SAFETY_PAD = 20  # 自动 warmup 的安全垫：覆盖 ts_delay 等窗�
 _CHUNK_KEEP = ["date", "code", "signal", "forward_return_5d", "forward_return_20d", "close"]
 
 
+def _canonicalize_artifact_codes(
+    frame: pl.DataFrame,
+    code_map: pl.DataFrame,
+) -> pl.DataFrame:
+    """Artifact boundary canonicalization（M7-05）：frame.code = symbol → canonical ts_code。
+
+    - 只改 code 列（date/signal/close/forward_* 数值与 null mask 严格保持）
+    - 行数精确不变（N 输入 → N 输出；缺失映射 fail fast，不丢行不膨胀）
+    - 映射碰撞（两 symbol → 同一 ts_code 致 (date, code) 重复）→ fail fast
+    - 输出按 (date, code) canonical 稳定排序
+    code_map schema：(symbol, code=canonical ts_code)——来自
+    resolve_canonical_code_map（stock_basic reference data，禁止启发式）。
+    """
+    n = frame.height
+    joined = frame.join(code_map.rename({"code": "_canonical"}),
+                        left_on="code", right_on="symbol", how="left")
+    missing = joined.filter(pl.col("_canonical").is_null())
+    if missing.height:
+        raise ValueError(
+            f"artifact canonicalization 缺失 {missing.height} 行 symbol 映射"
+            f"（fail fast，不丢行）: {missing['code'].unique().to_list()}")
+    out = (joined.with_columns(pl.col("_canonical").alias("code"))
+           .drop("_canonical"))
+    if out.height != n:
+        raise ValueError(
+            f"canonicalization 行数变化 {n} -> {out.height}（join 放大——BLOCKED）")
+    dup = out.group_by(["date", "code"]).len().filter(pl.col("len") > 1)
+    if dup.height:
+        raise ValueError(
+            f"canonicalization 后 (date, code) 重复 {dup.height} 组"
+            f"（symbol→ts_code 映射碰撞——不 dedup）")
+    return out.sort(["date", "code"])
+
+
 def _build_legacy_panel(
     signal_df: pl.DataFrame,
     labels_df: pl.DataFrame,
@@ -513,6 +547,15 @@ def run_factor(spec: FactorSpec, ctx: RunContext) -> FactorResult:
         labels_df = pl.concat(lab_parts)
         if ctx.chunk_days is not None:
             del sig_parts, lab_parts, signal_cal, label_cal, base_adj  # 立即释放块级引用（评估阶段省内存）
+        # M7-05：artifact boundary canonicalization——内部 symbol（"000001"）→
+        # canonical ts_code（"000001.SZ"，stock_basic reference data，一次 mapping）。
+        # Signal/Label/panel 正式 artifact 的 code 必须为 canonical research
+        # identifier（M7/M8 消费方 canonical guard 的唯一合法输入）。
+        from factorlab.data.universe import resolve_canonical_code_map
+        canonical_map = resolve_canonical_code_map(con, codes)
+        signal_df = _canonicalize_artifact_codes(signal_df, canonical_map)
+        labels_df = _canonicalize_artifact_codes(labels_df, canonical_map)
+        codes = canonical_map["code"].to_list()   # summary.codes 同 namespace
         # M6-01 domain contract 接线
         adjustment = getattr(spec, "adjustment", None) or ctx.adjustment
         meta = SignalMeta(name=spec.name, frequency="1d",

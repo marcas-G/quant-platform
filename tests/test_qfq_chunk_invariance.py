@@ -133,7 +133,7 @@ def test_adjustment_event_boundary_explicit(tmp_path):
     for c, f in frames.items():
         for d, expected_factor in ((prev, 1.0 / 1.4912), (cur, 1.0), (nxt, 1.0)):
             row = f.filter((pl.col("date") == datetime.date.fromisoformat(_iso(d)))
-                           & (pl.col("code") == "000001"))
+                           & (pl.col("code") == "000001.SZ"))
             raw = 10.0 + dates.index(d) * 0.1
             assert row["signal"][0] == pytest.approx(raw * expected_factor, rel=1e-5), \
                 f"{c} {d}: {row['signal'][0]} vs {raw * expected_factor}"
@@ -152,7 +152,7 @@ def test_signal_adj_factor_full_chunk_exact(tmp_path):
     # 值必须是 raw adj_factor（1.0 / 1.4912 原样，非 normalized ratio）
     d0 = _dates(200)[0]
     row = f_full.filter((pl.col("date") == datetime.date.fromisoformat(_iso(d0)))
-                        & (pl.col("code") == "000001"))
+                        & (pl.col("code") == "000001.SZ"))
     assert row["signal"][0] == 1.0
 
 
@@ -164,9 +164,9 @@ def test_multiple_codes_per_code_base(tmp_path):
     dates = _dates(200)
     prev = dates[94]
     a = f.filter((pl.col("date") == datetime.date.fromisoformat(_iso(prev)))
-                 & (pl.col("code") == "000001"))
+                 & (pl.col("code") == "000001.SZ"))
     b = f.filter((pl.col("date") == datetime.date.fromisoformat(_iso(prev)))
-                 & (pl.col("code") == "000002"))
+                 & (pl.col("code") == "000002.SZ"))
     raw_a, raw_b = 10.0 + 94 * 0.1, 10.0 + 94 * 0.1
     assert a["signal"][0] == pytest.approx(raw_a * 1.0 / 1.4912, rel=1e-5)
     assert b["signal"][0] == pytest.approx(raw_b * 1.0 / 3.0, rel=1e-5)
@@ -185,7 +185,7 @@ def test_no_end_date_ignores_future_adj(tmp_path):
     # day 95+（adj=1.4912）factor = 1.4912/1.4912 = 1.0——若错误用 future 2.0 → 0.7456
     d95 = dates[95]
     row = f.filter((pl.col("date") == datetime.date.fromisoformat(_iso(d95)))
-                   & (pl.col("code") == "000001"))
+                   & (pl.col("code") == "000001.SZ"))
     raw = 10.0 + 95 * 0.1
     assert row["signal"][0] == pytest.approx(raw, rel=1e-5), \
         f"no-end base 读了未来 adj: {row['signal'][0]} vs {raw}"
@@ -200,6 +200,6 @@ def test_non_trading_end_ok(tmp_path):
     assert f.height > 0
     d95 = _dates(200)[95]
     row = f.filter((pl.col("date") == datetime.date.fromisoformat(_iso(d95)))
-                   & (pl.col("code") == "000001"))
+                   & (pl.col("code") == "000001.SZ"))
     raw = 10.0 + 95 * 0.1
     assert row["signal"][0] == pytest.approx(raw, rel=1e-5)  # factor=1.0（event 后）

@@ -1281,6 +1281,41 @@ actual holdings：T+1/停牌/涨跌停/整手/费用/滑点/部分成交/现金�
 M8 Execution Runtime。现金是隐式 residual（cash = 1 - securities weight
 sum），不创建 CASH pseudo-security。
 
+## 6. Canonical Security Identity Handoff（M7-05）
+
+```
+M6 compute internals:
+    symbol（"000001"——内部计算 key，非跨 runtime public identity）
+
+        ↓  artifact boundary canonicalization
+
+M6 formal artifacts（Signal/Label/legacy panel）:
+    canonical ts_code（"000001.SZ"——is_canonical_stock_code）
+
+        ↓
+
+M7 / M8:
+    canonical ts_code only（Strategy/Execution canonical guard）
+```
+
+- **边界位置**：run_factor 在 signal/labels chunk concat 完成后、
+  SignalArtifact/LabelArtifact/legacy panel 构造前，执行一次
+  symbol→ts_code canonicalization（resolve_canonical_code_map——每 run 只
+  解析一次，不重复查 stock_basic）
+- **mapping 唯一数据来源**：stock_basic.symbol ↔ stock_basic.ts_code——
+  **禁止 prefix/exchange 启发式推断**（canonical identity 是 reference
+  data）。完整性（N 输入 → N 映射，缺失 fail）、唯一性（同 symbol 多
+  ts_code fail）、canonical 验证（is_canonical_stock_code +
+  is_canonical_stock_row：symbol == ts_code[:6]）
+- **legacy vendor alias（T600018.SH / TS0018.SH）**：不映射、不合并、不
+  drop——到达 artifact handoff 即 fail fast（M6-07B4 quarantine contract）
+- **M6 内部仍使用 symbol namespace**（load_daily/resolve/UniverseFrame/
+  align/compute 不动——大规模改造无必要）；只有正式 artifact 输出
+  canonical ts_code
+- **summary.codes** 与 signal.parquet.code 同一 canonical namespace
+  （candidate_count/universe_count 数值不变）
+- **旧 M7-05 前的 factor artifact 目录**（含 6 位 symbol code）不静默迁移
+
 ## 6. M8 Execution Runtime
 
 ### 架构边界

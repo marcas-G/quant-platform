@@ -101,7 +101,7 @@ def test_process_isolation(tmp_path):
     spec2 = spec_with(formula="signal = close",
                       codes=["000001", "000002"])
     r2 = run_factor(spec2, ctx)
-    for c in ("000001", "000002"):
+    for c in ("000001.SZ", "000002.SZ"):
         v3 = r3.panel.filter(pl.col("code") == c).sort("date")["signal"].to_list()
         v2 = r2.panel.filter(pl.col("code") == c).sort("date")["signal"].to_list()
         assert v3 == v2, f"{c}: 3 股 process 结果 {v3} != 2 股 {v2}（C 污染 process）"
@@ -127,12 +127,12 @@ def test_future_close_changes_label_not_signal(tmp_path):
     spec = spec_with(formula="signal = ts_mean(close, 2)")   # 只依赖过去——future 无关
     r1 = run_factor(spec, ctx1)
     r2 = run_factor(spec, ctx2)
-    s1 = r1.panel.filter(pl.col("code") == "000001").sort("date")["signal"].to_list()
-    s2 = r2.panel.filter(pl.col("code") == "000001").sort("date")["signal"].to_list()
+    s1 = r1.panel.filter(pl.col("code") == "000001.SZ").sort("date")["signal"].to_list()
+    s2 = r2.panel.filter(pl.col("code") == "000001.SZ").sort("date")["signal"].to_list()
     # 1/2..1/8（future close 之前）的 signal 不得受 t+5 价格影响（ts_mean 只依赖过去）
     assert s1[:5] == s2[:5], f"future close 改变了未来日期之前的 signal：{s1[:5]} vs {s2[:5]}"
-    l1 = r1.label_artifact.frame.filter(pl.col("code") == "000001").sort("date")
-    l2 = r2.label_artifact.frame.filter(pl.col("code") == "000001").sort("date")
+    l1 = r1.label_artifact.frame.filter(pl.col("code") == "000001.SZ").sort("date")
+    l2 = r2.label_artifact.frame.filter(pl.col("code") == "000001.SZ").sort("date")
     f5_1 = l1["forward_return_5d"].to_list()
     f5_2 = l2["forward_return_5d"].to_list()
     assert f5_1[0] != f5_2[0], "future close 未改变 label（1/2 的 forward_return_5d）"
@@ -156,16 +156,16 @@ def test_future_membership_does_not_censor_label(tmp_path):
     spec = spec_with(rules={"exclude_st": True, "exchanges": ["SSE", "SZSE"]})
     r = run_factor(spec, ctx)
     # A 在 1/2 active（非 ST）→ label 存在且非 null（价格到 1/9）
-    a = r.label_artifact.frame.filter(pl.col("code") == "000001").sort("date")
+    a = r.label_artifact.frame.filter(pl.col("code") == "000001.SZ").sort("date")
     first = a.filter(pl.col("date") == datetime.date(2024, 1, 2))
     assert first.height == 1 and first["forward_return_5d"][0] is not None
     # A 在 1/9 当天 ST → signal 无 A（未来 membership 影响 signal 正常——逐日 PIT）
     sig = r.signal_artifact.frame
-    assert sig.filter((pl.col("code") == "000001")
+    assert sig.filter((pl.col("code") == "000001.SZ")
                       & (pl.col("date") == datetime.date(2024, 1, 9))).height == 0
     # 但 1/2 的 label 未被未来 membership censor
     assert r.label_artifact.frame.filter(
-        (pl.col("code") == "000001") & (pl.col("date") == datetime.date(2024, 1, 2))).height == 1
+        (pl.col("code") == "000001.SZ") & (pl.col("date") == datetime.date(2024, 1, 2))).height == 1
 
 
 # ================================================================

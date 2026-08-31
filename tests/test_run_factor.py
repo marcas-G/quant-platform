@@ -113,7 +113,7 @@ def test_run_factor_universe_override_file(tmp_path):
     result = run_factor(_spec(tmp_path), RunContext(
         db_path=tmp_path / "q.duckdb", output_dir=out_dir, universe_override=str(pool)))
     assert result.summary["universe_count"] == 1
-    assert result.panel["code"].unique().to_list() == ["000001"]
+    assert result.panel["code"].unique().to_list() == ["000001.SZ"]
 
 
 def test_run_factor_empty_process_chain(tmp_path):
@@ -254,7 +254,7 @@ formula: |
 """, encoding="utf-8")
     result = run_factor(load_spec(spec_path), RunContext(db_path=tmp_path / "q.duckdb", output_dir=tmp_path / "out_qfq"))
     panel = result.panel.sort(["date"])
-    a = panel.filter(pl.col("code") == "000001")
+    a = panel.filter(pl.col("code") == "000001.SZ")
     # qfq 除权日收益 = 8×1.5/11 - 1（raw 口径会是 8/11 - 1）
     day3 = a.filter(pl.col("date") == datetime.date(2024, 1, 4))["signal"][0]
     assert day3 == pytest.approx(8 * 1.5 / 11 - 1)
@@ -321,7 +321,7 @@ formula: |
     assert result.panel.height > 0
     # 展开语义：mom_ratio(close, 1) → delay(close, 1)/delay(close, 2) - 1 = close[t-1]/close[t-2] - 1
     # 000001 收盘 11,12,13,14,15,16：第 3 个交易日（01-04）signal = 12/11 - 1
-    a = result.panel.filter(pl.col("code") == "000001").sort("date")
+    a = result.panel.filter(pl.col("code") == "000001.SZ").sort("date")
     day3 = a.filter(pl.col("date") == datetime.date(2024, 1, 4))["signal"][0]
     assert day3 == pytest.approx(12 / 11 - 1)
     # delay(close, 2) 需要前 2 个交易日：前 2 日 signal 为 null
@@ -350,7 +350,7 @@ formula: |
 """, encoding="utf-8")
     result = run_factor(load_spec(spec_path), RunContext(db_path=tmp_path / "q.duckdb", output_dir=tmp_path / "out_v"))
     assert result.panel.height > 0
-    a = result.panel.filter(pl.col("code") == "000001").sort("date")
+    a = result.panel.filter(pl.col("code") == "000001.SZ").sort("date")
     # 展开后 signal = close * volume：首日 = 11 × 1000
     assert a["signal"][0] == pytest.approx(11 * 1000.0)
 
@@ -376,7 +376,7 @@ formula: |
 """, encoding="utf-8")
     result = run_factor(load_spec(spec_path), RunContext(db_path=tmp_path / "q.duckdb", output_dir=tmp_path / "out_raw"))
     panel = result.panel.sort(["date"])
-    a = panel.filter(pl.col("code") == "000001")
+    a = panel.filter(pl.col("code") == "000001.SZ")
     # raw：除权日 8/11 - 1（qfq 下会是 8×1.5/11 - 1）
     day3 = a.filter(pl.col("date") == datetime.date(2024, 1, 4))["signal"][0]
     assert day3 == pytest.approx(8 / 11 - 1)
@@ -405,7 +405,7 @@ formula: |
 """, encoding="utf-8")
     result = run_factor(load_spec(spec_path), RunContext(db_path=tmp_path / "q.duckdb", output_dir=tmp_path / "out_param"))
     assert result.panel.height > 0
-    a = result.panel.filter(pl.col("code") == "000001").sort("date")["signal"]
+    a = result.panel.filter(pl.col("code") == "000001.SZ").sort("date")["signal"]
     # 替换语义：ts_mean(close, 3) - close——000001 收盘 11..16，第 3 日 = mean(11,12,13) - 13 = 0
     assert a[2] == pytest.approx((11 + 12 + 13) / 3 - 13)
     # ts_mean(3) 窗口不足的前 2 日为 null
@@ -438,7 +438,7 @@ formula: |
   signal = doubled(close)
 """, encoding="utf-8")
     result = run_factor(load_spec(spec_path), RunContext(db_path=tmp_path / "q.duckdb", output_dir=tmp_path / "out_param_macro"))
-    a = result.panel.filter(pl.col("code") == "000001").sort("date")["signal"]
+    a = result.panel.filter(pl.col("code") == "000001.SZ").sort("date")["signal"]
     # 展开链：${k}→2、scaled(close)→close*2、doubled(close) → (close*2)*2 = close*4
     assert a[0] == pytest.approx(11 * 4)
 
@@ -462,7 +462,7 @@ formula: |
   signal = ${col} * 2
 """, encoding="utf-8")
     result = run_factor(load_spec(spec_path), RunContext(db_path=tmp_path / "q.duckdb", output_dir=tmp_path / "out_param_col"))
-    a = result.panel.filter(pl.col("code") == "000001").sort("date")["signal"]
+    a = result.panel.filter(pl.col("code") == "000001.SZ").sort("date")["signal"]
     assert a[0] == pytest.approx(1000.0 * 2)
 
 
@@ -512,8 +512,8 @@ formula: |
 """, encoding="utf-8")
     result = run_factor(load_spec(spec_path), RunContext(db_path=tmp_path / "q.duckdb", output_dir=tmp_path / "out_def"))
     panel = result.panel.sort(["code", "date"])
-    a = panel.filter(pl.col("code") == "000001")["signal"]
-    b = panel.filter(pl.col("code") == "600519")["signal"]
+    a = panel.filter(pl.col("code") == "000001.SZ")["signal"]
+    b = panel.filter(pl.col("code") == "600519.SH")["signal"]
     # 每资产首行 null（若窗口未按资产分区，B 首行会取到 A 末行的值）
     assert a[0] is None and b[0] is None
     # 000001 收盘 11..16、600519 21..26：第 3 日 ts_mean(3)=中间值、ts_delay(1)=同值 → 0
@@ -550,7 +550,7 @@ formula: |
 """, encoding="utf-8")
     result = run_factor(load_spec(spec_path), RunContext(db_path=tmp_path / "q.duckdb", output_dir=tmp_path / "out_pit"))
     assert result.panel.height > 0
-    a = result.panel.filter(pl.col("code") == "000001").sort("date")
+    a = result.panel.filter(pl.col("code") == "000001.SZ").sort("date")
     # asof=2024-01-09（adj=1.5）：除权日 01-04 因子 = 8×1.5/11 - 1（raw 口径会是 8/11 - 1）
     day3 = a.filter(pl.col("date") == datetime.date(2024, 1, 4))["signal"][0]
     assert day3 == pytest.approx(8 * 1.5 / 11 - 1)

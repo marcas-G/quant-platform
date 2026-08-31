@@ -10,7 +10,9 @@ import polars as pl
 import yaml
 
 from factorlab.config import settings
-from factorlab.domain.codes import CANONICAL_TS_CODE_PATTERN
+from factorlab.domain.codes import (CANONICAL_TS_CODE_PATTERN,
+                                    is_canonical_stock_code,
+                                    is_canonical_stock_row)
 from factorlab.spec import FactorSpec
 
 _ISO_DATE_RE = re.compile(r"^\d{4}-\d{2}-\d{2}$")
@@ -30,6 +32,64 @@ def normalize_code(code: str) -> str:
     if len(base) != 6 or not base.isdigit() or base != parts[0]:
         raise ValueError(f"非法股票代码: {code}（期望 6 位数字或 ts_code 格式）")
     return base
+
+
+def resolve_canonical_code_map(
+    db: duckdb.DuckDBPyConnection,
+    symbols: list[str],
+) -> pl.DataFrame:
+    """symbol → canonical ts_code 映射（M7-05 artifact handoff reference data）。
+
+    - **唯一数据来源**：stock_basic.symbol ↔ stock_basic.ts_code（禁止
+      prefix/exchange 启发式推断——canonical identity 是 reference data）
+    - 输入：list[str] 非空且 unique（duplicate → ValueError，不 dedup）
+    - 完整性：N 输入 → N 映射（缺失 symbol → fail fast，不 drop）
+    - 唯一性：每 symbol 恰一行（reference 重复 → fail，不 first/last）
+    - 输出每个 ts_code 经 is_canonical_stock_code + is_canonical_stock_row
+      （symbol == ts_code[:6]）验证——legacy vendor alias（T600018.SH 等）
+      / symbol mismatch → fail fast（不映射/不合并/不 drop）
+    - 返回严格 schema：(symbol pl.String, code pl.String)
+    """
+    if not isinstance(symbols, list) or not symbols:
+        raise ValueError(f"symbols 必须为非空 list[str]（收到 {type(symbols).__name__}）")
+    if any(not isinstance(s, str) for s in symbols):
+        raise ValueError("symbols 元素必须为 str")
+    if len(set(symbols)) != len(symbols):
+        raise ValueError(f"symbols 重复 {len(symbols) - len(set(symbols))} 个——不 dedup")
+    rows = db.execute(
+        "SELECT symbol, ts_code FROM stock_basic "
+        "WHERE symbol IN (SELECT unnest(?)) ORDER BY symbol",
+        [symbols]).fetchall()
+    found = {r[0] for r in rows}
+    missing = [s for s in symbols if s not in found]
+    if missing:
+        raise ValueError(
+            f"symbol→ts_code 映射缺失 {len(missing)} 个 symbol: {missing[:5]}"
+            f"——fail fast（不 drop）")
+    counts: dict[str, int] = {}
+    for r in rows:
+        counts[r[0]] = counts.get(r[0], 0) + 1
+    dup_ref = [s for s, c in counts.items() if c > 1]
+    if dup_ref:
+        raise ValueError(
+            f"stock_basic 中 symbol 重复映射 {dup_ref}（同 symbol 多 ts_code）"
+            f"——fail fast（不 first/last 选择）")
+    # canonical 验证（ts_code 形态 + symbol↔ts_code row 一致性；alias 拒绝）
+    out = pl.DataFrame(rows, schema=["symbol", "code"], orient="row")
+    bad = out.filter(~pl.col("code").map_elements(
+        is_canonical_stock_code, return_dtype=pl.Boolean).fill_null(False))
+    if bad.height:
+        raise ValueError(
+            f"symbol→ts_code 含非 canonical ts_code: "
+            f"{bad['code'].unique().to_list()}（legacy vendor alias 不映射/不合并）")
+    # is_canonical_stock_row 逐行（symbol == ts_code[:6]）
+    bad_row = out.filter(
+        pl.col("symbol") != pl.col("code").str.slice(0, 6))
+    if bad_row.height:
+        raise ValueError(
+            f"symbol↔ts_code row 不一致（symbol 必须 == ts_code 前六位）: "
+            f"{bad_row.to_dicts()}")
+    return out.select(["symbol", "code"])
 
 
 def load_universe_file(path: Path) -> dict[str, Any]:

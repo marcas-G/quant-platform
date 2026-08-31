@@ -158,12 +158,12 @@ def test_long_suspension_fill_values(tmp_path):
     for idx in (169, 179, 180, 199):   # day 170/180/181/200（0-based）
         d = dates[idx]
         row = f.filter((pl.col("date") == datetime.date.fromisoformat(_iso(d)))
-                       & (pl.col("code") == "000001"))
+                       & (pl.col("code") == "000001.SZ"))
         assert row["signal"][0] == pytest.approx(last_before, rel=1e-5), f"day {idx+1}"
     # 恢复后使用真实 close（fixture：close = 10 + i*0.1 全段连续）
     d221 = dates[220]
     row = f.filter((pl.col("date") == datetime.date.fromisoformat(_iso(d221)))
-                   & (pl.col("code") == "000001"))
+                   & (pl.col("code") == "000001.SZ"))
     assert row["signal"][0] == pytest.approx(10.0 + 220 * 0.1, rel=1e-5)
 
 
@@ -227,8 +227,8 @@ def test_per_column_state(tmp_path):
     f2 = _run(tmp_path / "q.duckdb", tmp_path / "o2", None, start=_iso(dates[60]),
               formula="signal = turnover", codes='["000001.SZ"]')
     d60 = datetime.date.fromisoformat(_iso(dates[60]))
-    row_c = f.filter((pl.col("date") == d60) & (pl.col("code") == "000001"))
-    row_t = f2.filter((pl.col("date") == d60) & (pl.col("code") == "000001"))
+    row_c = f.filter((pl.col("date") == d60) & (pl.col("code") == "000001.SZ"))
+    row_t = f2.filter((pl.col("date") == d60) & (pl.col("code") == "000001.SZ"))
     assert row_c["signal"][0] == pytest.approx(11.0, rel=1e-5), "close 必须用 D-1 值"
     assert row_t["signal"][0] == pytest.approx(2.0, rel=1e-5), "turnover 必须用 D-2 值（非 D-1 null）"
 
@@ -243,7 +243,7 @@ def test_future_isolation(tmp_path):
     f = _run(tmp_path / "q.duckdb", tmp_path / "o", None, start=_iso(dates[149]),
              end=_iso(dates[210]))
     d150 = datetime.date.fromisoformat(_iso(dates[149]))
-    row = f.filter((pl.col("date") == d150) & (pl.col("code") == "000001"))
+    row = f.filter((pl.col("date") == d150) & (pl.col("code") == "000001.SZ"))
     assert row["signal"][0] == pytest.approx(10.0 + 98 * 0.1, rel=1e-5), \
         f"FillState 受未来值影响: {row['signal'][0]}"
 
@@ -256,8 +256,8 @@ def test_per_code_isolation(tmp_path):
              codes='["000001.SZ", "000002.SZ"]')
     dates = _dates(260)
     d = datetime.date.fromisoformat(_iso(dates[150]))   # 停牌中
-    a = f.filter((pl.col("date") == d) & (pl.col("code") == "000001"))
-    b = f.filter((pl.col("date") == d) & (pl.col("code") == "000002"))
+    a = f.filter((pl.col("date") == d) & (pl.col("code") == "000001.SZ"))
+    b = f.filter((pl.col("date") == d) & (pl.col("code") == "000002.SZ"))
     assert a["signal"][0] == pytest.approx(10.0 + 98 * 0.1, rel=1e-5)
     assert b["signal"][0] == pytest.approx(10.0 + 98 * 0.1, rel=1e-5)  # 同价（fixture 同价）
 
@@ -271,7 +271,7 @@ def test_no_history_code_no_fake_state(tmp_path):
     dates = _dates(260)
     # 000003 上市于 20240701（day ~120+）——window 首日（day 1）未上市 → 不在 skeleton
     # 检查 000003 在上市前的行不存在（skeleton 驱动，无伪造）
-    pre = f.filter((pl.col("code") == "000003")
+    pre = f.filter((pl.col("code") == "000003.SZ")
                    & (pl.col("date") < datetime.date(2024, 7, 1)))
     assert pre.height == 0
 
@@ -283,6 +283,6 @@ def test_delisted_not_resurrected(tmp_path):
     f = _run(tmp_path / "q.duckdb", tmp_path / "o", None,
              codes='["000001.SZ", "000004.SZ"]')
     # 000004 2024-03-01 退市——seed 不得使其复活
-    post = f.filter((pl.col("code") == "000004")
+    post = f.filter((pl.col("code") == "000004.SZ")
                     & (pl.col("date") >= datetime.date(2024, 3, 1)))
     assert post.height == 0
