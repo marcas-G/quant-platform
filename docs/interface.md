@@ -1234,6 +1234,40 @@ schedule——decision=t（默认 EOD：after close 可得、最早 t+1 open 执
 实际 next open 由 M8 解析。weekly/monthly 不意味着固定持有期；TargetPortfolio
 不在非 decision 日 forward-fill。
 
+### M7-04 Strategy Artifact Persistence
+
+```
+SignalArtifact（source only——不复制，只记录 SignalMeta provenance）
+    │
+    ▼
+StrategySpec / RebalanceSchedule / TargetPortfolio
+    │
+    ▼
+strategy result dir
+├── target_portfolio.parquet      （TargetPortfolio.frame 直接落盘）
+├── rebalance_schedule.parquet    （decision_dates——core artifact）
+└── strategy_manifest.json        （最后写 = 完成标记）
+```
+
+- **Schedule 是 core artifact**：TargetPortfolio.frame 是 sparse positions——
+  显式 all-cash decision date（0 rows）必须由 rebalance_schedule.parquet
+  单独恢复，否则丢失
+- **strategy-safe**：Strategy loader 不加载 LabelArtifact / labels.parquet /
+  panel.parquet（无关文件被忽略）；无 factor fallback（target 缺失即 fail）
+- **provenance 边界**：记录 source SignalMeta（name/frequency/adjustment/
+  timing）；**不绑定 source SignalArtifact byte identity**（hash/run-id 未
+  实现——不伪装更强 provenance）；不保存 source 绝对路径
+- **版本语义**：STRATEGY_ARTIFACT_FORMAT_VERSION（目录布局）与
+  TARGET_PORTFOLIO/REBALANCE_SCHEDULE/STRATEGY_SPEC SCHEMA_VERSION 独立于
+  M6 factor artifact 版本
+- **atomic**：单文件 sibling .tmp → os.replace；manifest 最后写（缺失 =
+  incomplete directory，loader 识别）；目录级事务未实现（partial write
+  可能残留 target/schedule——无 manifest 即不可加载）
+- **round-trip**：spec/schedule/target（frame/decision_dates/meta）严格一致；
+  tamper 检测覆盖 version/filename/rows/columns/dtype/spec/meta/timing
+- 不复制 M6 summary.json；不保存 StrategySpec YAML 副本（manifest 已完整
+  JSON 持久化）
+
 **TargetPortfolio = 理想目标权重**（Strategy Decision Artifact），不是
 actual holdings：T+1/停牌/涨跌停/整手/费用/滑点/部分成交/现金余额全部属
 M8 Execution Runtime。现金是隐式 residual（cash = 1 - securities weight
