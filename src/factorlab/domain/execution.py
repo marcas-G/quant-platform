@@ -238,6 +238,13 @@ class ExecutionSchedule:
             raise ValueError(
                 f"execution_timing dtype 必须为 String（收到 {f.schema['execution_timing']}）")
         if f.height:
+            # M8-02A：三列均 non-null（不依赖 sorted() 偶然 TypeError）
+            for col in ("decision_date", "execution_date", "execution_timing"):
+                nulls = f.filter(pl.col(col).is_null())
+                if nulls.height:
+                    raise ValueError(
+                        f"ExecutionSchedule.{col} 不允许 null"
+                        f"（{nulls.height} 行——non-null contract）")
             dup = f.group_by("decision_date").len().filter(pl.col("len") > 1)
             if dup.height:
                 raise ValueError(
@@ -254,13 +261,15 @@ class ExecutionSchedule:
                     raise ValueError(
                         f"execution_timing 必须为 ExecutionTiming.value"
                         f"（收到 {v!r}——open/close/NEXT_OPEN/tomorrow 拒绝）") from exc
+            # M8-02A：严格递增（相邻 <），不依赖 sorted(list) 表达 strict
             dec = f["decision_date"].to_list()
-            if dec != sorted(dec):
-                raise ValueError("decision_date 必须 ASC——不自动排序")
             ex = f["execution_date"].to_list()
-            if ex != sorted(ex):
+            if any(a >= b for a, b in zip(dec, dec[1:])):
                 raise ValueError(
-                    "execution_date 必须随 decision 序列严格递增——不自动排序")
+                    "decision_date 必须严格递增（相邻 <）——不自动排序")
+            if any(a >= b for a, b in zip(ex, ex[1:])):
+                raise ValueError(
+                    "execution_date 必须严格递增（相邻 <）——不自动排序")
 
 
 # ---------------------------------------------------------------------------
@@ -318,6 +327,15 @@ class MarketOpenSnapshot:
                     f"snapshot 含非 canonical code: {bad_code['code'].unique().to_list()}")
             if not f.equals(f.sort("code")):
                 raise ValueError("snapshot 必须按 code 稳定排序——不自动排序")
+            # M8-02A：三个 evidence flags 必须 non-null Boolean（无第三
+            # "unknown" 状态——数据覆盖 uncertainty 由 global coverage gates
+            # 单独表达；null 穿透 Polars 三值逻辑会绕过 conditional invariants）
+            for flag in ("has_daily", "has_limit", "has_suspend_record"):
+                nulls = f.filter(pl.col(flag).is_null())
+                if nulls.height:
+                    raise ValueError(
+                        f"snapshot.{flag} 不允许 null（{nulls.height} 行）"
+                        f"——evidence 必须非空 Boolean（True=有证据/False=无证据）")
             bad_daily = f.filter(pl.col("has_daily")
                                  & (~pl.col("open").is_finite()
                                     | (pl.col("open") <= 0)

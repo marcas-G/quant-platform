@@ -341,3 +341,67 @@ def test_data_layer_frame(tmp_path):
                              "down_limit", "has_daily", "has_limit",
                              "has_suspend_record"]
     assert frame.height == 3
+
+
+# ================================================================
+# M8-02A：MarketOpenSnapshot evidence non-null Boolean hardening
+# ================================================================
+
+def _mk_snapshot(flags_daily=None, flags_limit=None, flags_suspend=None,
+                 with_daily_ok=True, with_limit_ok=True):
+    """手工构造 snapshot frame（绕过 loader 测 domain 独立防护）。"""
+    codes = ["000001.SZ", "600000.SH"]
+    rows = []
+    for i, c in enumerate(codes):
+        fd = flags_daily[i] if flags_daily else (with_daily_ok, False)[i]
+        fl = flags_limit[i] if flags_limit else (with_limit_ok, False)[i]
+        fs = flags_suspend[i] if flags_suspend else (False, False)[i]
+        open_ = 10.0 if fd else None
+        pc = 9.8 if fd else None
+        up = 11.0 if fl else None
+        dn = 9.0 if fl else None
+        rows.append((c, open_, pc, up, dn, fd, fl, fs))
+    frame = pl.DataFrame(rows, schema=["code", "open", "pre_close", "up_limit",
+                                       "down_limit", "has_daily", "has_limit",
+                                       "has_suspend_record"], orient="row")
+    frame = frame.with_columns(
+        pl.col("open").cast(pl.Float64), pl.col("pre_close").cast(pl.Float64),
+        pl.col("up_limit").cast(pl.Float64), pl.col("down_limit").cast(pl.Float64),
+        pl.col("has_daily").cast(pl.Boolean), pl.col("has_limit").cast(pl.Boolean),
+        pl.col("has_suspend_record").cast(pl.Boolean))
+    return MarketOpenSnapshot(execution_date=EXEC, frame=frame)
+
+
+def test_has_daily_null_fails():
+    with pytest.raises(ValueError, match="has_daily|Boolean|null"):
+        _mk_snapshot(flags_daily=[True, None])
+
+
+def test_has_limit_null_fails():
+    with pytest.raises(ValueError, match="has_limit|Boolean|null"):
+        _mk_snapshot(flags_limit=[None, False])
+
+
+def test_has_suspend_record_null_fails():
+    with pytest.raises(ValueError, match="has_suspend_record|Boolean|null"):
+        _mk_snapshot(flags_suspend=[False, None])
+
+
+def test_mixed_null_evidence_fails_whole():
+    """A: has_daily=True、B: has_daily=null——whole snapshot fail（不 drop B）。"""
+    with pytest.raises(ValueError, match="has_daily|Boolean|null"):
+        _mk_snapshot(flags_daily=[True, None])
+
+
+def test_all_false_valid():
+    s = _mk_snapshot(flags_daily=[False, False], flags_limit=[False, False],
+                     flags_suspend=[False, False])
+    assert s.frame.height == 2
+    assert s.frame["open"].null_count() == 2
+
+
+def test_all_true_valid():
+    s = _mk_snapshot(flags_daily=[True, True], flags_limit=[True, True],
+                     flags_suspend=[True, True])
+    assert s.frame.height == 2
+    assert s.frame["has_daily"].all() and s.frame["has_limit"].all()

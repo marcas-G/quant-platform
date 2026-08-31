@@ -249,3 +249,62 @@ def test_integration_schedule_to_snapshot(tmp_path):
     assert snap.frame["has_daily"][0] and snap.frame["open"][0] == 10.5
     assert snap.frame["has_limit"][0] and snap.frame["up_limit"][0] == 11.5
     assert snap.frame["has_suspend_record"][0] is False
+
+
+# ================================================================
+# M8-02A：ExecutionSchedule domain hardening（strict + non-null）
+# ================================================================
+
+def _mk_schedule(decisions, executions, timing="next_open"):
+    return ExecutionSchedule(frame=pl.DataFrame({
+        "decision_date": pl.Series(decisions, dtype=pl.Date),
+        "execution_date": pl.Series(executions, dtype=pl.Date),
+        "execution_timing": pl.Series([timing] * len(decisions), dtype=pl.String),
+    }))
+
+
+def test_duplicate_execution_date_fails():
+    """整体 execution 序列重复（即使每行 individually execution > decision）→ fail。"""
+    with pytest.raises(ValueError, match="严格递增|strictly"):
+        _mk_schedule([D0, D3], [D4, D4])
+
+
+def test_decision_date_null_fails():
+    f = pl.DataFrame({
+        "decision_date": pl.Series([None, D3], dtype=pl.Date),
+        "execution_date": pl.Series([D3, D4], dtype=pl.Date),
+        "execution_timing": pl.Series(["next_open", "next_open"], dtype=pl.String),
+    })
+    with pytest.raises(ValueError, match="null"):
+        ExecutionSchedule(frame=f)
+
+
+def test_execution_date_null_fails():
+    f = pl.DataFrame({
+        "decision_date": pl.Series([D0, D3], dtype=pl.Date),
+        "execution_date": pl.Series([D3, None], dtype=pl.Date),
+        "execution_timing": pl.Series(["next_open", "next_open"], dtype=pl.String),
+    })
+    with pytest.raises(ValueError, match="null"):
+        ExecutionSchedule(frame=f)
+
+
+def test_execution_timing_null_fails():
+    f = pl.DataFrame({
+        "decision_date": pl.Series([D0, D3], dtype=pl.Date),
+        "execution_date": pl.Series([D3, D4], dtype=pl.Date),
+        "execution_timing": pl.Series(["next_open", None], dtype=pl.String),
+    })
+    with pytest.raises(ValueError, match="null"):
+        ExecutionSchedule(frame=f)
+
+
+def test_valid_strictly_increasing_passes():
+    s = _mk_schedule([D0, D3, D4], [D3, D4, D5])
+    assert s.frame.height == 3
+
+
+def test_decision_sequence_decreasing_fails():
+    """decision 序列递减 → 严格递增检查拦截（不依赖 sorted 表达 strict）。"""
+    with pytest.raises(ValueError, match="严格递增|strictly"):
+        _mk_schedule([D3, D0], [D4, D5])

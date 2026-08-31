@@ -1311,9 +1311,10 @@ daily.max = 2026-08-14 → MarketOpenSnapshot(2026-08-17) 必须 fail
 已知价/丢弃/假装停牌。
 
 **ExecutionSchedule**（domain）：decision_date(Date)/execution_date(Date)/
-execution_timing(String = ExecutionTiming.value)；decision unique、
-execution > decision、decision ASC 且 execution 随序列严格递增；空 typed
-合法。
+execution_timing(String = ExecutionTiming.value)；三列 **non-null**；
+decision unique、execution > decision、decision 与 execution 序列**严格
+递增**（相邻 <，不依赖 sorted 表达 strict——duplicate execution date
+fail）；空 typed 合法。
 
 **resolve_execution_schedule(target, db_path)**：timing 权威 =
 target.meta.source_timing.default_earliest_execution（NEXT_OPEN/NEXT_CLOSE
@@ -1325,8 +1326,11 @@ all-cash decision 仍产生 execution event；一次 calendar 加载 + bisect。
 **MarketOpenSnapshot**（domain）：execution_date + 严格 8 列
 code/open/pre_close/up_limit/down_limit/has_daily/has_limit/
 has_suspend_record（Float64/Boolean）；code canonical unique 排序；
-has_daily=True → open/pre_close 非空有限 >0（False → null）；has_limit
-同理（down <= up）；**evidence ≠ fillability**——has_daily/has_limit/
+三个 evidence flags（has_daily/has_limit/has_suspend_record）全部
+**non-null Boolean**（无第三 "unknown" 状态——数据覆盖 uncertainty 由
+global coverage gates 单独表达；null 穿透三值逻辑会绕过 conditional
+invariants）；has_daily=True → open/pre_close 非空有限 >0（False →
+null）；has_limit 同理（down <= up）；**evidence ≠ fillability**——has_daily/has_limit/
 has_suspend_record 都是 market-data evidence，不是 can_buy/can_sell
 （M8-04 才定义 fill rules）；价格是 **raw daily.open**（禁止 qfq/hfq
 复权价作成交价）。
