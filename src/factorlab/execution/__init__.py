@@ -4,11 +4,13 @@ M8-01：契约（ExecutionSpec；PortfolioState/OrderBatch/enums 在
 factorlab.domain.execution）。
 M8-02：calendar resolver（resolve_execution_schedule）+ market-open snapshot
 （load_market_open_snapshot）。
-M8-03..06（target→orders / fills / accounting / backtest）未实现。
+M8-03：deterministic net order planning（construct_order_batch）。
+M8-04..06（fills / accounting / backtest）未实现。
 """
 
 from factorlab.execution.calendar import resolve_execution_schedule
 from factorlab.execution.market import load_market_open_snapshot
+from factorlab.execution.orders import construct_order_batch
 from factorlab.execution.rules import (SecurityQuantityRules,
                                        is_valid_buy_quantity,
                                        is_valid_sell_quantity,
@@ -16,6 +18,6 @@ from factorlab.execution.rules import (SecurityQuantityRules,
 from factorlab.execution.spec import ExecutionSpec
 
 __all__ = ["ExecutionSpec", "resolve_execution_schedule",
-           "load_market_open_snapshot",
+           "load_market_open_snapshot", "construct_order_batch",
            "SecurityQuantityRules", "resolve_security_quantity_rules",
            "is_valid_buy_quantity", "is_valid_sell_quantity"]

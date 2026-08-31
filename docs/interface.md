@@ -1387,8 +1387,8 @@ TargetPortfolio（ideal weights，M7）
     │ ideal weights——weight space
     ▼
 Execution Runtime
-    ├── calendar resolution       [M8-02 未实现]
-    ├── target→orders             [M8-03 未实现]
+    ├── calendar resolution       [M8-02 ✓]
+    ├── target→orders             [M8-03 ✓]
     ├── A-share fills             [M8-04 未实现]
     └── accounting                [M8-05 未实现]
     ▼
@@ -1464,6 +1464,116 @@ orders           strict code(String)/side(String "buy"/"sell"——
 不携带 target_weight/signal/price/cost（share-space action）。**不定义
 Fill/Trade/PnL/NAV/MarketSnapshot**（M8-04/05 之前锁定 contract 过早）；
 不读取行情/DB；不实现任何执行算法（resolve/generate/execute/fill/mark）。
+
+### M8-03 Net Order Planning
+
+```
+TargetPortfolio
+        +
+PRE_EXECUTION PortfolioState
+        +
+ExecutionSchedule
+        +
+MarketOpenSnapshot
+        +
+SecurityQuantityRules
+        │
+        ▼
+planning equity @ raw open
+        │
+        ▼
+ideal target shares（floor(target_value / open)）
+        │
+        ▼
+delta shares
+        │
+        ├── SELL
+        │    └─ sellable cap（T+1）
+        │       └─ quantity projection
+        │
+        └── BUY
+             └─ quantity projection
+                └─ proportional funding scale（sell-first funding）
+        │
+        ▼
+OrderBatch（每 code 至多 1 行，code ASC）
+```
+
+**construct_order_batch(target, schedule, state, snapshot, quantity_rules, *,
+decision_date) -> OrderBatch**（`factorlab.execution`）——单 execution event
+planner（一次调用 = 一个 decision_date → 一个 OrderBatch；完整历史循环属
+M8-06）：
+
+- **没有 ExecutionSpec 参数**：调仓时刻的现金 authority 是
+  `PortfolioState.cash`（M8-01B 后 ExecutionSpec 只剩 initial_cash——每次
+  调仓重读会重置账户现金到初始值）
+- **type guards 显式**：5 个对象参数必须各自类型（dict/DataFrame/None
+  拒绝）；decision_date 必须 `datetime.date`（`datetime.datetime`/str 拒绝）
+- **cross-object invariants**：schedule.decision_date 序列 ==
+  target.decision_dates（数量/顺序/日期严格一致——missing/extra/不同顺序
+  fail）；schedule 全部 execution_timing ==
+  target.meta.source_timing.default_earliest_execution.value；selected
+  decision ∈ target.decision_dates 且 schedule 中恰 1 行；
+  schedule.execution_date == snapshot.execution_date == state.as_of_date；
+  state.phase 必须 PRE_EXECUTION
+- **NEXT_OPEN only**：v1 只支持 `ExecutionTiming.NEXT_OPEN`（市场数据对象是
+  MarketOpenSnapshot）；NEXT_CLOSE → `NotImplementedError`（禁止拿
+  daily.open 冒充 next_close 成交/规划价）
+- **planning universe = current ∪ target**（code ASC）；snapshot 与
+  quantity_rules 必须**精确覆盖**（missing/extra 均 fail）；空 universe
+  （空持仓 + 显式 all-cash）→ 空 OrderBatch（execution event 仍存在）
+- **显式 all-cash ≠ 无决策**：selected target slice 0 rows = 显式 all-cash
+  target（target shares = 0，无需 target weights/equity）；decision 不在
+  decision_dates 中则 fail
+- **planning equity = state.cash + Σ(current quantity × raw open)**——只用于
+  weight → share sizing，不落盘、不构成 NAV/PnL/valuation artifact（正式
+  accounting 属 M8-05）；target value = weight × planning_equity；
+  ideal target quantity = `math.floor(target_value / raw open)`
+- **target quantity 是 position-space integer**：ideal target holding 本身
+  不需要满足 buy-order minimum（例如 STAR 数学 target 150 股合法，但从 0
+  持仓 BUY 150 不合法 → 不下单）；target holdings ≠ order quantity validity
+- **SELL**：desired_sell = −delta；sell_limit = min(desired_sell,
+  sellable_quantity)（T+1 cap 位于 M8-03——只读取不改变
+  sellable_quantity，隔夜 transition 仍属后续任务）；`_project_sell_quantity`
+  取 <= limit 的最大合法 SELL（ROUND：整手或一次完整零股 remainder 中取
+  最大；STAR：H<200 只能全量 L>=H→H；BSE 同理阈值 100）；**不 oversell
+  target**（STAR H=250 target=100 → SELL 0，不得 SELL 200）
+- **BUY**：desired_buy = delta；`_project_buy_quantity` 取 <= desired 的
+  最大合法 BUY（ROUND：floor/100×100；STAR >=200 step1；BSE >=100 step1）；
+  先算 provisional buys → provisional notional
+- **sell-first funding**：buy_budget = state.cash + planned sell proceeds
+  （仅规划层 funding assumption——**不代表 sell 已成交**）：
+  > M8-03 buy budget may credit planned sell notional for deterministic
+  > sell-first sizing. This does not assert those sells fill. M8-04 must
+  > recompute actual cash after realized sells before accepting buy fills.
+- **funding insufficient → proportional scale**：funding_scale =
+  buy_budget / provisional_notional（禁止按 code 顺序抢现金）；每 code
+  scaled_cap = floor(provisional × scale) 后**再次 quantity projection**
+  （ROUND provisional=500 scale=0.75 → cap=375 → 最终 300）；残余现金
+  **不 redistribute**（不二次分配/不按 code 填手数/不贪心补仓——避免隐含
+  priority）；最终 Σ(final buy × open) <= buy_budget（float 容差
+  1e-10×max(1,budget) 内显式验证，超限 RuntimeError——不允许
+  silently negative planned cash）
+- **evidence 边界**：`has_daily` 是 **sizing price evidence**（非
+  can_trade）——非 all-cash 的整个 planning universe 必须 has_daily=True
+  （缺 open 无法反推 target shares/equity/sell funding），失败文案是
+  "missing sizing price evidence"（**不是**"停牌/无法交易"）；all-cash
+  target 允许 has_daily=False（target shares=0，SELL intent 仍由
+  holding/sellable/quantity rule 决定，能否成交属 M8-04）；
+  `has_limit`/`has_suspend_record`/`pre_close` **不参与规划**（订单不变，
+  M8-04 才定义 fillability）
+- **输出**：严格 OrderBatch schema（code/side/quantity，Int64）；每 code
+  至多 1 行（不会 BUY+SELL 同现）；quantity=0 不写行；code ASC；metadata
+  = selected decision_date / schedule row execution_date / ExecutionTiming；
+  empty OrderBatch 合法（target 已匹配/T+1 全锁/delta 低于最小单位/无现金/
+  all-cash 无持仓）；纯 runtime（不访问 DB / SignalArtifact / StrategySpec）
+
+**三个层级必须严格分开**：
+
+```
+TargetPortfolio（desired weights）≠ OrderBatch（desired legal share
+instructions）≠ Fill（what actually trades——M8-04）
+```
 
 ## 6. 测试
 
