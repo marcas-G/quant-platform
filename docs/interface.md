@@ -1406,10 +1406,27 @@ PortfolioState（actual cash/share inventory）
 
 ```
 initial_cash   positive finite float（bool/string 拒绝；int 规范化 float）
-lot_size       v1 固定 100（canonical A 股；ETF/期货等另版本化）
+**不拥有 per-security quantity rules**（M8-01B：全局 lot_size 已移除——
+  SecurityQuantityRule 是唯一数量权威；传入 lot_size 即 extra=forbid fail）
 无成本参数（commission/stamp_tax/slippage 属 M8-05 Cost Model）
 不重复时间语义（最早执行时点复用 M6 SignalTiming.ExecutionTiming）
 ```
+
+**Per-Security Quantity Rules（M8-01B）**：
+
+| Rule                | Buy                    | Sell                                    |
+| ------------------- | ---------------------- | --------------------------------------- |
+| ROUND_LOT_100       | >=100 and multiple 100 | round lot + one whole odd-lot remainder |
+| STAR_MIN_200_STEP_1 | >=200, step 1          | >=200; holdings <200 must sell all      |
+| BSE_MIN_100_STEP_1  | >=100, step 1          | >=100; holdings <100 must sell all      |
+
+规则依据：SSE Trading Rules (2026) / SZSE Trading Rules (2026) / BSE
+Trading Rules (2026)。**证券分类来自 stock_basic.market（+ ts_code suffix
+一致性校验），不是 code-prefix 板块推断**。`resolve_security_quantity_rules`
+read-only 解析（缺失/重复 reference、unknown market、impossible market/
+suffix 组合 fail fast）；`is_valid_buy_quantity` / `is_valid_sell_quantity`
+是 pure quantity 合法性（SELL 含零股/不足最小单位余额全量卖出语义；不接收
+sellable_quantity——T+1 限制在 M8-03 单独处理；不做数量投影）。
 
 **PortfolioState**（`factorlab.domain.execution`，dataclass frozen）：
 

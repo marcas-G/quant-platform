@@ -1,7 +1,8 @@
-"""M8-01：ExecutionSpec——Execution Runtime 配置契约。
+"""M8-01B：ExecutionSpec——Execution Runtime 配置契约。
 
 - initial_cash：账户初始现金（positive finite float，bool/str 拒绝）
-- lot_size：M8 v1 固定 100（canonical A 股；ETF/期货等另版本化）
+- **不拥有 per-security quantity rules**（M8-01B：SecurityQuantityRule 是
+  唯一数量权威——全局 lot_size 已移除，传入 lot_size 即 extra=forbid fail）
 - **无成本参数**（commission/stamp_tax/slippage 属 M8-05 Cost Model）；
   **不重复时间语义**（最早执行时点复用 M6 SignalTiming 的
   ExecutionTiming——不建立第二套 timing configuration）
@@ -10,18 +11,16 @@
 from __future__ import annotations
 
 import math
-from typing import Literal
 
 from pydantic import BaseModel, ConfigDict, field_validator
 
 
 class ExecutionSpec(BaseModel):
-    """执行配置 v1（long-only A 股、整手 100、无成本模型）。"""
+    """执行配置（long-only A 股、无成本模型、无全局数量规则）。"""
 
     model_config = ConfigDict(extra="forbid", frozen=True)
 
     initial_cash: float = 1_000_000.0
-    lot_size: Literal[100] = 100
 
     @field_validator("initial_cash", mode="before")
     @classmethod

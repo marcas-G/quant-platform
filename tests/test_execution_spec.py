@@ -17,7 +17,6 @@ def _spec(**over):
 def test_default_valid():
     s = _spec()
     assert s.initial_cash == 1_000_000.0
-    assert s.lot_size == 100
 
 
 def test_integer_initial_cash_valid():
@@ -39,12 +38,9 @@ def test_string_initial_cash_rejected():
         _spec(initial_cash="1000000")
 
 
-def test_lot_size_100_valid():
-    assert _spec(lot_size=100).lot_size == 100
-
-
-@pytest.mark.parametrize("bad", [1, 10, 200, "100"])
-def test_lot_size_invalid(bad):
+@pytest.mark.parametrize("bad", [100, 1, 200, "100"])
+def test_lot_size_field_forbidden(bad):
+    """M8-01B：全局 lot_size 已移除——SecurityQuantityRule 是唯一数量权威。"""
     with pytest.raises(ValidationError):
         _spec(lot_size=bad)
 

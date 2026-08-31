@@ -6,7 +6,7 @@ M7-01：策略目标组合（portfolio）——TargetPortfolio/TargetPortfolioMe
 
 from factorlab.domain.execution import (ExecutionSchedule, MarketOpenSnapshot,
                                        OrderBatch, OrderSide, PortfolioState,
-                                       PortfolioStatePhase)
+                                       PortfolioStatePhase, QuantityRuleKind)
 from factorlab.domain.frames import LabelArtifact, SignalArtifact, SignalMeta
 from factorlab.domain.portfolio import TargetPortfolio, TargetPortfolioMeta
 from factorlab.domain.timing import (
@@ -34,4 +34,5 @@ __all__ = [
     "OrderBatch",
     "ExecutionSchedule",
     "MarketOpenSnapshot",
+    "QuantityRuleKind",
 ]

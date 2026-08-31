@@ -9,7 +9,13 @@ M8-03..06（target→orders / fills / accounting / backtest）未实现。
 
 from factorlab.execution.calendar import resolve_execution_schedule
 from factorlab.execution.market import load_market_open_snapshot
+from factorlab.execution.rules import (SecurityQuantityRules,
+                                       is_valid_buy_quantity,
+                                       is_valid_sell_quantity,
+                                       resolve_security_quantity_rules)
 from factorlab.execution.spec import ExecutionSpec
 
 __all__ = ["ExecutionSpec", "resolve_execution_schedule",
-           "load_market_open_snapshot"]
+           "load_market_open_snapshot",
+           "SecurityQuantityRules", "resolve_security_quantity_rules",
+           "is_valid_buy_quantity", "is_valid_sell_quantity"]

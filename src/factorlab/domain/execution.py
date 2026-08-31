@@ -33,6 +33,22 @@ class OrderSide(Enum):
     SELL = "sell"
 
 
+class QuantityRuleKind(Enum):
+    """Per-security 申报数量规则（M8-01B）——描述交易数量语义，不是证券分类名。
+
+    - ROUND_LOT_100：沪市普通/深市主板/创业板（BUY >=100 且 %100==0；
+      SELL 允许整手 + 一次完整零股 remainder）
+    - STAR_MIN_200_STEP_1：科创板（BUY >=200 步进 1；SELL >=200，
+      holding<200 只能全卖）
+    - BSE_MIN_100_STEP_1：北交所（BUY >=100 步进 1；SELL >=100，
+      holding<100 只能全卖）
+    """
+
+    ROUND_LOT_100 = "round_lot_100"
+    STAR_MIN_200_STEP_1 = "star_min_200_step_1"
+    BSE_MIN_100_STEP_1 = "bse_min_100_step_1"
+
+
 class PortfolioStatePhase(Enum):
     """实际组合状态时点（同一天开盘交易前 vs 交易后不是同一 state）。"""
 
