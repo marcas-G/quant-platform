@@ -6,7 +6,9 @@ M8 Execution Runtime 未实现。
 """
 
 from factorlab.strategy.constructor import construct_target_portfolio
+from factorlab.strategy.schedule import RebalanceSchedule, build_rebalance_schedule
 from factorlab.strategy.spec import SelectionSpec, StrategySpec, WeightingSpec
 
 __all__ = ["StrategySpec", "SelectionSpec", "WeightingSpec",
-           "construct_target_portfolio"]
+           "construct_target_portfolio",
+           "RebalanceSchedule", "build_rebalance_schedule"]

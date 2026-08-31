@@ -79,9 +79,15 @@ def test_future_label_fields_fail():
             _spec(**{key: "forward_return_5d" if key == "target" else 0.002})
 
 
-def test_rebalance_weekly_fails():
+def test_rebalance_weekly_monthly_valid():
+    assert _spec(rebalance_frequency="weekly").rebalance_frequency == "weekly"
+    assert _spec(rebalance_frequency="monthly").rebalance_frequency == "monthly"
+
+
+@pytest.mark.parametrize("bad", ["5d", "quarterly", "biweekly"])
+def test_rebalance_invalid_fails(bad):
     with pytest.raises(ValidationError):
-        _spec(rebalance_frequency="weekly")
+        _spec(rebalance_frequency=bad)
 
 
 @pytest.mark.parametrize("bad_name", ["", "123abc", "a b", "a-b", "x" * 65])

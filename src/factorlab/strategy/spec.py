@@ -97,7 +97,7 @@ class StrategySpec(BaseModel):
     selection: SelectionSpec
     weighting: WeightingSpec
     gross_exposure: float = 1.0
-    rebalance_frequency: Literal["daily"] = "daily"
+    rebalance_frequency: Literal["daily", "weekly", "monthly"] = "daily"
 
     @field_validator("name")
     @classmethod

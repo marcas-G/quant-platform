@@ -1172,6 +1172,68 @@ TargetPortfolio
 - **source timing 原样传播**：TargetPortfolioMeta.source_timing =
   signal.meta.timing（不重建默认，未来不同 timing 也继承实际值）
 
+### M7-03 Rebalance Scheduler
+
+```
+SignalArtifact
+    │
+    ▼
+Rebalance Scheduler（daily / weekly / monthly）
+    │
+    ▼
+RebalanceSchedule（decision_dates）
+    │
+    ▼
+PortfolioConstructor
+    │
+    ▼
+TargetPortfolio
+```
+
+**精确定义**：
+
+- **daily**：每个 available signal date 都是 decision date
+- **weekly**：每个 ISO calendar week（**ISO year + ISO week**——跨年正确，
+  如 2020-12-31 与 2021-01-01 同属 ISO 2020-W53）的**最后 available signal
+  date**——不要求 Friday（缺周五选该周最后 available）；partial first/last
+  week 包含（v1 deliberate）
+- **monthly**：每个 calendar (year, month) 的**最后 available signal date**
+  ——不硬编码月末日历日；partial month 包含
+
+**observed-signal-domain contract**：M7-03 v1 scheduler 只基于
+SignalArtifact 提供的 observed dates（不读取 exchange calendar/DB）——
+partial first/last periods 是 deliberate 行为，非错误。schedule 只由
+日期域 + StrategySpec.rebalance_frequency 决定（signal 数值/code/全 null
+均不影响）。
+
+**NO DECISION vs ALL CASH**（M7 核心语义）：
+
+```
+date ∉ decision_dates
+    = NO DECISION（该日无策略决策）
+
+date ∈ decision_dates 且 0 positions
+    = EXPLICIT ALL CASH（策略明确决定全部现金）
+```
+
+**constructor 接线**：`construct_target_portfolio` 内部调用
+`build_rebalance_schedule(signal, spec)`——decision_dates 唯一权威来自
+scheduler（M7-02 独立 date logic 已删除）；只处理 scheduled dates（非
+decision 日不 ranking、不 carry）；scheduled 日全 null / insufficient 按
+policy（all_cash/use_available）——**绝不回退到前一天**。
+
+**TargetPortfolioMeta 区分**：
+
+```
+frequency          = signal.meta.frequency（"1d"——信号频率，不变）
+rebalance_frequency = spec.rebalance_frequency（daily/weekly/monthly——调仓频率）
+```
+
+**execution separation**：weekly/monthly decision schedule ≠ execution
+schedule——decision=t（默认 EOD：after close 可得、最早 t+1 open 执行），
+实际 next open 由 M8 解析。weekly/monthly 不意味着固定持有期；TargetPortfolio
+不在非 decision 日 forward-fill。
+
 **TargetPortfolio = 理想目标权重**（Strategy Decision Artifact），不是
 actual holdings：T+1/停牌/涨跌停/整手/费用/滑点/部分成交/现金余额全部属
 M8 Execution Runtime。现金是隐式 residual（cash = 1 - securities weight

@@ -49,6 +49,7 @@ class TargetPortfolioMeta:
     source_timing: SignalTiming
     gross_exposure: float
     frequency: str = "1d"
+    rebalance_frequency: str = "daily"   # M7-03：daily/weekly/monthly（调仓频率，区别于 signal frequency）
 
     def __post_init__(self) -> None:
         _validate_meta_name(self.strategy_name, "strategy_name")
@@ -58,6 +59,10 @@ class TargetPortfolioMeta:
                 f"source_timing 必须为 SignalTiming 实例（收到 {type(self.source_timing).__name__}）")
         if self.frequency != "1d":
             raise ValueError(f"frequency 当前仅支持 '1d'（收到 {self.frequency!r}）")
+        if self.rebalance_frequency not in ("daily", "weekly", "monthly"):
+            raise ValueError(
+                f"rebalance_frequency 仅支持 daily/weekly/monthly"
+                f"（收到 {self.rebalance_frequency!r}）")
         g = self.gross_exposure
         if isinstance(g, bool) or not isinstance(g, (int, float)):
             raise ValueError(f"gross_exposure 必须为数值（收到 {g!r}）")

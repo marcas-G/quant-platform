@@ -348,3 +348,45 @@ def test_empty_signal_artifact():
     assert tp.decision_dates == ()
     assert tp.frame.schema["target_weight"] == pl.Float64
     TargetPortfolio(frame=tp.frame, decision_dates=(), meta=tp.meta)
+
+
+# ================================================================
+# M7-03：constructor 接入 Rebalance Scheduler
+# ================================================================
+
+def test_weekly_constructor_only_scheduled_dates():
+    """weekly：只有 scheduled dates 形成 TargetPortfolio。"""
+    dates = [datetime.date(2024, 1, 2), datetime.date(2024, 1, 3),
+             datetime.date(2024, 1, 4), datetime.date(2024, 1, 5),
+             datetime.date(2024, 1, 8), datetime.date(2024, 1, 9),
+             datetime.date(2024, 1, 10), datetime.date(2024, 1, 11)]
+    f = pl.DataFrame({"date": pl.Series([d for d in dates for _ in range(2)],
+                                        dtype=pl.Date),
+                      "code": pl.Series(["000001.SZ", "600000.SH"] * 8,
+                                        dtype=pl.String),
+                      "signal": pl.Series([10.0, 20.0] * 8, dtype=pl.Float64)})
+    sa = _signal(frame=f)
+    tp = construct_target_portfolio(sa, _spec(rebalance_frequency="weekly"))
+    assert tp.decision_dates == (datetime.date(2024, 1, 5), datetime.date(2024, 1, 11))
+    assert set(tp.frame["decision_date"].unique().to_list()) == \
+        {datetime.date(2024, 1, 5), datetime.date(2024, 1, 11)}
+    assert tp.meta.rebalance_frequency == "weekly"
+    assert tp.meta.frequency == "1d"
+
+
+def test_scheduled_all_null_explicit_all_cash():
+    """scheduled Friday 全 null → all cash；不回退到周四。"""
+    dates = [datetime.date(2024, 1, 2), datetime.date(2024, 1, 3),
+             datetime.date(2024, 1, 4), datetime.date(2024, 1, 5)]
+    f = pl.DataFrame({"date": pl.Series([d for d in dates for _ in range(2)],
+                                        dtype=pl.Date),
+                      "code": pl.Series(["000001.SZ", "600000.SH"] * 4,
+                                        dtype=pl.String),
+                      "signal": pl.Series([10.0, 20.0, 30.0, 40.0, 50.0, 60.0,
+                                            None, None],
+                                          dtype=pl.Float64)})
+    sa = _signal(frame=f)
+    tp = construct_target_portfolio(sa, _spec(rebalance_frequency="weekly"))
+    # 该周最后 available date = 2024-01-05（Fri）——全 null → 0 rows（explicit all cash）
+    assert datetime.date(2024, 1, 5) in tp.decision_dates
+    assert tp.frame.height == 0

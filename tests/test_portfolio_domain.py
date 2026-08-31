@@ -240,3 +240,23 @@ def test_meta_empty_strategy_name():
 def test_meta_invalid_gross():
     with pytest.raises(ValueError):
         _meta(gross=1.5)
+
+
+# ================================================================
+# M7-03：TargetPortfolioMeta.rebalance_frequency
+# ================================================================
+
+@pytest.mark.parametrize("freq", ["daily", "weekly", "monthly"])
+def test_meta_rebalance_frequency_valid(freq):
+    m = _meta(rebalance_frequency=freq)
+    assert m.rebalance_frequency == freq
+
+
+@pytest.mark.parametrize("bad", ["5d", "quarterly", "biweekly"])
+def test_meta_rebalance_frequency_invalid(bad):
+    with pytest.raises(ValueError):
+        _meta(rebalance_frequency=bad)
+
+
+def test_meta_default_rebalance_daily():
+    assert _meta().rebalance_frequency == "daily"

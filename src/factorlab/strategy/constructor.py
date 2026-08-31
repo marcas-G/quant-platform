@@ -7,8 +7,9 @@ FactorResult/panel 全部拒绝——无 DataFrame shortcut）。
 
     SignalArtifact(date, code, signal)
         │
+        ├── Rebalance Scheduler（daily/weekly/monthly——日期选择唯一权威）
         ├── validate signal_name / frequency / canonical code / non-finite
-        ├── per-date null drop
+        ├── per-date null drop（仅 scheduled dates）
         ├── direction sort（±1）
         ├── code_asc exact tie break
         ├── top_k / insufficient（use_available / all_cash）
@@ -16,8 +17,9 @@ FactorResult/panel 全部拒绝——无 DataFrame shortcut）。
         ▼
     TargetPortfolio
 
-decision_dates = SignalArtifact.frame 中出现过的全部 date（ascending unique）
-——M7-02 不读取交易日历（Rebalance Scheduler 属 M7-03）。
+decision_dates 来自 build_rebalance_schedule（M7-03）——daily = 全部 signal
+dates；weekly/monthly = ISO week / calendar month 最后 available date。
+非 decision date 无决策（≠ all-cash）。
 """
 
 from __future__ import annotations
@@ -29,6 +31,7 @@ import polars as pl
 from factorlab.domain.codes import is_canonical_stock_code
 from factorlab.domain.frames import SignalArtifact
 from factorlab.domain.portfolio import TargetPortfolio, TargetPortfolioMeta
+from factorlab.strategy.schedule import build_rebalance_schedule
 from factorlab.strategy.spec import StrategySpec
 
 _EMPTY_SCHEMA = {"decision_date": pl.Date, "code": pl.String,
@@ -96,13 +99,16 @@ def construct_target_portfolio(
                 f"SignalArtifact 含 non-finite signal（NaN/±Inf 无策略语义，"
                 f"非 null_policy 范畴）: {nonfinite.height} 行")
 
-    decision_dates = tuple(sorted(df["date"].unique().to_list()))
+    # M7-03：日期选择唯一权威 = Rebalance Scheduler（不再自己决定 schedule）
+    schedule = build_rebalance_schedule(signal, spec)
+    decision_dates = schedule.decision_dates
     meta = TargetPortfolioMeta(
         strategy_name=spec.name,
         source_signal_name=signal.meta.name,
         source_timing=signal.meta.timing,
         gross_exposure=spec.gross_exposure,
         frequency=signal.meta.frequency,
+        rebalance_frequency=spec.rebalance_frequency,
     )
     if df.height == 0:
         return TargetPortfolio(
