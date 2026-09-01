@@ -2,8 +2,12 @@
 
 M6-01：信号时间语义（timing）+ Signal/Label 领域对象（frames）。
 M7-01：策略目标组合（portfolio）——TargetPortfolio/TargetPortfolioMeta。
+M8-05B：execution accounting + point-in-time valuation（accounting）。
 """
 
+from factorlab.domain.accounting import (ExecutionAccountingSummary,
+                                         PortfolioMarkSnapshot,
+                                         PortfolioValuation)
 from factorlab.domain.execution import (ExecutionDataQualityError,
                                        ExecutionSchedule, FillBatch,
                                        MarketOpenSnapshot, OpenFillAssessment,
@@ -42,4 +46,7 @@ __all__ = [
     "OpenOrderDisposition",
     "OpenFillAssessment",
     "FillBatch",
+    "ExecutionAccountingSummary",
+    "PortfolioMarkSnapshot",
+    "PortfolioValuation",
 ]

@@ -1991,6 +1991,75 @@ does not imply market data exists for that date.
  仍按 coverage Gate fail——不刷新数据）
 ```
 
+### M8-05B Execution Accounting + Point-in-Time NAV Kernel
+
+**两条独立但可交叉验证的 accounting primitive**（`factorlab.execution.accounting`
+/ `factorlab.execution.valuation`，domain 在 `factorlab.domain.accounting`）：
+
+```
+A. summarize_execution_accounting(pre_state, fills, post_state)
+   → ExecutionAccountingSummary（realized accounting）
+B. value_portfolio(state, marks: PortfolioMarkSnapshot)
+   → PortfolioValuation（point-in-time account equity）
+```
+
+**A. ExecutionAccountingSummary**（frozen；execution_date + cash_before/
+buy_gross/sell_gross/commission/stamp_tax/transfer_fee/total_fees/
+net_cash_delta/cash_after）：
+
+```
+cash_before = PRE state.cash（唯一 authority）
+net_cash_delta = Σ FillBatch.effective_cash_delta（唯一 authority——
+  与 M8-04D 同一 Float64 reduction path，禁止 Decimal/round/clamp）
+cash_after = POST state.cash
+**cash bridge 严格**：POST cash == PRE cash + Σ delta（否则 ValueError
+  "POST cash is inconsistent with PRE cash + FillBatch effective_cash_delta"）
+buy/sell gross 与四项费用直接聚合 FillBatch 列；total_fees 按固定顺序
+  = commission + stamp_tax + transfer_fee（禁止按 rates 反算——不接收
+  ExecutionCostSpec）
+PRE/POST phase 必须；三日期对齐；NEXT_OPEN only；不含 position valuation
+```
+
+**B. PortfolioMarkSnapshot**：显式 per-share valuation mark authority
+（code/mark_price 两列；canonical unique ASC；finite > 0；typed empty
+合法）。**PortfolioValuation**：frame 四列 code/quantity/mark_price/
+market_value；position MV = quantity × mark（exact）；total MV = frame sum；
+**NAV = cash + total MV——货币金额（如 1,112,200 RMB-like units），
+不是 normalized cumulative NAV index**（normalized/unit_nav/returns 属
+M8-06）。
+
+```
+value_portfolio：date 对齐；**exact coverage**（set(marks) ==
+  set(positions)——missing/extra mark 均 ValueError，kernel 不默默忽略）；
+  资产所有权基于 quantity（sellable_quantity 不参与估值）；
+  no qfq/hfq/adj_factor valuation——**实际账户 shares × qfq 单位无资产语义**；
+  overflow/non-finite → ValueError；不做 tolerance repair
+```
+
+**价值中性证明**（production 实测）：
+
+```
+ZERO_COST_ZERO_SLIPPAGE_EXECUTION_VALUE_NEUTRAL
+PRE NAV == POST NAV == 1,112,200（相同 raw-open reference marks、
+  zero cost、zero slippage 下，交易只改变 cash/holdings composition，
+  不改变 account equity——同一 execution instant 的 PRE/POST，不是日收益）
+EXECUTION_FEE_DRAG_RECONCILED：execution_price == reference_price 且
+  fees > 0 → PRE NAV - POST NAV == total_fees
+```
+
+**边界声明**：
+
+```
+- PortfolioValuation assumes marks are share-unit-consistent with
+  PortfolioState.quantity（caller 提供；kernel 不负责 price sourcing /
+  stale-price / suspension valuation policy / corporate-action 修正）
+- realized/unrealized PnL 未实现（PortfolioState 无 cost basis / lot
+  ledger）；normalized NAV / daily return / drawdown / Sharpe 未实现
+- **M8-06 Gate**：full-history NAV production-ready 前，M8-06 必须显式
+  address/gate corporate-action position continuity（split / stock
+  dividend / share consolidation / rights issue）
+```
+
 ## 6. 测试
 
 运行：
