@@ -1576,6 +1576,43 @@ TargetPortfolio（desired weights）≠ OrderBatch（desired legal share
 instructions）≠ Fill（what actually trades——M8-04）
 ```
 
+### M8-02B1R Suspend Timing Grammar（`factorlab.execution.suspension`）
+
+`suspend_timing` 使用 **circular wall-clock interval model**（纯解析 utility，
+不接入 MarketOpenSnapshot——integration 属 M8-02B）：
+
+```
+source grammar:
+  NULL（absence；production absence 表示为 NULL only——''/空白均拒绝）
+  <time>-<time>[,<time>-<time>]*
+  time = H:MM | HH:MM | H:MM:SS | HH:MM:SS（分钟/秒两位；hour 0..23 /
+         minute 0..59 / second 0..59）
+```
+
+interval 三类语义（**start >= end 不是 malformed**——source adjudication
+修正后）：
+
+```
+start <  end → SAME_SESSION  [start, end)
+start >  end → WRAPPED       circular：second >= start OR second < end
+                             （跨 session/day boundary 的 time-of-day
+                              coverage；不表示"回当日早上"，与 calendar
+                              resolver 无关——不解析下一交易日是哪天）
+start == end → FULL_CYCLE    任意合法 second 均覆盖（如开盘起的持续停牌
+                             source 形式）
+```
+
+- 输出 seconds since midnight（如 09:30=34200、13:00=46800）；open
+  reference 固定 09:30:00（`timing_covers_open` 默认 34200）
+- parser 不 merge/不排序/不 dedup intervals、不补 gap；**Parser normalizes
+  only into in-memory second offsets. Raw suspend_timing bytes/text are not
+  rewritten.**
+- **Malformed interval is source QA failure, not interpreted as absence and
+  not guessed.**——runtime 对 grammar 外值 fail fast（ValueError）
+- production 全量审计：2,636 non-null rows 全部可解析（same-session 2,837 /
+  wrapped 1 / full-cycle 2 segment；1 interval 2,434 / 2 intervals 200 /
+  3 intervals 2）
+
 ## 6. 测试
 
 运行：
