@@ -1753,6 +1753,65 @@ OpenFillAssessment = market eligibility
 不做 partial / probabilistic fill / fee
 ```
 
+### M8-05A Execution Cost Contracts（`factorlab.execution.costs`）
+
+**为什么先于 M8-04C**：实际 SELL 成交后得到多少钱、BUY 实际有多少钱可用、
+BUY 到底成交多少股——没有成本 authority 时 gross proceeds ≠ net available
+cash。
+
+**ExecutionCostSpec**（`factorlab.execution.spec`，frozen + extra=forbid，
+嵌套于 ExecutionSpec.cost_model）：
+
+```
+commission_rate      0 <= r < 1（broker commission）
+minimum_commission   finite >= 0（比例佣金被启用后的下限；rate==0 时不生效）
+stamp_tax_sell_rate  0 <= r < 1（仅 SELL）
+transfer_fee_rate    0 <= r < 1（BUY+SELL 均按名义金额；v1 不做 SH/SZ/时代
+                     条件化——历史费率需版本化时升 CostModel v2）
+slippage_bps         finite >= 0（10_000 bps = 100%；无上限）
+```
+
+**默认 zero-cost**：
+
+```
+default ExecutionCostSpec is zero-cost
+zero default does NOT claim real A-share transaction costs are zero.
+```
+
+真实费率 broker-dependent / 历史变化 / market-rule dependent——生产 backtest
+必须显式配置（M8-06 Gate 再 enforce；当前不 enforce nonzero）。旧调用
+`ExecutionSpec()` / `ExecutionSpec(initial_cash=...)` 继续合法（zero-cost）；
+root 直接传 commission/slippage/stamp_tax 仍 extra=forbid fail（必须嵌套）。
+
+**compute_execution_cost(side, reference_price, quantity, spec) ->
+ExecutionCostBreakdown**（pure；side 必须 OrderSide 实例；不接收
+code/market/date/DB；不 import duckdb/polars）：
+
+```
+reference price → slippage（BUY ×(1+bps/1e4)、SELL ×(1-bps/1e4)）
+→ execution price → gross notional = price × quantity
+→ commission（rate==0 → 0；否则 max(gross×rate, minimum_commission)）
+→ stamp（仅 SELL）→ transfer（BUY/SELL）
+→ total fees → effective cash delta（BUY：-(gross+fees)；SELL：+(gross-fees)）
+```
+
+**slippage adjusts execution_price, not fee**（先 slippage 后 gross——fees
+基于 slipped notional）。v1 为 **security-agnostic / time-invariant /
+continuous Float64** 成本模型：
+
+```
+v1 uses continuous Float64 monetary arithmetic
+（尚未建模 broker-specific fee rounding——无分位取整、无 Decimal authority）
+```
+
+pathological config（SELL execution_price <= 0 即 slippage >= 10000 bps、
+SELL total_fees >= gross）→ ValueError（不输出 zero/negative proceeds）；
+BUY 允许 fees > notional（minimum commission 小交易），cash requirement =
+notional + fees。**ExecutionCostBreakdown**（frozen dataclass）：
+gross_notional / commission / stamp_tax / transfer_fee / total_fees /
+effective_cash_delta / execution_price——monetary result，不携带
+code/date/strategy/quantity。
+
 ## 6. 测试
 
 运行：
