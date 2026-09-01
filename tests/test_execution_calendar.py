@@ -31,7 +31,8 @@ def _cal_db(tmp_path, open_dates):
         db.execute("INSERT INTO trade_cal VALUES (?, 1)", (d.strftime("%Y%m%d"),))
     db.execute("CREATE TABLE daily (trade_date VARCHAR, ts_code VARCHAR, open DOUBLE, pre_close DOUBLE)")
     db.execute("CREATE TABLE stk_limit (trade_date VARCHAR, ts_code VARCHAR, up_limit DOUBLE, down_limit DOUBLE)")
-    db.execute("CREATE TABLE suspend_d (trade_date VARCHAR, ts_code VARCHAR)")
+    db.execute("CREATE TABLE suspend_d (trade_date VARCHAR, ts_code VARCHAR, "
+               "suspend_type VARCHAR, suspend_timing VARCHAR)")
     return db
 
 

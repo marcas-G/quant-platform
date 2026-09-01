@@ -293,21 +293,28 @@ class ExecutionSchedule:
 # ---------------------------------------------------------------------------
 
 _SNAPSHOT_COLUMNS = ["code", "open", "pre_close", "up_limit", "down_limit",
-                     "has_daily", "has_limit", "has_suspend_record"]
+                     "has_daily", "has_limit", "has_suspend_record",
+                     "is_suspended_at_open"]
 
 
 @dataclass(frozen=True)
 class MarketOpenSnapshot:
     """execution_date 的市场开盘证据（不是 tradability/fill 判定）。
 
-    - 严格 8 列：code(String) / open(Float64) / pre_close(Float64) /
+    - 严格 9 列：code(String) / open(Float64) / pre_close(Float64) /
       up_limit(Float64) / down_limit(Float64) / has_daily(Boolean) /
-      has_limit(Boolean) / has_suspend_record(Boolean)
+      has_limit(Boolean) / has_suspend_record(Boolean) /
+      is_suspended_at_open(Boolean)
     - code canonical + unique + 稳定排序；无 date 列（共享 execution_date）
     - has_daily=True → open/pre_close non-null finite >0；False → null
     - has_limit=True → up/down non-null finite >0 且 down <= up；False → null
-    - has_suspend_record = suspend_d 存在性证据（raw evidence flag——
-      **不是** is_suspended_at_open / is_tradable；M8-04 定义 fill 语义）
+    - has_suspend_record = date-level raw event presence（当天任何
+      suspend/resume record → True）
+    - is_suspended_at_open = 09:30 temporal suspension evidence（suspend_type
+      + suspend_timing 推导 NEXT_OPEN reference 时点停牌状态——**不是**
+      can_trade/is_tradable；M8-04 定义 fill 语义）
+    - implication：is_suspended_at_open=True → has_suspend_record=True
+      （converse 不成立：record=True/open=False 合法——R/NULL、later S）
     - 价格是 raw daily.open（禁止 qfq/hfq 复权价作成交价）
     """
 
@@ -322,12 +329,13 @@ class MarketOpenSnapshot:
         f = self.frame
         if list(f.columns) != _SNAPSHOT_COLUMNS:
             raise ValueError(
-                f"MarketOpenSnapshot.frame 必须严格为 8 列（收到 {f.columns}）"
+                f"MarketOpenSnapshot.frame 必须严格为 9 列（收到 {f.columns}）"
                 f"——禁止 is_tradable/can_buy 等推断字段")
         expected = {"code": pl.String, "open": pl.Float64, "pre_close": pl.Float64,
                     "up_limit": pl.Float64, "down_limit": pl.Float64,
                     "has_daily": pl.Boolean, "has_limit": pl.Boolean,
-                    "has_suspend_record": pl.Boolean}
+                    "has_suspend_record": pl.Boolean,
+                    "is_suspended_at_open": pl.Boolean}
         for col, dtype in expected.items():
             if f.schema[col] != dtype:
                 raise ValueError(
@@ -343,10 +351,11 @@ class MarketOpenSnapshot:
                     f"snapshot 含非 canonical code: {bad_code['code'].unique().to_list()}")
             if not f.equals(f.sort("code")):
                 raise ValueError("snapshot 必须按 code 稳定排序——不自动排序")
-            # M8-02A：三个 evidence flags 必须 non-null Boolean（无第三
+            # M8-02A/B：四个 evidence flags 必须 non-null Boolean（无第三
             # "unknown" 状态——数据覆盖 uncertainty 由 global coverage gates
             # 单独表达；null 穿透 Polars 三值逻辑会绕过 conditional invariants）
-            for flag in ("has_daily", "has_limit", "has_suspend_record"):
+            for flag in ("has_daily", "has_limit", "has_suspend_record",
+                         "is_suspended_at_open"):
                 nulls = f.filter(pl.col(flag).is_null())
                 if nulls.height:
                     raise ValueError(
@@ -389,3 +398,11 @@ class MarketOpenSnapshot:
                 raise ValueError(
                     f"has_limit=False 要求 up/down_limit 为 null"
                     f"（{bad_no_limit['code'].to_list()}）")
+            # M8-02B：implication invariant——open suspended 必须有 raw record
+            bad_impl = f.filter(~pl.col("has_suspend_record")
+                                & pl.col("is_suspended_at_open"))
+            if bad_impl.height:
+                raise ValueError(
+                    f"is_suspended_at_open=True 要求 has_suspend_record=True"
+                    f"（{bad_impl['code'].to_list()}——record=False/open=True "
+                    f"非法；converse 合法）")

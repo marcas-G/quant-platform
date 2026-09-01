@@ -33,9 +33,10 @@ def _db(tmp_path, *, daily=None, limits=None, suspends=None, cal_open=None,
         for r in (limits or []):
             db.execute("INSERT INTO stk_limit VALUES (?,?,?,?)", r)
     if with_suspend:
-        db.execute("CREATE TABLE suspend_d (trade_date VARCHAR, ts_code VARCHAR)")
+        db.execute("CREATE TABLE suspend_d (trade_date VARCHAR, ts_code VARCHAR, "
+                   "suspend_type VARCHAR, suspend_timing VARCHAR)")
         for r in (suspends or []):
-            db.execute("INSERT INTO suspend_d VALUES (?,?)", r)
+            db.execute("INSERT INTO suspend_d VALUES (?,?,?,?)", r)
     return db
 
 
@@ -46,7 +47,7 @@ def _golden_db(tmp_path):
                       (EXEC.strftime("%Y%m%d"), "600519.SH", 100.0, 99.0)],
                limits=[(EXEC.strftime("%Y%m%d"), "000001.SZ", 10.78, 8.82),
                        (EXEC.strftime("%Y%m%d"), "600519.SH", 108.9, 89.1)],
-               suspends=[(EXEC.strftime("%Y%m%d"), "600000.SH")])
+               suspends=[(EXEC.strftime("%Y%m%d"), "600000.SH", "S", None)])
 
 
 def _snap(db, codes=None):
@@ -89,7 +90,7 @@ def test_exact_schema(tmp_path):
     snap = load_market_open_snapshot(path, execution_date=EXEC, codes=CODES)
     assert snap.frame.columns == ["code", "open", "pre_close", "up_limit",
                                   "down_limit", "has_daily", "has_limit",
-                                  "has_suspend_record"]
+                                  "has_suspend_record", "is_suspended_at_open"]
     assert snap.frame.schema["open"] == pl.Float64
     assert snap.frame.schema["pre_close"] == pl.Float64
     assert snap.frame.schema["up_limit"] == pl.Float64
@@ -97,6 +98,7 @@ def test_exact_schema(tmp_path):
     assert snap.frame.schema["has_daily"] == pl.Boolean
     assert snap.frame.schema["has_limit"] == pl.Boolean
     assert snap.frame.schema["has_suspend_record"] == pl.Boolean
+    assert snap.frame.schema["is_suspended_at_open"] == pl.Boolean
     assert snap.execution_date == EXEC
 
 
@@ -151,8 +153,8 @@ def test_limit_duplicate_fails(tmp_path):
 def test_suspend_duplicates_collapse(tmp_path):
     db = _db(tmp_path, daily=[(EXEC.strftime("%Y%m%d"), "000001.SZ", 10.0, 9.8)],
              limits=[(EXEC.strftime("%Y%m%d"), "600000.SH", 100.0, 90.0)],
-             suspends=[(EXEC.strftime("%Y%m%d"), "600000.SH"),
-                       (EXEC.strftime("%Y%m%d"), "600000.SH")])
+             suspends=[(EXEC.strftime("%Y%m%d"), "600000.SH", "S", None),
+                       (EXEC.strftime("%Y%m%d"), "600000.SH", "S", None)])
     path = tmp_path / "m.duckdb"
     db.close()
     snap = load_market_open_snapshot(path, execution_date=EXEC, codes=CODES)
@@ -286,6 +288,7 @@ def test_typed_empty_snapshot(tmp_path):
     assert snap.frame.height == 0
     assert snap.frame.schema["open"] == pl.Float64
     assert snap.frame.schema["has_daily"] == pl.Boolean
+    assert snap.frame.schema["is_suspended_at_open"] == pl.Boolean
 
 
 def test_all_null_numeric_columns_float64(tmp_path):
@@ -332,14 +335,14 @@ def test_no_is_tradable_field(tmp_path):
 
 
 def test_data_layer_frame(tmp_path):
-    """load_market_open_frame 返回 8 列原始 frame（不经 domain）。"""
+    """load_market_open_frame 返回 9 列原始 frame（不经 domain）。"""
     db = _golden_db(tmp_path)
     path = tmp_path / "m.duckdb"
     db.close()
     frame = load_market_open_frame(path, execution_date=EXEC, codes=CODES)
     assert frame.columns == ["code", "open", "pre_close", "up_limit",
                              "down_limit", "has_daily", "has_limit",
-                             "has_suspend_record"]
+                             "has_suspend_record", "is_suspended_at_open"]
     assert frame.height == 3
 
 
@@ -348,7 +351,7 @@ def test_data_layer_frame(tmp_path):
 # ================================================================
 
 def _mk_snapshot(flags_daily=None, flags_limit=None, flags_suspend=None,
-                 with_daily_ok=True, with_limit_ok=True):
+                 flags_open=None, with_daily_ok=True, with_limit_ok=True):
     """手工构造 snapshot frame（绕过 loader 测 domain 独立防护）。"""
     codes = ["000001.SZ", "600000.SH"]
     rows = []
@@ -356,19 +359,22 @@ def _mk_snapshot(flags_daily=None, flags_limit=None, flags_suspend=None,
         fd = flags_daily[i] if flags_daily else (with_daily_ok, False)[i]
         fl = flags_limit[i] if flags_limit else (with_limit_ok, False)[i]
         fs = flags_suspend[i] if flags_suspend else (False, False)[i]
+        fo = flags_open[i] if flags_open else (False, False)[i]
         open_ = 10.0 if fd else None
         pc = 9.8 if fd else None
         up = 11.0 if fl else None
         dn = 9.0 if fl else None
-        rows.append((c, open_, pc, up, dn, fd, fl, fs))
+        rows.append((c, open_, pc, up, dn, fd, fl, fs, fo))
     frame = pl.DataFrame(rows, schema=["code", "open", "pre_close", "up_limit",
                                        "down_limit", "has_daily", "has_limit",
-                                       "has_suspend_record"], orient="row")
+                                       "has_suspend_record",
+                                       "is_suspended_at_open"], orient="row")
     frame = frame.with_columns(
         pl.col("open").cast(pl.Float64), pl.col("pre_close").cast(pl.Float64),
         pl.col("up_limit").cast(pl.Float64), pl.col("down_limit").cast(pl.Float64),
         pl.col("has_daily").cast(pl.Boolean), pl.col("has_limit").cast(pl.Boolean),
-        pl.col("has_suspend_record").cast(pl.Boolean))
+        pl.col("has_suspend_record").cast(pl.Boolean),
+        pl.col("is_suspended_at_open").cast(pl.Boolean))
     return MarketOpenSnapshot(execution_date=EXEC, frame=frame)
 
 
@@ -405,3 +411,32 @@ def test_all_true_valid():
                      flags_suspend=[True, True])
     assert s.frame.height == 2
     assert s.frame["has_daily"].all() and s.frame["has_limit"].all()
+
+
+# ================================================================
+# M8-02B：is_suspended_at_open evidence flag hardening
+# ================================================================
+
+def test_open_suspended_null_fails():
+    with pytest.raises(ValueError, match="is_suspended_at_open|Boolean|null"):
+        _mk_snapshot(flags_open=[True, None], flags_suspend=[True, True])
+
+
+def test_open_suspended_true_requires_record():
+    """record=False / open=True 非法（implication invariant）。"""
+    with pytest.raises(ValueError, match="has_suspend_record|implication|implies"):
+        _mk_snapshot(flags_open=[True, False])
+
+
+def test_record_true_open_false_legal():
+    """record=True / open=False 合法（R/NULL、later intraday S）。"""
+    s = _mk_snapshot(flags_suspend=[True, True])
+    assert s.frame.height == 2
+    assert s.frame["has_suspend_record"].all()
+    assert not s.frame["is_suspended_at_open"].any()
+
+
+def test_record_true_open_true_legal():
+    """record=True / open=True 合法（S/NULL、S covering 09:30）。"""
+    s = _mk_snapshot(flags_suspend=[True, True], flags_open=[True, True])
+    assert s.frame["is_suspended_at_open"].all()

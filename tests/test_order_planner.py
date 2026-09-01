@@ -108,7 +108,9 @@ def _snapshot(rows, exec_date=E1):
                                pl.col("down_limit").cast(pl.Float64),
                                pl.col("has_daily").cast(pl.Boolean),
                                pl.col("has_limit").cast(pl.Boolean),
-                               pl.col("has_suspend_record").cast(pl.Boolean))
+                               pl.col("has_suspend_record").cast(pl.Boolean),
+                               pl.lit(False).cast(pl.Boolean)
+                               .alias("is_suspended_at_open"))
     frame = frame.sort("code")
     return MarketOpenSnapshot(execution_date=exec_date, frame=frame)
 
@@ -999,6 +1001,33 @@ def test_pre_close_change_does_not_affect_orders():
     a = _plan()
     sn2 = _snapshot([_snap_row("000001.SZ", 10.0, 5.0)])
     b = _plan(snapshot=sn2)
+    assert a.orders.equals(b.orders)
+
+
+def test_is_suspended_at_open_invariance():
+    """§52：仅改变 is_suspended_at_open（其他 planner 消费列相同）→ 订单不变。"""
+    base = _snapshot([_snap_row("000001.SZ", 10.0, 9.8, has_suspend=False)])
+    alt = base.frame.with_columns(
+        pl.col("is_suspended_at_open").fill_null(True))
+    alt = MarketOpenSnapshot(execution_date=E1, frame=alt)
+    a = _plan(snapshot=base)
+    b = _plan(snapshot=alt)
+    assert a.orders.equals(b.orders)
+
+
+def test_combined_evidence_invariance():
+    """§53：has_limit / has_suspend_record / is_suspended_at_open / pre_close
+    变化而 open+has_daily 相同 → OrderBatch 不变。"""
+    a = _plan()
+    rows = _snap_row("000001.SZ", 10.0, 5.0, has_limit=True, up=11.0, down=9.0,
+                     has_suspend=True)
+    frame = pl.DataFrame([rows], schema=["code", "open", "pre_close", "up_limit",
+                                         "down_limit", "has_daily", "has_limit",
+                                         "has_suspend_record"], orient="row")
+    frame = frame.with_columns(pl.lit(True).cast(pl.Boolean)
+                               .alias("is_suspended_at_open"))
+    alt = MarketOpenSnapshot(execution_date=E1, frame=frame)
+    b = _plan(snapshot=alt)
     assert a.orders.equals(b.orders)
 
 

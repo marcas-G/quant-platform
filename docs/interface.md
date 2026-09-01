@@ -1613,6 +1613,74 @@ start == end → FULL_CYCLE    任意合法 second 均覆盖（如开盘起的�
   wrapped 1 / full-cycle 2 segment；1 interval 2,434 / 2 intervals 200 /
   3 intervals 2）
 
+### M8-02B Open Suspension Evidence（`is_suspended_at_open`）
+
+```
+suspend_d raw events
+        │ suspend_type + suspend_timing
+        ▼
+generalized circular timing parser（factorlab.execution.suspension）
+        │
+        ▼
+09:30 temporal evidence
+        │
+        ▼
+MarketOpenSnapshot.is_suspended_at_open（第 9 列，Boolean non-null）
+```
+
+**三层语义严格区分**：
+
+```
+has_suspend_record     = date-level raw event presence（当天任何 suspend/resume
+                         record → True）
+is_suspended_at_open   = 09:30 temporal suspension evidence（NEXT_OPEN
+                         reference；不是 can_trade / Fill——M8-04 才定义
+                         tradability）
+```
+
+事件语义（frozen production contract）：
+
+```
+no raw event         → record False / open False
+S + NULL             → record True  / open True（非日内限定停牌 evidence）
+R + NULL             → record True  / open False
+S + timing           → record True  / timing_covers_open(...)（SAME_SESSION/
+                       WRAPPED/FULL_CYCLE 语义见 M8-02B1R）
+```
+
+**不支持的 source 结构 → fail fast（不是自动 precedence）**：
+
+```
+R + non-null suspend_timing → ValueError（production R+timing=0，source
+                              contract 未证明 intraday resumption）
+同一 date/code dedup 后 >1 distinct event → ValueError（production max
+                              distinct=1；exact duplicate 允许 collapse）
+suspend_type ∉ {S,R}（含 null/''/whitespace）→ ValueError（不 strip）
+suspend_timing non-null 无法 parse → parser ValueError 向上穿透（不降级
+                              presence-only）
+```
+
+**关键边界**：
+
+```
+has_suspend_record ≠ is_suspended_at_open
+is_suspended_at_open=True → has_suspend_record=True（implication；converse
+  不成立——R/NULL、later S 合法）
+has_daily 不与 open-suspension 绑定：日内开盘停牌后复牌的证券可以
+  has_daily=True 且 is_suspended_at_open=True（daily.open 可能代表复牌后
+  第一笔成交，不是 09:30 可成交价）
+production formal-gate 实测：open_suspended=True AND daily row exists = 1,075
+  → **daily row exists ≠ 09:30 executable**
+```
+
+data loader（`load_market_open_frame`）要求 suspend_d 具备
+trade_date/ts_code/suspend_type/suspend_timing 四列（缺失 → ValueError——
+M8-02B0 protected-field contract 的 runtime enforcement，禁止退回
+presence-only DISTINCT）；事件行读取后经 `_derive_suspend_evidence` 推导
+（时间 grammar 唯一 authority 是 suspension.py，不在 SQL 重写 temporal
+semantics）；skeleton 仍为 requested-code 驱动（rows == len(codes)、
+code ASC、空 codes → typed empty 9 列）。
+
 ## 6. 测试
 
 运行：

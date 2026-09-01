@@ -217,8 +217,10 @@ def construct_order_batch(
     # ---- evidence / rule / position maps（frame 已稳定排序 → 迭代确定性）----
     open_by_code: dict[str, float] = {}
     has_daily_by_code: dict[str, bool] = {}
-    for code, open_, _pre_close, _up, _down, has_daily, _has_limit, \
-            _has_suspend in snapshot.frame.iter_rows():
+    # 只消费 open/has_daily 两列（对 snapshot 新增列 agnostic——M8-02B
+    # is_suspended_at_open 等 evidence 字段不参与 planning intent）
+    for code, open_, has_daily in \
+            snapshot.frame.select(["code", "open", "has_daily"]).iter_rows():
         open_by_code[code] = open_
         has_daily_by_code[code] = has_daily
     rule_by_code: dict[str, QuantityRuleKind] = {}
