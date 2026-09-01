@@ -1933,6 +1933,64 @@ effective_cash_delta；不做 side netting / 不重新聚合；输出经真正
 PortfolioState validator 构造；输入零修改。
 ```
 
+### M8-04E Overnight T+1 Inventory Release（`advance_to_next_trading_day`）
+
+```
+POST_EXECUTION PortfolioState @ D
+        + same-day FillBatch @ D
+        + trade_cal
+        ↓
+PRE_EXECUTION PortfolioState @ next trade_cal open day
+```
+
+**Provenance rule**：
+
+```
+overnight release quantity = same-day actual BUY filled_quantity
+（blocked / funding-zero BUY 不在 FillBatch → 不释放；partial BUY 只释放
+ filled 部分；SELL fill → release contribution 0）
+```
+
+**Provenance-aware（禁止全量释放）**：
+
+```
+M8-04E does NOT set sellable_quantity = quantity.
+
+因为 PortfolioState does not encode the reason for every unavailable
+share——只有 FillBatch 携带 same-day T+1 acquisition provenance；
+其它 unavailable inventory 必须保留（如 POST 1500/600 + BUY 200 →
+ NEXT 1500/800，剩余 700 继续 unavailable）。
+```
+
+**State equation**（BUY code）：
+
+```
+next_quantity  = post_quantity（隔夜不增减股份）
+next_sellable  = post_sellable + same_day_buy_filled
+next cash      = post cash（无利息/结算费/分红）
+POST_EXECUTION(D) → PRE_EXECUTION(next trade_cal open date)
+```
+
+无 same-day BUY 的 holding：quantity/sellable 严格不变。每个 BUY fill
+要求 code 存在于 POST state 且 unsellable capacity
+（post_quantity - post_sellable）>= filled（否则 state/fill pair 不一致 →
+ValueError）。
+
+**Calendar authority**：`factorlab.data.calendar.trading_calendar` 是唯一
+authority（禁止自写 trade_cal SQL / weekday arithmetic / timedelta）；
+当前 date 必须 is_open=1；下一开放日严格 > 当前（无则 ValueError——
+不保持原日期）。
+
+**Calendar/data separation**：
+
+```
+rolling state to a future trade_cal open date
+does not imply market data exists for that date.
+（production 验证：trade_cal 解析 2026-08-14 → 2026-08-17 成功，但
+ MarketOpenSnapshot(2026-08-17) 在 frozen DATA_CUTOFF=2026-08-14 下
+ 仍按 coverage Gate fail——不刷新数据）
+```
+
 ## 6. 测试
 
 运行：
