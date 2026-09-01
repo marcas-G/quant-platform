@@ -1681,6 +1681,78 @@ presence-only DISTINCT）；事件行读取后经 `_derive_suspend_evidence` 推
 semantics）；skeleton 仍为 requested-code 驱动（rows == len(codes)、
 code ASC、空 codes → typed empty 9 列）。
 
+### M8-04B Conservative Open Fillability（`assess_open_fillability`）
+
+```
+OrderBatch + MarketOpenSnapshot
+        ↓
+OpenFillAssessment（market eligibility，非成交）
+        ↓
+（M8-04C Funding + FillBatch——未实现）
+```
+
+**assess_open_fillability(orders, snapshot) -> OpenFillAssessment**：
+每条订单严格按序判定（顺序不可更改）：
+
+```
+1. suspension      is_suspended_at_open=True → BLOCKED_SUSPENSION
+                   （决定性 market evidence——不需要 daily/limit 即可 blocked；
+                    suspension 优先于 limit）
+2. daily evidence  非 suspended + has_daily=False → ExecutionDataQualityError
+                   （missing executable open price evidence——DATA UNKNOWN
+                    ≠ TRADE REJECTED，不模拟 no-fill）
+3. limit evidence  非 suspended + has_limit=False → ExecutionDataQualityError
+                   （缺失 ≠ 无涨跌幅限制——M8-04A：92,147 daily rows 无 join）
+4. outside limit   open > up 或 open < down → ExecutionDataQualityError
+                   （raw Float64 比较，无 tolerance/epsilon/tick clipping）
+5. adverse limit   BUY @ open==up → BLOCKED_LIMIT_UP
+                   SELL @ open==dn → BLOCKED_LIMIT_DOWN
+6. FILLABLE @ open interior / BUY @ dn / SELL @ up → FILLABLE（price = raw open）
+```
+
+**conservative modeling assumption**（不是历史事实）：
+
+```
+BUY at exact upper-limit open → modeled as no fill
+SELL at exact lower-limit open → modeled as no fill
+
+without order-book / queue-position evidence,
+the platform does not reconstruct historical
+limit-price queue fills.
+```
+
+favorable-side equality 明确：
+
+```
+SELL at upper limit → FILLABLE
+BUY at lower limit → FILLABLE
+```
+
+**数据 Gate**：
+
+```
+missing/invalid execution evidence → ExecutionDataQualityError（继承 ValueError）
+never → BLOCKED_*
+MarketOpenSnapshot 的 execution-data quality invariant（has_daily=True 但
+open/pre_close 非法；has_limit=True 但 up/down 非法）升级为
+ExecutionDataQualityError——覆盖 M8-04A 的 open=0 / dn=NULL / BSE dn=0 证据；
+结构错误（schema/dtype/duplicate/canonical/order/null-Boolean/implication）
+保持普通 ValueError（program/domain construction error）
+```
+
+**OpenFillAssessment domain**：严格 5 列 code/side/quantity/disposition/
+fillable_price（String/String/Int64/String/Float64）；与 OrderBatch 逐行
+(code, side, quantity) 完全对应（rows == orders.height、code unique + ASC）；
+disposition ∈ OpenOrderDisposition 四类；FILLABLE ↔ price non-null finite >0；
+BLOCKED_* ↔ price null。**架构边界**：
+
+```
+OpenFillAssessment = market eligibility
+不是 actual fills / cash settlement / portfolio mutation（M8-04C/05）
+不接收 PortfolioState / quantity rules / DB
+不做 partial / probabilistic fill / fee
+```
+
 ## 6. 测试
 
 运行：

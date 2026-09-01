@@ -208,22 +208,27 @@ def test_raw_open_exactness(tmp_path):
 
 
 def test_has_daily_true_requires_finite_positive(tmp_path):
+    """M8-04B：invalid daily evidence → ExecutionDataQualityError（data quality，
+    非结构错误）。"""
+    from factorlab.domain import ExecutionDataQualityError
     for i, bad in enumerate((0.0, -1.0, float("nan"), float("inf"))):
         sub = tmp_path / f"bad{i}"
         db = _db(sub, daily=[(EXEC.strftime("%Y%m%d"), "000001.SZ", bad, 9.8)],
                  limits=[(EXEC.strftime("%Y%m%d"), "600000.SH", 100.0, 90.0)])
         path = sub / "m.duckdb"
         db.close()
-        with pytest.raises(ValueError):
+        with pytest.raises(ExecutionDataQualityError):
             load_market_open_snapshot(path, execution_date=EXEC, codes=["000001.SZ"])
 
 
 def test_has_limit_true_invariant(tmp_path):
+    """M8-04B：invalid limit evidence（down > up）→ ExecutionDataQualityError。"""
+    from factorlab.domain import ExecutionDataQualityError
     db = _db(tmp_path, daily=[(EXEC.strftime("%Y%m%d"), "000001.SZ", 10.0, 9.8)],
              limits=[(EXEC.strftime("%Y%m%d"), "000001.SZ", 8.0, 10.0)])   # down > up
     path = tmp_path / "m.duckdb"
     db.close()
-    with pytest.raises(ValueError, match="down|up"):
+    with pytest.raises(ExecutionDataQualityError, match="down|up"):
         load_market_open_snapshot(path, execution_date=EXEC, codes=["000001.SZ"])
 
 
