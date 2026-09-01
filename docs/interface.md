@@ -788,6 +788,7 @@ PIT 语义：
 - 显式 codes 同样尊重上市/退市 PIT 状态（不自动增加 exclude_st/min_list_days 规则）
 - 输入校验：dates 仅接受 datetime.date / ISO `YYYY-MM-DD`（非法格式、重复日期 fail fast）；candidate_codes 重复 fail fast；输出前主动验证 (date, code) 唯一
 - **delist_date 保护**：`stock_basic.delist_date` 是语义关键稀疏字段——`build_final_db` 的 sparsity pruning 不得物理删除（PROTECTED_SPARSE_FIELDS，仅保护显式字段，不关闭整体 pruning）；旧 DB 无 delist_date 列时仍可运行，但 **delisting PIT is incomplete**（不伪造退市日期）
+- **suspend_timing 保护（M8-02B0）**：`suspend_d.suspend_timing` 是 execution-critical sparse data 且受 final-DB sparsity pruning 保护——null = 停复牌事件无具体日内时间区间，non-null = 存在日内 temporal evidence（决定 open suspension semantics，M8-02B）；约 99% null 是其数据本身语义，不是无价值缺失。**restoration 使用既有 frozen staging（`data/rebuild_staging.duckdb`，DATA_CUTOFF 2026-08-14）重建 candidate final 后 backup + 原子替换，无任何 source refresh 发生**
 
 **PIT invariant**：membership at t 不能依赖 t 之后的数据（ST/listing/delisting 均 PIT；
 平台库 stock_basic 当前无 delist_date 列时退市信息不可用，is_listed 只基于 list_date）。

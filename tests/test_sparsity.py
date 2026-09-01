@@ -196,3 +196,31 @@ def test_build_final_db_protects_delist_date(tmp_path):
     final = PlatformDB(tmp_path / "final.duckdb")
     assert "delist_date" in final.describe("stock_basic")
     assert "some_sparse" not in final.describe("stock_basic")
+
+
+def test_build_final_db_protects_suspend_timing(tmp_path):
+    """M8-02B0：suspend_d.suspend_timing null_ratio 0.9（> 阈值）仍必须保留——
+    稀疏是语义（null=无日内区间，non-null=日内 temporal evidence），execution-
+    critical；普通稀疏字段照常剔除。"""
+    db = PlatformDB(tmp_path / "staging.duckdb")
+    n = 10
+    db.upsert("suspend_d", pl.DataFrame({
+        "trade_date": ["20260814"] * n,
+        "ts_code": [f"00000{i}.SZ" for i in range(1, n + 1)],
+        "suspend_type": ["S"] * n,
+        "suspend_timing": ["09:30-10:00"] + [None] * (n - 1),  # null_ratio 0.9
+        "some_sparse": ["x"] + [None] * (n - 1),               # null_ratio 0.9 → 应剔除
+    }), keys=["trade_date", "ts_code"])
+    result = build_final_db(db, tmp_path / "final.duckdb")
+    excluded = result["excluded_fields"].get("suspend_d", [])
+    assert "suspend_timing" not in excluded    # protected：保留
+    assert "some_sparse" in excluded           # 普通稀疏字段：照常剔除
+    final = PlatformDB(tmp_path / "final.duckdb")
+    assert "suspend_timing" in final.describe("suspend_d")
+    assert "some_sparse" not in final.describe("suspend_d")
+    # 非空 timing 值必须 bit/text exact 保存（不只测 column existence）
+    rows = final.query(
+        'SELECT "suspend_timing" AS t FROM "suspend_d" WHERE "suspend_timing" IS NOT NULL')
+    assert rows["t"].to_list() == ["09:30-10:00"]
+    # 其余行 null 保持（不 fill/不 normalize）
+    assert final.query('SELECT count(*) AS n FROM "suspend_d" WHERE "suspend_timing" IS NULL')["n"][0] == n - 1

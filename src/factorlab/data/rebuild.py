@@ -600,6 +600,10 @@ def assess_sparsity(db: PlatformDB) -> dict[str, dict[str, dict]]:
 # 被 build_final_db 物理删除（仅保护显式字段，不关闭整体 sparsity pruning）
 PROTECTED_SPARSE_FIELDS: dict[str, set[str]] = {
     "stock_basic": {"delist_date"},
+    # suspend_timing：null = 停复牌事件无具体日内时间区间；non-null = 存在
+    # 日内 temporal evidence（决定 open suspension semantics，M8-02B）——
+    # 稀疏是数据本身语义，不是无价值缺失
+    "suspend_d": {"suspend_timing"},
 }
 
 
