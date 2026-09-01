@@ -1812,6 +1812,69 @@ gross_notional / commission / stamp_tax / transfer_fee / total_fees /
 effective_cash_delta / execution_price——monetary result，不携带
 code/date/strategy/quantity。
 
+### M8-04C Cost-aware Realized Funding + FillBatch（`realize_open_fills`）
+
+```
+OrderBatch + OpenFillAssessment + PRE_EXECUTION state + snapshot +
+quantity_rules + ExecutionCostSpec
+        ↓
+FillBatch（sparse actual fills——filled_quantity > 0 才有一行）
+```
+
+**FillBatch 是 sparse actual fills**：
+
+```
+FillBatch contains actual positive fills only.
+blocked / funding-zero → absence from FillBatch
+（原因由 upstream assessment/order pair 解释，不重建 blocked_reason）
+```
+
+严格 12 列：code/side/order_quantity/filled_quantity/reference_price/
+execution_price/gross_notional/commission/stamp_tax/transfer_fee/total_fees/
+effective_cash_delta；reference_price = assessment.fillable_price（= raw
+open）；fees 直接来自 ExecutionCostBreakdown（唯一成本 authority，不手写
+第二份公式）；gross = execution_price × filled；total = 三者精确和。
+
+**Realization 顺序**：cross-object validation → quantity-rule/inventory
+revalidation（所有订单含 blocked——市场 blocked 不掩盖 state/order
+corruption）→ FILLABLE SELL full fill → actual net proceeds → available
+cash → FILLABLE BUY candidates → **迭代 cost-aware funding** → FillBatch →
+final cash safety（cash_after >= 0 严格，无 tolerance/clamp）。
+
+**Realized SELL funding**：
+
+```
+BUY funding uses only actual net proceeds from FILLABLE SELLs.
+（不是 M8-03 planned sell notional；blocked SELL 提供 0 现金）
+SELL proceeds are credited before BUY funding
+within the modeled NEXT_OPEN execution event——
+deterministic accounting convention，不是交易所微观顺序声明
+```
+
+**Cost-aware BUY affordability** 包括 slippage + commission + transfer fee
+（禁止 gross-only funding）。资金不足 → **global simultaneous scaling**：
+每轮 scale = budget/current_total → 每 candidate cap = floor(q×scale) →
+`project_buy_quantity`（rules.py 唯一 projection authority，M8-03 共用）→
+重算 total cost → repeat 直到 cash-feasible（minimum commission 使 cost(q)
+非齐次，可能需多轮；无 progress → RuntimeError；全投影 0 即移除；**无
+greedy redistribution / 无 code-order favoritism**；残余现金不二次分配）。
+
+**Slippage legal-bound Gate**：slippage 产生的 execution_price 必须
+down <= price <= up（越界 → 普通 ValueError：raw market 数据合法，问题在
+cost/slippage 配置——**不是 ExecutionDataQualityError**；禁止 clipping，
+bounded-at-limit slippage model 尚未实现）。
+
+**模型边界**：
+
+```
+M8-04C assumes market-FILLABLE SELLs fill in full.
+BUY partial fills in M8-04C arise only from
+account funding constraints,
+not historical queue/liquidity reconstruction.
+FillBatch does not mutate PortfolioState——
+cash/quantity/sellable 迁移属 M8-04D（未实现）。
+```
+
 ## 6. 测试
 
 运行：

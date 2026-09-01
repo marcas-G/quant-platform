@@ -5,9 +5,10 @@ M7-01：策略目标组合（portfolio）——TargetPortfolio/TargetPortfolioMe
 """
 
 from factorlab.domain.execution import (ExecutionDataQualityError,
-                                       ExecutionSchedule, MarketOpenSnapshot,
-                                       OpenFillAssessment, OpenOrderDisposition,
-                                       OrderBatch, OrderSide, PortfolioState,
+                                       ExecutionSchedule, FillBatch,
+                                       MarketOpenSnapshot, OpenFillAssessment,
+                                       OpenOrderDisposition, OrderBatch,
+                                       OrderSide, PortfolioState,
                                        PortfolioStatePhase, QuantityRuleKind)
 from factorlab.domain.frames import LabelArtifact, SignalArtifact, SignalMeta
 from factorlab.domain.portfolio import TargetPortfolio, TargetPortfolioMeta
@@ -40,4 +41,5 @@ __all__ = [
     "ExecutionDataQualityError",
     "OpenOrderDisposition",
     "OpenFillAssessment",
+    "FillBatch",
 ]

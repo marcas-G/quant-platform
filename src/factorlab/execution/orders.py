@@ -35,7 +35,10 @@ from factorlab.domain.execution import (ExecutionSchedule, ExecutionTiming,
                                         PortfolioState, PortfolioStatePhase,
                                         QuantityRuleKind)
 from factorlab.domain.portfolio import TargetPortfolio
-from factorlab.execution.rules import is_valid_buy_quantity, is_valid_sell_quantity
+from factorlab.execution.rules import (is_valid_buy_quantity,
+                                       is_valid_sell_quantity,
+                                       project_buy_quantity,
+                                       project_sell_quantity)
 
 # 最终 buy notional 的 float 容差（raw open 为 Float64；不能实质性超现金）
 _BUDGET_TOL = 1e-10
@@ -44,53 +47,6 @@ _EMPTY_ORDERS = pl.DataFrame(
     {"code": pl.Series([], dtype=pl.String),
      "side": pl.Series([], dtype=pl.String),
      "quantity": pl.Series([], dtype=pl.Int64)})
-
-
-def _project_buy_quantity(rule: QuantityRuleKind, max_quantity: int) -> int:
-    """返回 <= max_quantity 的最大合法 BUY quantity；不存在则 0。"""
-    if rule is QuantityRuleKind.ROUND_LOT_100:
-        return (max_quantity // 100) * 100
-    if rule is QuantityRuleKind.STAR_MIN_200_STEP_1:
-        return max_quantity if max_quantity >= 200 else 0
-    if rule is QuantityRuleKind.BSE_MIN_100_STEP_1:
-        return max_quantity if max_quantity >= 100 else 0
-    raise ValueError(f"unknown QuantityRuleKind {rule!r}")
-
-
-def _project_sell_quantity(
-    rule: QuantityRuleKind,
-    *,
-    holding_quantity: int,
-    max_quantity: int,
-) -> int:
-    """返回不超过 max_quantity 的最大合法 SELL quantity；不存在则 0。
-
-    - ROUND_LOT_100：整手（100/200/...）或一次完整零股 remainder（R, R+100,
-      R+200, ...）中取 <= max 的最大值
-    - STAR（最小 200）/ BSE（最小 100）：holding < 最小单位只能全量卖出
-      （L >= H → H）；否则 L >= 最小单位 → L
-    - 绝不超卖 target（max_quantity 已含 desired_sell 上限）
-    """
-    h = holding_quantity
-    if rule is QuantityRuleKind.ROUND_LOT_100:
-        best = 0
-        lots = (max_quantity // 100) * 100
-        if lots >= 100:
-            best = lots
-        remainder = h % 100
-        if remainder > 0 and max_quantity >= remainder:
-            odd = remainder + 100 * ((max_quantity - remainder) // 100)
-            best = max(best, odd)
-        return best
-    if rule is QuantityRuleKind.STAR_MIN_200_STEP_1:
-        if h < 200:
-            return h if max_quantity >= h else 0
-        return max_quantity if max_quantity >= 200 else 0
-    if rule is QuantityRuleKind.BSE_MIN_100_STEP_1:
-        if h < 100:
-            return h if max_quantity >= h else 0
-        return max_quantity if max_quantity >= 100 else 0
-    raise ValueError(f"unknown QuantityRuleKind {rule!r}")
 
 
 def construct_order_batch(
@@ -263,7 +219,7 @@ def construct_order_batch(
         if delta < 0:
             desired_sell = -delta
             sell_limit = min(desired_sell, sellable_by_code.get(code, 0))
-            projected = _project_sell_quantity(
+            projected = project_sell_quantity(
                 rule_by_code[code], holding_quantity=current_qty,
                 max_quantity=sell_limit)
             if projected > 0:
@@ -279,7 +235,7 @@ def construct_order_batch(
         ideal = ideal_by_code.get(code, 0) if not is_all_cash else 0
         delta = ideal - current_qty
         if delta > 0:
-            projected = _project_buy_quantity(rule_by_code[code], delta)
+            projected = project_buy_quantity(rule_by_code[code], delta)
             if projected > 0:
                 provisional.append((code, projected))
     provisional_notional = sum(
@@ -293,7 +249,7 @@ def construct_order_batch(
             funding_scale = buy_budget / provisional_notional
             for code, q in provisional:
                 scaled_cap = math.floor(q * funding_scale)
-                projected = _project_buy_quantity(rule_by_code[code], scaled_cap)
+                projected = project_buy_quantity(rule_by_code[code], scaled_cap)
                 if projected > 0:
                     final_buys.append((code, projected))
 

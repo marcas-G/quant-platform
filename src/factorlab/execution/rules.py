@@ -51,6 +51,58 @@ def is_valid_buy_quantity(rule: QuantityRuleKind, quantity: int) -> bool:
     return False
 
 
+def project_buy_quantity(rule: QuantityRuleKind, max_quantity: int) -> int:
+    """返回 <= max_quantity 的最大合法 BUY quantity；不存在则 0。
+
+    M8-04C：从 orders.py 提取的**唯一 quantity projection authority**
+    （M8-03 / M8-04C funding 缩量共用——禁止第三份公式）。
+    """
+    if rule is QuantityRuleKind.ROUND_LOT_100:
+        return (max_quantity // 100) * 100
+    if rule is QuantityRuleKind.STAR_MIN_200_STEP_1:
+        return max_quantity if max_quantity >= 200 else 0
+    if rule is QuantityRuleKind.BSE_MIN_100_STEP_1:
+        return max_quantity if max_quantity >= 100 else 0
+    raise ValueError(f"unknown QuantityRuleKind {rule!r}")
+
+
+def project_sell_quantity(
+    rule: QuantityRuleKind,
+    *,
+    holding_quantity: int,
+    max_quantity: int,
+) -> int:
+    """返回不超过 max_quantity 的最大合法 SELL quantity；不存在则 0。
+
+    - ROUND_LOT_100：整手（100/200/...）或一次完整零股 remainder（R, R+100,
+      R+200, ...）中取 <= max 的最大值
+    - STAR（最小 200）/ BSE（最小 100）：holding < 最小单位只能全量卖出
+      （L >= H → H）；否则 L >= 最小单位 → L
+    - 绝不超卖 target（max_quantity 已含 desired_sell 上限）
+    - M8-04C：唯一 quantity projection authority（与 M8-03 共用）
+    """
+    h = holding_quantity
+    if rule is QuantityRuleKind.ROUND_LOT_100:
+        best = 0
+        lots = (max_quantity // 100) * 100
+        if lots >= 100:
+            best = lots
+        remainder = h % 100
+        if remainder > 0 and max_quantity >= remainder:
+            odd = remainder + 100 * ((max_quantity - remainder) // 100)
+            best = max(best, odd)
+        return best
+    if rule is QuantityRuleKind.STAR_MIN_200_STEP_1:
+        if h < 200:
+            return h if max_quantity >= h else 0
+        return max_quantity if max_quantity >= 200 else 0
+    if rule is QuantityRuleKind.BSE_MIN_100_STEP_1:
+        if h < 100:
+            return h if max_quantity >= h else 0
+        return max_quantity if max_quantity >= 100 else 0
+    raise ValueError(f"unknown QuantityRuleKind {rule!r}")
+
+
 def is_valid_sell_quantity(
     rule: QuantityRuleKind,
     *,

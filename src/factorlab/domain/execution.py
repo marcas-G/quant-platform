@@ -542,3 +542,140 @@ class OpenFillAssessment:
                 raise ValueError(
                     f"assessment.{col} dtype 必须为 {dtype}（收到 {f.schema[col]}）")
         _check_assessment_content(f)
+
+
+# ---------------------------------------------------------------------------
+# M8-04C：FillBatch（sparse actual fills——cost-aware realized funding 输出）
+# ---------------------------------------------------------------------------
+
+_FILL_COLUMNS = ["code", "side", "order_quantity", "filled_quantity",
+                 "reference_price", "execution_price", "gross_notional",
+                 "commission", "stamp_tax", "transfer_fee", "total_fees",
+                 "effective_cash_delta"]
+
+
+def _check_fill_content(frame: pl.DataFrame) -> None:
+    if not frame.height:
+        return
+    dup = frame.group_by("code").len().filter(pl.col("len") > 1)
+    if dup.height:
+        raise ValueError(
+            f"FillBatch code 重复 {dup.height} 组——OrderBatch 是净订单，"
+            f"每 code 至多 1 行")
+    bad_code = frame.filter(~pl.col("code").map_elements(
+        is_canonical_stock_code, return_dtype=pl.Boolean).fill_null(False))
+    if bad_code.height:
+        raise ValueError(
+            f"FillBatch 含非 canonical code: {bad_code['code'].unique().to_list()}")
+    bad_side = frame.filter(pl.col("side").is_null()
+                            | ~pl.col("side").is_in(["buy", "sell"]))
+    if bad_side.height:
+        raise ValueError(
+            f"FillBatch.side 仅允许 'buy'/'sell'（OrderSide.value）")
+    bad_q = frame.filter((pl.col("order_quantity") <= 0)
+                         | (pl.col("filled_quantity") <= 0)
+                         | (pl.col("filled_quantity") > pl.col("order_quantity")))
+    if bad_q.height:
+        raise ValueError(
+            f"order_quantity > 0 且 0 < filled_quantity <= order_quantity"
+            f"（{bad_q['code'].to_list()}）——sparse fills 只保存 positive fill")
+    for col in ("reference_price", "execution_price", "gross_notional"):
+        bad_p = frame.filter(~pl.col(col).is_finite() | (pl.col(col) <= 0))
+        if bad_p.height:
+            raise ValueError(
+                f"FillBatch.{col} 必须 finite > 0（{bad_p['code'].to_list()}）")
+    for col in ("commission", "stamp_tax", "transfer_fee", "total_fees"):
+        bad_f = frame.filter(~pl.col(col).is_finite() | (pl.col(col) < 0))
+        if bad_f.height:
+            raise ValueError(
+                f"FillBatch.{col} 必须 finite >= 0（{bad_f['code'].to_list()}）")
+    # gross exact（同一 Float64 运算顺序，不 epsilon repair）
+    bad_g = frame.filter(pl.col("gross_notional")
+                         != pl.col("execution_price") * pl.col("filled_quantity"))
+    if bad_g.height:
+        raise ValueError(
+            f"gross_notional 必须 == execution_price × filled_quantity"
+            f"（{bad_g['code'].to_list()}）")
+    # total_fees exact component sum
+    bad_t = frame.filter(pl.col("total_fees")
+                         != pl.col("commission") + pl.col("stamp_tax")
+                         + pl.col("transfer_fee"))
+    if bad_t.height:
+        raise ValueError(
+            f"total_fees 必须 == commission + stamp_tax + transfer_fee"
+            f"（{bad_t['code'].to_list()}）")
+    buys = frame.filter(pl.col("side") == "buy")
+    bad_b = buys.filter((pl.col("stamp_tax") != 0)
+                        | (pl.col("effective_cash_delta")
+                           != -(pl.col("gross_notional") + pl.col("total_fees")))
+                        | (pl.col("effective_cash_delta") >= 0))
+    if bad_b.height:
+        raise ValueError(
+            f"BUY 要求 stamp_tax=0 且 effective_cash_delta = "
+            f"-(gross_notional + total_fees) < 0（{bad_b['code'].to_list()}）")
+    sells = frame.filter(pl.col("side") == "sell")
+    bad_s = sells.filter((pl.col("effective_cash_delta")
+                          != pl.col("gross_notional") - pl.col("total_fees"))
+                         | (pl.col("effective_cash_delta") <= 0))
+    if bad_s.height:
+        raise ValueError(
+            f"SELL 要求 effective_cash_delta = gross_notional - total_fees > 0"
+            f"（{bad_s['code'].to_list()}）")
+    if not frame.equals(frame.sort("code")):
+        raise ValueError("FillBatch 必须按 code 稳定排序——不自动排序")
+
+
+@dataclass(frozen=True)
+class FillBatch:
+    """cost-aware realized fills（M8-04C 输出）——**sparse actual fills**。
+
+    - 只保存 filled_quantity > 0 的实际成交：BLOCKED order / funding-zero
+      BUY → 无行（原因由 upstream OpenFillAssessment + OrderBatch 持有，
+      不在 FillBatch 重建 blocked_reason/fill_status 第二套 authority）
+    - 严格 12 列：code/side/order_quantity/filled_quantity/reference_price/
+      execution_price/gross_notional/commission/stamp_tax/transfer_fee/
+      total_fees/effective_cash_delta
+    - reference_price = OpenFillAssessment.fillable_price（= raw open）；
+      execution_price = slippage 后价格；gross = execution_price × filled；
+      fees 来自 ExecutionCostBreakdown（唯一成本 authority）；BUY delta
+      = -(gross+fees) < 0；SELL delta = gross-fees > 0
+    - 与 OrderBatch 每 code 至多 1 行对应；code canonical + 稳定排序；
+      空 typed batch 合法
+    - **不修改 PortfolioState**（cash/quantity/sellable 迁移属 M8-04D）；
+      不含 NAV/PnL/cost basis
+    """
+
+    decision_date: datetime.date
+    execution_date: datetime.date
+    execution_timing: ExecutionTiming
+    frame: pl.DataFrame
+
+    def __post_init__(self) -> None:
+        _require_date(self.decision_date, "decision_date")
+        _require_date(self.execution_date, "execution_date")
+        if self.execution_date <= self.decision_date:
+            raise ValueError(
+                f"execution_date 必须 > decision_date（收到 decision="
+                f"{self.decision_date} execution={self.execution_date}）")
+        if not isinstance(self.execution_timing, ExecutionTiming):
+            raise ValueError(
+                f"execution_timing 必须为 ExecutionTiming 实例（收到 "
+                f"{type(self.execution_timing).__name__}）")
+        f = self.frame
+        if list(f.columns) != _FILL_COLUMNS:
+            raise ValueError(
+                f"FillBatch.frame 必须严格为 12 列（收到 {f.columns}）"
+                f"——禁止 blocked_reason/fill_status/market_disposition 等")
+        expected = {"code": pl.String, "side": pl.String,
+                    "order_quantity": pl.Int64, "filled_quantity": pl.Int64,
+                    "reference_price": pl.Float64,
+                    "execution_price": pl.Float64,
+                    "gross_notional": pl.Float64, "commission": pl.Float64,
+                    "stamp_tax": pl.Float64, "transfer_fee": pl.Float64,
+                    "total_fees": pl.Float64,
+                    "effective_cash_delta": pl.Float64}
+        for col, dtype in expected.items():
+            if f.schema[col] != dtype:
+                raise ValueError(
+                    f"FillBatch.{col} dtype 必须为 {dtype}（收到 {f.schema[col]}）")
+        _check_fill_content(f)
