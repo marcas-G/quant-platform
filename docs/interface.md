@@ -1872,7 +1872,65 @@ BUY partial fills in M8-04C arise only from
 account funding constraints,
 not historical queue/liquidity reconstruction.
 FillBatch does not mutate PortfolioState——
-cash/quantity/sellable 迁移属 M8-04D（未实现）。
+cash/quantity/sellable 迁移属 M8-04D。
+```
+
+### M8-04D Same-day POST_EXECUTION PortfolioState Transition（`apply_fill_batch`）
+
+```
+PRE_EXECUTION PortfolioState + FillBatch
+        ↓
+POST_EXECUTION PortfolioState（新 immutable state）
+```
+
+**Transition equation**：
+
+```
+POST cash = PRE cash + Σ FillBatch.effective_cash_delta
+（与 M8-04C 同一 Float64 表达；无 Decimal/round/fsum 分支；
+ empty FillBatch → cash 不变；finite >= 0 严格，无 tolerance/clamp——
+ 不一致 → ValueError "FillBatch is not cash-consistent ..."）
+```
+
+**BUY inventory**（A 股 T+1 核心）：
+
+```
+BUY: quantity += fill
+     sellable_quantity 不变（当天新买入不可卖）
+```
+
+**SELL inventory**（卖掉的是可卖库存）：
+
+```
+SELL: quantity -= fill
+      sellable_quantity -= fill
+```
+
+**Sparse holdings**：
+
+```
+quantity == 0 → position row removed（full liquidation 删除行）
+全卖光 → typed empty positions（code String / quantity Int64 / sellable Int64）
+sell-all-sellable-but-not-holding → quantity > 0、sellable = 0（position 保留）
+```
+
+**T+1 / overnight 边界**：
+
+```
+same-day BUY shares are NOT sellable in POST_EXECUTION state.
+M8-04D does NOT release T+1 inventory.
+POST_EXECUTION(D) → PRE_EXECUTION(next trading day) 属 M8-04E（未实现）。
+```
+
+**Authority boundary**：
+
+```
+FillBatch is the sole actual-fill authority.
+M8-04D does not recompute fillability, execution cost,
+funding, or market prices（不 import cost/market/rules/DB/strategy）。
+只消费 state.cash + state.positions + fills.frame.filled_quantity/
+effective_cash_delta；不做 side netting / 不重新聚合；输出经真正
+PortfolioState validator 构造；输入零修改。
 ```
 
 ## 6. 测试
