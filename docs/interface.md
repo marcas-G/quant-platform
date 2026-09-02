@@ -2087,6 +2087,30 @@ run_backtest(target, execution_spec, db_path, *, marks=MarksPolicy.OPEN_BASED,
 series 仍需显式 CA handling（M8-06A §5.5）——v1 run 只在已建 execution
 窗口内产出 NAV 条目，不做跨 CA 连续性声明。
 
+### M8-06C Artifact Persistence Layer（`save_backtest_result` / `load_backtest_result`）
+
+```
+save_backtest_result(result, output_dir, *, created_at=None) -> ArtifactManifest
+load_backtest_result(artifact_dir) -> BacktestResult
+```
+
+- 文件系统 only（parquet + manifest.json；目录由调用方显式提供——不猜测
+  路径/不建 registry/不写 DB）
+- 固定结构：artifacts/（execution_artifact / orders / assessment / fills /
+  accounting / valuation / state / positions 各自独立 parquet——每 primitive
+  输出单独保存，禁止合并后重算）+ state/final_state.parquet +
+  nav/nav_series.parquet + manifest.json
+- **round-trip stable**：artifacts / nav_series / final_state 保存→加载后
+  逐字段一致（load 只反序列化 + domain validator 检查——不重算
+  NAV/accounting/fills）
+- manifest：schema_version "1" / artifact_type / created_at（可显式注入——
+  确定性输出）/ runtime_version / artifact_count / columns（每文件列契约）；
+  **未知版本 fail fast——无 silent migration**
+- error contract：目录缺失 / manifest 缺失 / 缺文件 / 缺列 / dtype 不匹配
+  → ValueError（不自动修复）
+- 支持 empty BacktestResult（typed empty parquet）
+- BacktestResult / primitive / runtime 零修改
+
 ## 6. 测试
 
 运行：

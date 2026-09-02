@@ -8,7 +8,8 @@ M8-05B：execution accounting + point-in-time valuation（accounting）。
 from factorlab.domain.accounting import (ExecutionAccountingSummary,
                                          PortfolioMarkSnapshot,
                                          PortfolioValuation)
-from factorlab.domain.backtest import (BacktestResult, ExecutionArtifact,
+from factorlab.domain.backtest import (ArtifactManifest,
+                                      BacktestResult, ExecutionArtifact,
                                       NavSeries)
 from factorlab.domain.execution import (ExecutionDataQualityError,
                                        ExecutionSchedule, FillBatch,
@@ -54,4 +55,5 @@ __all__ = [
     "ExecutionArtifact",
     "NavSeries",
     "BacktestResult",
+    "ArtifactManifest",
 ]

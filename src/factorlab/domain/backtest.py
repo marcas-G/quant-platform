@@ -168,3 +168,45 @@ class BacktestResult:
                 raise ValueError(f"artifacts[{i}] 必须为 ExecutionArtifact")
             if a.execution_date != nav_dates[i]:
                 raise ValueError("nav_series 日期必须与 artifacts 一一对应")
+
+
+# ---------------------------------------------------------------------------
+# M8-06C：ArtifactManifest（persistence manifest contract）
+# ---------------------------------------------------------------------------
+
+
+@dataclass(frozen=True)
+class ArtifactManifest:
+    """BacktestResult 持久化 manifest（只描述存在什么——不计算 NAV/return/
+    metrics）。
+
+    - schema_version：固定 "1"；未知版本 load fail fast（无 silent migration）
+    - artifact_type："backtest_result"
+    - columns：每文件的列契约（load 时校验缺列/dtype）
+    - created_at / runtime_version：溯源（save 可显式注入 created_at 保证
+      确定性输出）
+    """
+
+    schema_version: str
+    artifact_type: str
+    created_at: str
+    runtime_version: str
+    artifact_count: int
+    execution_date_start: object   # datetime.date
+    execution_date_end: object     # datetime.date
+    columns: dict
+
+    def __post_init__(self) -> None:
+        if self.schema_version != "1":
+            raise ValueError(
+                f"不支持 schema_version {self.schema_version!r}（当前仅 1）")
+        if self.artifact_type != "backtest_result":
+            raise ValueError(f"artifact_type 必须为 backtest_result")
+        if not isinstance(self.columns, dict):
+            raise ValueError("columns 必须为 dict[file, list[str]]")
+        if not isinstance(self.artifact_count, int) or self.artifact_count < 0:
+            raise ValueError("artifact_count 必须为非负 int")
+        for name, v in (("execution_date_start", self.execution_date_start),
+                        ("execution_date_end", self.execution_date_end)):
+            if not isinstance(v, datetime.date) or isinstance(v, datetime.datetime):
+                raise ValueError(f"{name} 必须为 datetime.date")
