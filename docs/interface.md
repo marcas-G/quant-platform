@@ -2060,6 +2060,33 @@ EXECUTION_FEE_DRAG_RECONCILED：execution_price == reference_price 且
   dividend / share consolidation / rights issue）
 ```
 
+### M8-06B Backtest Runtime（`run_backtest`）
+
+```
+run_backtest(target, execution_spec, db_path, *, marks=MarksPolicy.OPEN_BASED,
+             decision_range=None) -> BacktestResult
+```
+
+- **纯 orchestration**：每 decision 编排已关闭 primitives（schedule →
+  snapshot → orders → assessment → fills → POST → accounting → NAV →
+  overnight advance）；零新 execution math；不接收 StrategySpec/SignalArtifact
+- **execution_spec 必须显式传入**（cost model 显式选择 Gate）
+- **MarksPolicy v1 = OPEN_BASED**：POST holdings 以 execution date 的 raw
+  open 标记（integration 层构造 PortfolioMarkSnapshot）；任一持仓缺 open
+  evidence → ExecutionDataQualityError（无 stale/suspension mark policy）
+- **每 event sanity**：slippage-free 时 POST NAV == PRE NAV - total_fees
+  （zero-cost → value-neutrality，同 basis open marks）
+- **execution 间隔 > 1 交易日**：隔夜 advance 后纯 re-date（无 fills/CA
+  期间 cash/quantity/sellable 不变）
+- 全链 fail fast；memory-only runtime object（无 persistence/DB 写入）；
+  ExecutionArtifact/NavSeries/BacktestResult 见 domain/backtest.py
+  （artifact = primitive 输出快照，cash bridge invariant 校验；
+  NavSeries per-event 严格递增、nav == cash + market_value exact）
+
+**Corporate-action Gate 延续**：跨 share-unit basis 的连续 NAV/return
+series 仍需显式 CA handling（M8-06A §5.5）——v1 run 只在已建 execution
+窗口内产出 NAV 条目，不做跨 CA 连续性声明。
+
 ## 6. 测试
 
 运行：
