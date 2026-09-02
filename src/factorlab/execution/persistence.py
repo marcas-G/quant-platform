@@ -97,6 +97,10 @@ def _cast(frame: pl.DataFrame, cols: dict) -> pl.DataFrame:
     return frame.with_columns([pl.col(c).cast(d) for c, d in cols.items()])
 
 
+def _typed_empty(cols: dict) -> pl.DataFrame:
+    return pl.DataFrame({c: pl.Series([], dtype=d) for c, d in cols.items()})
+
+
 # ================================================================
 # save
 # ================================================================
@@ -154,10 +158,6 @@ def save_backtest_result(
         frame = _cast(frame, cols) if rows else _typed_empty(cols)
         frame.write_parquet(out / rel)
 
-    def _typed_empty(cols: dict) -> pl.DataFrame:
-        return pl.DataFrame({c: pl.Series([], dtype=d)
-                             for c, d in cols.items()})
-
     _write("artifacts/execution_artifact.parquet", ea_rows,
            _SCHEMAS["artifacts/execution_artifact.parquet"])
     _write("artifacts/orders.parquet", od_rows, _SCHEMAS["artifacts/orders.parquet"])
@@ -171,21 +171,23 @@ def save_backtest_result(
     _write("artifacts/state.parquet", st_rows, _SCHEMAS["artifacts/state.parquet"])
     _write("artifacts/positions.parquet", po_rows,
            _SCHEMAS["artifacts/positions.parquet"])
-    # final_state：header 列重复到每行（0 行时 typed empty）
+    # final_state：header 行恒存在（positions 空时 code/quantity 为 null）
     f = result.final_state
-    fs_rows = []
+    fs_rows = [(f.as_of_date, f.phase.value, f.cash, None, None, None)]
     for code, qty, sell in f.positions.iter_rows():
         fs_rows.append((f.as_of_date, f.phase.value, f.cash, code, qty, sell))
-    fs_frame = pl.DataFrame(fs_rows, schema=list(_SCHEMAS["state/final_state.parquet"]),
-                            orient="row") if fs_rows else _typed_empty(
-        _SCHEMAS["state/final_state.parquet"])
-    fs_frame = _cast(fs_frame, _SCHEMAS["state/final_state.parquet"])
+    fs_frame = pl.DataFrame(fs_rows,
+                            schema=list(_SCHEMAS["state/final_state.parquet"]),
+                            orient="row")
+    fs_frame = fs_frame.with_columns(
+        pl.col("as_of_date").cast(pl.Date), pl.col("phase").cast(pl.String),
+        pl.col("cash").cast(pl.Float64), pl.col("code").cast(pl.String),
+        pl.col("quantity").cast(pl.Int64),
+        pl.col("sellable_quantity").cast(pl.Int64))
     fs_frame.write_parquet(out / "state/final_state.parquet")
     ns = result.nav_series.frame
     _write("nav/nav_series.parquet", list(ns.iter_rows()),
-           _SCHEMAS["nav/nav_series.parquet"]) if ns.height else \
-        _typed_empty(_SCHEMAS["nav/nav_series.parquet"]).write_parquet(
-            out / "nav/nav_series.parquet")
+           _SCHEMAS["nav/nav_series.parquet"])
 
     manifest = ArtifactManifest(
         schema_version=SCHEMA_VERSION, artifact_type=ARTIFACT_TYPE,

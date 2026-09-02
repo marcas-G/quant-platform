@@ -208,5 +208,10 @@ class ArtifactManifest:
             raise ValueError("artifact_count 必须为非负 int")
         for name, v in (("execution_date_start", self.execution_date_start),
                         ("execution_date_end", self.execution_date_end)):
-            if not isinstance(v, datetime.date) or isinstance(v, datetime.datetime):
+            if v is None:
+                if self.artifact_count != 0:
+                    raise ValueError(
+                        f"{name} 为 None 但 artifact_count={self.artifact_count}"
+                        f"（空 result 才允许 None）")
+            elif not isinstance(v, datetime.date)                     or isinstance(v, datetime.datetime):
                 raise ValueError(f"{name} 必须为 datetime.date")
